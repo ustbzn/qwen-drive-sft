@@ -46,7 +46,7 @@ torchrun \
     trainer.params.max_epochs=200 \
     trainer.params.num_nodes=1 \
     trainer.params.devices=${GPUS} \
-    dataloader.params.batch_size=192 \
+    dataloader.params.batch_size=64 \
     experiment_name=training_recogdrive_agent \
     train_test_split=$TRAIN_TEST_SPLIT \
     cache_path="/NXT/lst/vla/navsim/exp/recogdrive_agent_cache_dir_train_hs0_hsL" \
