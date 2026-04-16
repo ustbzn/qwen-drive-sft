@@ -39,7 +39,7 @@ torchrun \
     agent=recogdrive_agent \
     agent.checkpoint_path="$CHECKPOINT" \
     agent.vlm_path='/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B' \
-    metric_cache_path=/NXT/lst/vla/navsim/exp/metric_cache2 \
+    metric_cache_path=/NXT/lst/vla/navsim/exp/metric_cache2_v2 \
     agent.cam_type='single' \
     agent.grpo=False \
     agent.cache_hidden_state=False \

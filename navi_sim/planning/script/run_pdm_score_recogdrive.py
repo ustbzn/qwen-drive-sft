@@ -22,6 +22,7 @@ import hydra
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 import pandas as pd
+import numpy as np
 
 from nuplan.planning.script.builders.logging_builder import build_logger
 from nuplan.planning.utils.multithreading.worker_utils import worker_map
@@ -29,7 +30,11 @@ from nuplan.planning.utils.multithreading.worker_utils import worker_map
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataloader import SceneLoader, SceneFilter, MetricCacheLoader
 from navsim.common.dataclasses import SensorConfig
-from navsim.evaluate.pdm_score import pdm_score
+from navsim.evaluate.pdm_score import (
+    pdm_score,
+    transform_trajectory,
+    get_trajectory_as_array,
+)
 from navsim.planning.script.builders.worker_pool_builder import build_worker
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
@@ -39,6 +44,24 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = "config/pdm_scoring"
 CONFIG_NAME = "default_run_pdm_score"
+
+
+def compute_trajectory_l2_loss(metric_cache: MetricCache, model_trajectory, future_sampling) -> float:
+    """
+    Compute average L2 distance between predicted and GT trajectory in XY plane.
+    """
+    initial_ego_state = metric_cache.ego_state
+    gt_trajectory = metric_cache.trajectory
+    pred_trajectory = transform_trajectory(model_trajectory, initial_ego_state)
+
+    gt_states = get_trajectory_as_array(gt_trajectory, future_sampling, initial_ego_state.time_point)
+    pred_states = get_trajectory_as_array(pred_trajectory, future_sampling, initial_ego_state.time_point)
+
+    # Use XY only: heading has different unit/scale and should not be directly mixed with meters.
+    gt_xy = gt_states[:, :2]
+    pred_xy = pred_states[:, :2]
+    per_step_l2 = np.linalg.norm(pred_xy - gt_xy, axis=1)
+    return float(np.mean(per_step_l2))
 
 class InferenceSampler(torch.utils.data.sampler.Sampler):
     def __init__(self, size):
@@ -120,6 +143,12 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 trajectory = agent.compute_trajectory(agent_input, scene)
             else:
                 trajectory = agent.compute_trajectory(agent_input)
+
+            l2_loss = compute_trajectory_l2_loss(
+                metric_cache=metric_cache,
+                model_trajectory=trajectory,
+                future_sampling=simulator.proposal_sampling,
+            )
             pdm_result = pdm_score(
                 metric_cache=metric_cache,
                 model_trajectory=trajectory,
@@ -128,11 +157,13 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 scorer=scorer,
             )
             score_row.update(asdict(pdm_result))
+            score_row["l2_loss"] = l2_loss
             score_row['rank'] = dist.get_rank()
         except Exception as e:
             logger.warning(f"----------- Agent failed for token {token}:")
             traceback.print_exc()
             score_row["valid"] = False
+            score_row["l2_loss"] = np.nan
 
         pdm_results.append(score_row)
     serialized_score_rows = pickle.dumps(pdm_results)
