@@ -135,11 +135,15 @@ class AbstractPDMClosedPlanner(AbstractPDMPlanner):
         proposals_array = self._generator.generate_proposals(ego_state, self._observation, self._proposal_manager)
 
         # 4. Simulate proposals
-        simulated_proposals_array = self._simulator.simulate_proposals(proposals_array, ego_state)
+        simulated_proposals_array, simulated_reference_signals = self._simulator.simulate_proposals(
+            proposals_array,
+            ego_state,
+        )
 
         # 5. Score proposals
         proposal_scores = self._scorer.score_proposals(
             simulated_proposals_array,
+            simulated_reference_signals,
             self._observation,
             self._centerline,
             list(self._route_lane_dict.keys()),

@@ -106,10 +106,14 @@ def pdm_score(
 
     trajectory_states = np.concatenate([pdm_states[None, ...], pred_states[None, ...]], axis=0)
 
-    simulated_states = simulator.simulate_proposals(trajectory_states, initial_ego_state)
+    simulated_states, simulated_reference_signals = simulator.simulate_proposals(
+        trajectory_states,
+        initial_ego_state,
+    )
 
     scores = scorer.score_proposals(
         simulated_states,
+        simulated_reference_signals,
         metric_cache.observation,
         metric_cache.centerline,
         metric_cache.route_lane_ids,

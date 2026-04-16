@@ -1,21 +1,21 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
 from scipy.signal import savgol_filter
 
-from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import StateIndex
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import ReferenceSignalIndex, StateIndex
 
 # TODO: Refactor & add to config
 
 # (1) ego_jerk_metric,
-max_abs_mag_jerk = 8.37  # [m/s^3]
+max_abs_mag_jerk = 6.0  # [m/s^3]
 
 # (2) ego_lat_acceleration_metric
-max_abs_lat_accel = 4.89  # [m/s^2]
+max_abs_lat_accel = 2.1246  # [m/s^2]
 
 # (3) ego_lon_acceleration_metric
-max_lon_accel = 2.40  # [m/s^2]
+max_lon_accel = 1.5  # [m/s^2]
 min_lon_accel = -4.05
 
 # (4) ego_yaw_acceleration_metric
@@ -26,6 +26,48 @@ max_abs_lon_jerk = 4.13  # [m/s^3]
 
 # (6) ego_yaw_rate_metric
 max_abs_yaw_rate = 0.95  # [rad/s]
+
+# (7) ego_centripetal_acceleration_metric
+max_abs_centripetal_accel = 2.1246  # [m/s^2]
+
+# (8) ego_centripetal_jerk_metric
+max_abs_centripetal_jerk = 2.5578  # [m/s^3]
+
+
+def _get_centripetal_acceleration_bounds(
+    velocity: npt.NDArray[np.float64],
+) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """
+    Compute velocity-dependent bounds for centripetal acceleration.
+    :param velocity: longitudinal velocity [m/s]
+    :return: minimum and maximum centripetal acceleration bounds
+    """
+    abs_velocity = np.abs(velocity)
+    max_bound = np.clip(
+        max_abs_centripetal_accel - 0.01 * abs_velocity - 0.0005 * abs_velocity**2,
+        1.5,
+        max_abs_centripetal_accel,
+    )
+    min_bound = -max_bound
+    return min_bound, max_bound
+
+
+def _get_centripetal_jerk_bounds(
+    velocity: npt.NDArray[np.float64],
+) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """
+    Compute velocity-dependent bounds for centripetal jerk.
+    :param velocity: longitudinal velocity [m/s]
+    :return: minimum and maximum centripetal jerk bounds
+    """
+    abs_velocity = np.abs(velocity)
+    max_bound = np.clip(
+        max_abs_centripetal_jerk - 0.03 * abs_velocity - 0.0005 * abs_velocity**2,
+        1.8,
+        max_abs_centripetal_jerk,
+    )
+    min_bound = -max_bound
+    return min_bound, max_bound
 
 
 def _extract_ego_acceleration(
@@ -136,6 +178,60 @@ def _extract_ego_yaw_rate(
     return ego_yaw_rate
 
 
+def _extract_ego_curvature(
+    reference_signal: npt.NDArray[np.float64],
+    decimals: int = 8,
+    poly_order: int = 2,
+    window_length: int = 15,
+) -> npt.NDArray[np.float32]:
+    """
+    Extract curvature of reference signal over batch-dim
+    :param reference_signal: array representation of reference signals
+    :param decimals: decimal precision, defaults to 8
+    :param poly_order: polynomial order, defaults to 2
+    :param window_length: window size for extraction, defaults to 15
+    :return: array containing curvature values
+    """
+    n_batch, n_time, n_signals = reference_signal.shape
+    curvature: npt.NDArray[np.float64] = reference_signal[..., ReferenceSignalIndex.CURVATURE]
+
+    curvature = savgol_filter(
+        curvature,
+        polyorder=poly_order,
+        window_length=min(window_length, n_time),
+        axis=-1,
+    )
+    curvature = np.round(curvature, decimals=decimals)
+    return curvature
+
+
+def _extract_ego_curvature_rate(
+    reference_signal: npt.NDArray[np.float64],
+    decimals: int = 8,
+    poly_order: int = 2,
+    window_length: int = 15,
+) -> npt.NDArray[np.float32]:
+    """
+    Extract curvature rate of reference signal over batch-dim
+    :param reference_signal: array representation of reference signals
+    :param decimals: decimal precision, defaults to 8
+    :param poly_order: polynomial order, defaults to 2
+    :param window_length: window size for extraction, defaults to 15
+    :return: array containing curvature rate values
+    """
+    n_batch, n_time, n_signals = reference_signal.shape
+    curvature_rate: npt.NDArray[np.float64] = reference_signal[..., ReferenceSignalIndex.CURVATURE_RATE]
+
+    curvature_rate = savgol_filter(
+        curvature_rate,
+        polyorder=poly_order,
+        window_length=min(window_length, n_time),
+        axis=-1,
+    )
+    curvature_rate = np.round(curvature_rate, decimals=decimals)
+    return curvature_rate
+
+
 def _phase_unwrap(headings: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
     """
     Returns an array of heading angles equal mod 2 pi to the input heading angles,
@@ -221,11 +317,14 @@ def _within_bound(
 
 
 def _compute_lon_acceleration(
-    states: npt.NDArray[np.float64], time_steps_s: npt.NDArray[np.float64]
+    states: npt.NDArray[np.float64],
+    reference_signal: Optional[npt.NDArray[np.float64]],
+    time_steps_s: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.bool_]:
     """
     Compute longitudinal acceleration over batch-dim of simulated proposals
     :param states: array representation of ego state values
+    :param reference_signal: array representation of reference signals
     :param time_steps_s: time steps [s] of time dim
     :return: longitudinal acceleration within bound
     """
@@ -248,6 +347,28 @@ def _compute_lat_acceleration(
     return _within_bound(lat_acceleration, min_bound=-max_abs_lat_accel, max_bound=max_abs_lat_accel)
 
 
+def _compute_centripetal_acceleration(
+    states: npt.NDArray[np.float64],
+    reference_signal: npt.NDArray[np.float64],
+    time_steps_s: npt.NDArray[np.float64],
+) -> npt.NDArray[np.bool_]:
+    """
+    Compute centripetal acceleration over batch-dim of simulated proposals
+    :param states: array representation of ego state values
+    :param reference_signal: array representation of reference signals
+    :param time_steps_s: time steps [s] of time dim
+    :return: centripetal acceleration within bound
+    """
+    n_batch, n_time, n_states = states.shape
+    velocity = states[:, :, StateIndex.VELOCITY_X]
+    curvature = _extract_ego_curvature(reference_signal, window_length=reference_signal.shape[1])
+    min_bound, max_bound = _get_centripetal_acceleration_bounds(velocity)
+
+    centripetal_acceleration = velocity**2 * curvature
+    metric_within_bound = (centripetal_acceleration > min_bound) & (centripetal_acceleration < max_bound)
+    return np.all(metric_within_bound, axis=-1)
+
+
 def _compute_jerk_metric(
     states: npt.NDArray[np.float64], time_steps_s: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.bool_]:
@@ -268,11 +389,14 @@ def _compute_jerk_metric(
 
 
 def _compute_lon_jerk_metric(
-    states: npt.NDArray[np.float64], time_steps_s: npt.NDArray[np.float64]
+    states: npt.NDArray[np.float64],
+    reference_signal: Optional[npt.NDArray[np.float64]],
+    time_steps_s: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.bool_]:
     """
     Compute longitudinal jerk over batch-dim of simulated proposals
     :param states: array representation of ego state values
+    :param reference_signal: array representation of reference signals
     :param time_steps_s: time steps [s] of time dim
     :return: longitudinal jerk within bound
     """
@@ -284,6 +408,38 @@ def _compute_lon_jerk_metric(
         window_length=n_time,
     )
     return _within_bound(lon_jerk_metric, min_bound=-max_abs_lon_jerk, max_bound=max_abs_lon_jerk)
+
+
+def _compute_centripetal_jerk_metric(
+    states: npt.NDArray[np.float64],
+    reference_signal: npt.NDArray[np.float64],
+    time_steps_s: npt.NDArray[np.float64],
+) -> npt.NDArray[np.bool_]:
+    """
+    Compute centripetal jerk over batch-dim of simulated proposals
+    :param states: array representation of ego state values
+    :param reference_signal: array representation of reference signals
+    :param time_steps_s: time steps [s] of time dim
+    :return: centripetal jerk within bound
+    """
+    centripetal_jerk_mode = "simplified"  # available modes: "simplified" and "full"
+
+    n_batch, n_time, n_states = states.shape
+    velocity = states[:, :, StateIndex.VELOCITY_X]
+    acceleration = states[:, :, StateIndex.ACCELERATION_X]
+    curvature = _extract_ego_curvature(reference_signal, window_length=reference_signal.shape[1])
+    curvature_rate = _extract_ego_curvature_rate(reference_signal, window_length=reference_signal.shape[1])
+    min_bound, max_bound = _get_centripetal_jerk_bounds(velocity)
+
+    if centripetal_jerk_mode == "simplified":
+        centripetal_jerk = velocity**2 * curvature_rate
+    elif centripetal_jerk_mode == "full":
+        centripetal_jerk = 2 * velocity * acceleration * curvature + velocity**2 * curvature_rate
+    else:
+        raise ValueError(f"Unknown centripetal_jerk_mode: {centripetal_jerk_mode}")
+
+    metric_within_bound = (centripetal_jerk > min_bound) & (centripetal_jerk < max_bound)
+    return np.all(metric_within_bound, axis=-1)
 
 
 def _compute_yaw_accel(states: npt.NDArray[np.float64], time_steps_s: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
@@ -321,16 +477,44 @@ def ego_is_comfortable(states: npt.NDArray[np.float64], time_point_s: npt.NDArra
     assert n_time == len(time_point_s)
     assert n_states == StateIndex.size()
 
+    results: npt.NDArray[np.bool_] = np.zeros((n_batch, 6), dtype=np.bool_)
+    results[:, 0] = _compute_lon_acceleration(states, None, time_point_s)
+    results[:, 1] = _compute_lat_acceleration(states, time_point_s)
+    results[:, 2] = _compute_jerk_metric(states, time_point_s)
+    results[:, 3] = _compute_lon_jerk_metric(states, None, time_point_s)
+    results[:, 4] = _compute_yaw_accel(states, time_point_s)
+    results[:, 5] = _compute_yaw_rate(states, time_point_s)
+
+    return results
+
+
+def ego_is_comfortable_v2(
+    states: npt.NDArray[np.float64],
+    reference_signal: npt.NDArray[np.float64],
+    time_point_s: npt.NDArray[np.float64],
+) -> npt.NDArray[np.bool_]:
+    """
+    Accumulates all within-bound comfortability metrics
+    :param states: array representation of ego state values
+    :param reference_signal: array representation of reference signals
+    :param time_point_s: time steps [s] of time dim
+    :return: _description_
+    """
+    n_batch, n_time, n_states = states.shape
+    assert n_time == len(time_point_s)
+    assert n_states == StateIndex.size()
+    assert reference_signal.shape[0] == n_batch
+    assert reference_signal.shape[1] == n_time
+    assert reference_signal.shape[2] == len(ReferenceSignalIndex)
+
     comfort_metric_functions = [
         _compute_lon_acceleration,
-        _compute_lat_acceleration,
-        _compute_jerk_metric,
         _compute_lon_jerk_metric,
-        _compute_yaw_accel,
-        _compute_yaw_rate,
+        _compute_centripetal_acceleration,
+        _compute_centripetal_jerk_metric,
     ]
     results: npt.NDArray[np.bool_] = np.zeros((n_batch, len(comfort_metric_functions)), dtype=np.bool_)
     for idx, metric_function in enumerate(comfort_metric_functions):
-        results[:, idx] = metric_function(states, time_point_s)
+        results[:, idx] = metric_function(states, reference_signal, time_point_s)
 
     return results

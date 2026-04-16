@@ -16,7 +16,10 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 
 from navsim.planning.simulation.planner.pdm_planner.observation.pdm_observation import PDMObservation
 from navsim.planning.simulation.planner.pdm_planner.observation.pdm_occupancy_map import PDMDrivableMap
-from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_comfort_metrics import ego_is_comfortable
+from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_comfort_metrics import (
+    ego_is_comfortable,
+    ego_is_comfortable_v2,
+)
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer_utils import get_collision_type
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_path import PDMPath
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_array_representation import (
@@ -40,6 +43,7 @@ class PDMScorerConfig:
     ttc_weight: float = 5.0
     comfortable_weight: float = 2.0
     driving_direction_weight: float = 0.0
+    comfort_metric_version: str = "v2"
 
     # thresholds
     driving_direction_horizon: float = 1.0  # [s] (driving direction)
@@ -83,6 +87,7 @@ class PDMScorer:
 
         self._num_proposals: Optional[int] = None
         self._states: Optional[npt.NDArray[np.float64]] = None
+        self._reference_signal: Optional[npt.NDArray[np.float64]] = None
         self._ego_coords: Optional[npt.NDArray[np.float64]] = None
         self._ego_polygons: Optional[npt.NDArray[np.object_]] = None
 
@@ -114,6 +119,7 @@ class PDMScorer:
     def score_proposals(
         self,
         states: npt.NDArray[np.float64],
+        reference_signal: Optional[npt.NDArray[np.float64]],
         observation: PDMObservation,
         centerline: PDMPath,
         route_lane_ids: List[str],
@@ -132,6 +138,7 @@ class PDMScorer:
         # initialize & lazy load class values
         self._reset(
             states,
+            reference_signal,
             observation,
             centerline,
             route_lane_ids,
@@ -185,6 +192,7 @@ class PDMScorer:
     def _reset(
         self,
         states: npt.NDArray[np.float64],
+        reference_signal: Optional[npt.NDArray[np.float64]],
         observation: PDMObservation,
         centerline: PDMPath,
         route_lane_ids: List[str],
@@ -211,6 +219,7 @@ class PDMScorer:
 
         # save ego state values
         self._states = states
+        self._reference_signal = reference_signal
 
         # calculate coordinates of ego corners and center
         self._ego_coords = state_array_to_coords_array(states, self._vehicle_parameters)
@@ -505,5 +514,12 @@ class PDMScorer:
             np.arange(0, self.proposal_sampling.num_poses + 1).astype(np.float64)
             * self.proposal_sampling.interval_length
         )
-        is_comfortable = ego_is_comfortable(self._states, time_point_s)
+        if self._config.comfort_metric_version == "v1":
+            is_comfortable = ego_is_comfortable(self._states, time_point_s)
+        elif self._config.comfort_metric_version == "v2":
+            if self._reference_signal is None:
+                raise ValueError("reference_signal must be provided when comfort_metric_version is 'v2'")
+            is_comfortable = ego_is_comfortable_v2(self._states, self._reference_signal, time_point_s)
+        else:
+            raise ValueError(f"Unknown comfort_metric_version: {self._config.comfort_metric_version}")
         self._weighted_metrics[WeightedMetricIndex.COMFORTABLE] = np.all(is_comfortable, axis=-1)

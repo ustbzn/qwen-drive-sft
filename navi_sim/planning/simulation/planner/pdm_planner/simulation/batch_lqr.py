@@ -7,7 +7,11 @@ import numpy.typing as npt
 from nuplan.common.actor_state.vehicle_parameters import VehicleParameters, get_pacifica_parameters
 from nuplan.planning.simulation.simulation_time_controller.simulation_iteration import SimulationIteration
 
-from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import DynamicStateIndex, StateIndex
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import (
+    DynamicStateIndex,
+    ReferenceSignalIndex,
+    StateIndex,
+)
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import normalize_angle
 from navsim.planning.simulation.planner.pdm_planner.simulation.batch_lqr_utils import (
     _generate_profile_from_initial_condition_and_derivatives,
@@ -120,15 +124,16 @@ class BatchLQRTracker:
 
         # lazy loaded
         self._proposal_states: Optional[npt.NDArray[np.float64]] = None
+        self._velocity_profile, self._curvature_profile, self._curvature_rate_profile = None, None, None
         self._initialized: bool = False
 
     def update(self, proposal_states: npt.NDArray[np.float64]) -> None:
         """
-        Loads proposal state array and resets velocity, and curvature profile.
+        Loads proposal state array and resets cached profiles.
         :param proposal_states: array representation of proposals.
         """
         self._proposal_states: npt.NDArray[np.float64] = proposal_states
-        self._velocity_profile, self._curvature_profile = None, None
+        self._velocity_profile, self._curvature_profile, self._curvature_rate_profile = None, None, None
         self._initialized = True
 
     def track_trajectory(
@@ -136,13 +141,13 @@ class BatchLQRTracker:
         current_iteration: SimulationIteration,
         next_iteration: SimulationIteration,
         initial_states: npt.NDArray[np.float64],
-    ) -> npt.NDArray[np.float64]:
+    ) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """
         Calculates the command values given the proposals to track.
         :param current_iteration: current simulation iteration.
         :param next_iteration: desired next simulation iteration.
         :param initial_states: array representation of current ego states.
-        :return: command values for motion model.
+        :return: command values for motion model and reference signals for the current tracking step.
         """
         assert self._initialized, "BatchLQRTracker: Run update first to load proposal states!"
 
@@ -157,9 +162,10 @@ class BatchLQRTracker:
         (
             reference_velocities,
             curvature_profiles,
+            curvature_rate_profiles,
         ) = self._compute_reference_velocity_and_curvature_profile(
             current_iteration
-        )  # (batch), (batch, 10)
+        )  # (batch), (batch, 10), (batch, 10)
 
         # create output arrays
         accel_cmds = np.zeros(batch_size, dtype=np.float64)
@@ -197,7 +203,11 @@ class BatchLQRTracker:
         command_states[:, DynamicStateIndex.ACCELERATION_X] = accel_cmds
         command_states[:, DynamicStateIndex.STEERING_RATE] = steering_rate_cmds
 
-        return command_states
+        reference_signals = np.zeros((batch_size, len(ReferenceSignalIndex)), dtype=np.float64)
+        reference_signals[:, ReferenceSignalIndex.CURVATURE] = curvature_profiles[:, 0]
+        reference_signals[:, ReferenceSignalIndex.CURVATURE_RATE] = curvature_rate_profiles[:, 0]
+
+        return command_states, reference_signals
 
     def _compute_initial_velocity_and_lateral_state(
         self,
@@ -239,23 +249,23 @@ class BatchLQRTracker:
     def _compute_reference_velocity_and_curvature_profile(
         self,
         current_iteration: SimulationIteration,
-    ) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    ) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """
         This method computes reference velocity and curvature profile based on the reference trajectory.
         We use a lookahead time equal to self._tracking_horizon * self._discretization_time.
         :param current_iteration: Used to get the current time.
         :param trajectory: The reference trajectory we are tracking.
-        :return: The reference velocity [m/s] and curvature profile [rad] to track.
+        :return: The reference velocity [m/s], curvature profile [rad], and curvature rate profile [rad/s] to track.
         """
 
         poses = self._proposal_states[..., StateIndex.STATE_SE2]
 
-        if self._velocity_profile is None or self._curvature_profile is None:
+        if self._velocity_profile is None or self._curvature_profile is None or self._curvature_rate_profile is None:
             (
                 self._velocity_profile,
                 acceleration_profile,
                 self._curvature_profile,
-                curvature_rate_profile,
+                self._curvature_rate_profile,
             ) = get_velocity_curvature_profiles_with_derivatives_from_poses(
                 discretization_time=self._discretization_time,
                 poses=poses,
@@ -277,7 +287,19 @@ class BatchLQRTracker:
         if reference_length < self._tracking_horizon:
             reference_curvature_profiles[:, reference_length:] = self._curvature_profile[:, reference_idx, None]
 
-        return reference_velocities, reference_curvature_profiles
+        reference_curvature_rate_profiles = np.zeros((batch_size, self._tracking_horizon), dtype=np.float64)
+        
+        curvature_rate_length = min(reference_length, self._tracking_horizon)
+        if curvature_rate_length > 0 and self._curvature_rate_profile.shape[1] > current_iteration.index:
+            end_idx = min(current_iteration.index + curvature_rate_length, self._curvature_rate_profile.shape[1])
+            reference_curvature_rate_profiles[:, 0:end_idx - current_iteration.index] = self._curvature_rate_profile[
+                :, current_iteration.index : end_idx
+            ]
+
+        if reference_length < self._tracking_horizon:
+            reference_curvature_rate_profiles[:, reference_length:] = 0.0
+
+        return reference_velocities, reference_curvature_profiles, reference_curvature_rate_profiles
 
     def _stopping_controller(
         self,

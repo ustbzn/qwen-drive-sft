@@ -120,6 +120,13 @@ class DynamicStateIndex(IntEnum):
     STEERING_RATE = 1
 
 
+class ReferenceSignalIndex(IntEnum):
+    """Index mapping for reference geometric signals."""
+
+    CURVATURE = 0
+    CURVATURE_RATE = 1
+
+
 class StateIDMIndex(IntEnum):
     """Index mapping for IDM states."""
 
