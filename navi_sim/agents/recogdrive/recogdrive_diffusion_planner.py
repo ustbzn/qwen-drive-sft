@@ -155,10 +155,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             hidden_size=config.input_embedding_dim,
         )
         if config.vlm_size == "large":
-            self.hidden_state_fuser = nn.Linear(3584 * 2, 3584)
+            self.first_hidden_state_fuser = nn.Linear(3584, 3584 // 2)
+            self.last_hidden_state_fuser = nn.Linear(3584, 3584 // 2)
             self.feature_encoder = nn.Linear(3584, config.input_embedding_dim)
         else:
-            self.hidden_state_fuser = nn.Linear(1536 * 2, 1536)
+            self.first_hidden_state_fuser = nn.Linear(1536, 1536 // 2)
+            self.last_hidden_state_fuser = nn.Linear(1536, 1536 // 2)
             self.feature_encoder = nn.Linear(1536, config.input_embedding_dim)
             
         self.fusion_projector = nn.Linear(config.input_embedding_dim * 3, config.input_embedding_dim)
