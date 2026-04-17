@@ -63,11 +63,31 @@ def custom_collate_fn(
     return features, targets, tokens_list
 
 
-def build_datasets(cfg: DictConfig, agent: AbstractAgent) -> Tuple[Dataset, Dataset]:
+def load_token_whitelist(path_str: str) -> List[str]:
+    """
+    Loads a token whitelist from a text file.
+    Each non-empty line is treated as one token.
+    """
+    if not path_str:
+        return []
+
+    whitelist_path = Path(path_str)
+    if not whitelist_path.is_file():
+        raise FileNotFoundError(f"Token whitelist file not found: {whitelist_path}")
+
+    with whitelist_path.open("r") as fp:
+        tokens = [line.strip() for line in fp if line.strip()]
+    return tokens
+
+
+def build_datasets(
+    cfg: DictConfig, agent: AbstractAgent, train_tokens: List[str] | None
+) -> Tuple[Dataset, Dataset]:
     """
     Builds training and validation datasets from omega config
     :param cfg: omegaconf dictionary
     :param agent: interface of agents in NAVSIM
+    :param train_tokens: optional token whitelist for training data only
     :return: tuple for training and validation dataset
     """
     train_scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
@@ -77,6 +97,8 @@ def build_datasets(cfg: DictConfig, agent: AbstractAgent) -> Tuple[Dataset, Data
         ]
     else:
         train_scene_filter.log_names = cfg.train_logs
+    if train_tokens is not None:
+        train_scene_filter.tokens = train_tokens
 
     val_scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
     if val_scene_filter.log_names is not None:
@@ -148,6 +170,10 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Global Seed set to {cfg.seed}")
 
     logger.info(f"Path where all results are stored: {cfg.output_dir}")
+    train_token_whitelist_path = str(cfg.get("train_token_whitelist_path", "") or "")
+    train_tokens = load_token_whitelist(train_token_whitelist_path) if train_token_whitelist_path else None
+    if train_token_whitelist_path:
+        logger.info("Loaded %d training whitelist tokens from %s", len(train_tokens), train_token_whitelist_path)
 
     logger.info("Building Agent")
     agent: AbstractAgent = instantiate(cfg.agent)
@@ -171,6 +197,7 @@ def main(cfg: DictConfig) -> None:
             feature_builders=agent.get_feature_builders(),
             target_builders=agent.get_target_builders(),
             log_names=cfg.train_logs,
+            tokens=train_tokens,
         )
         val_data = CacheOnlyDataset(
             cache_path=cfg.cache_path,
@@ -180,7 +207,7 @@ def main(cfg: DictConfig) -> None:
         )
     else:
         logger.info("Building SceneLoader")
-        train_data, val_data = build_datasets(cfg, agent)
+        train_data, val_data = build_datasets(cfg, agent, train_tokens)
 
     logger.info("Building Datasets")
     train_dataloader = DataLoader(train_data, collate_fn=custom_collate_fn,  **cfg.dataloader.params, shuffle=True)
