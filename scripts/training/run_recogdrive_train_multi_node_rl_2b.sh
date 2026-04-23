@@ -33,7 +33,7 @@ torchrun \
     --master_addr=$MLP_WORKER_0_HOST \
     --nproc_per_node=${GPUS} \
     --master_port=$MLP_WORKER_0_PORT \
-    $NAVSIM_DEVKIT_ROOT/navi_sim/planning/script/run_training_recogdrive_rl.py \
+    $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_training_recogdrive_rl.py \
     agent=recogdrive_agent \
     agent.lr=1e-4 \
     agent.vlm_path='/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B' \

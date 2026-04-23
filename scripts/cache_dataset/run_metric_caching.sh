@@ -5,6 +5,6 @@ export NAVSIM_DEVKIT_ROOT="/NXT/lst/vla/recog_drive"
 export OPENSCENE_DATA_ROOT="/NXT/lst/vla/navsim/download"
 CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache2_v2
 
-python $NAVSIM_DEVKIT_ROOT/navi_sim/planning/script/run_metric_caching.py \
+python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_metric_caching.py \
 train_test_split=$TRAIN_TEST_SPLIT \
 cache.cache_path=$CACHE_PATH
