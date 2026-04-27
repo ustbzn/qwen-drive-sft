@@ -191,6 +191,10 @@ class ReCogDriveAgent(AbstractAgent):
             outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
             first_hidden_state = outputs.hidden_states[0]
             last_hidden_state = outputs.hidden_states[-1]
+
+        first_hidden_state = first_hidden_state.to(model_dtype)
+        last_hidden_state = last_hidden_state.to(model_dtype)
+
         first_hidden_state = self.action_head.first_hidden_state_fuser(first_hidden_state)
         last_hidden_state = self.action_head.last_hidden_state_fuser(last_hidden_state)
         vl_features = torch.cat([first_hidden_state, last_hidden_state], dim=-1)
