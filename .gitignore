@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# local experiment logs / outputs
+train_recogdrive_exp_*.txt
