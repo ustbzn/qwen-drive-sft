@@ -77,7 +77,7 @@ class ReCogDriveAgent(AbstractAgent):
                     p.requires_grad = False
             else:
                 for p in self.backbone.parameters():
-                    p.requires_grad = True  
+                    p.requires_grad = True
 
         # action 为 [x, y, heading]，因此action_dim=3; action_horizon=8 表示预测未来8个时间步的轨迹，每一个时间步为0.5s;
         if self.dit_type == "large":
@@ -91,7 +91,7 @@ class ReCogDriveAgent(AbstractAgent):
             cfg.grpo_cfg.metric_cache_path = self.metric_cache_path
             cfg.grpo_cfg.reference_policy_checkpoint = self.reference_policy_checkpoint
 
-        self.action_head = ReCogDriveDiffusionPlanner(cfg).cuda()      # 将整个Diffusion Planner存成agent的action_head，供后续forward等函数使用   
+        self.action_head = ReCogDriveDiffusionPlanner(cfg).cuda()      # 将整个Diffusion Planner存成agent的action_head，供后续forward等函数使用
         self.num_inference_samples = 1
         self.inference_selection_mode = "median"
 
@@ -123,7 +123,7 @@ class ReCogDriveAgent(AbstractAgent):
             device=self.device,
             cache_mode=self.cache_mode,
         )]
-    # 从features 拿到或算出 VLM 的 last_hidden_state，拼好 action inputs，输入给 action_head 传递给 Diffusion Planner 做轨迹预测。
+    # 从 features 拿到或算出 VLM 的 first/last hidden states，拼好 action inputs，交给 Diffusion Planner 做轨迹预测。
     def forward(self, features: Dict[str, torch.Tensor], targets=None, tokens_list=None) -> Dict[str, torch.Tensor]:
         for key, tensor in features.items():
             if isinstance(tensor, torch.Tensor):
@@ -191,33 +191,28 @@ class ReCogDriveAgent(AbstractAgent):
             outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
             first_hidden_state = outputs.hidden_states[0]
             last_hidden_state = outputs.hidden_states[-1]
-
-        first_hidden_state = first_hidden_state.to(model_dtype)
-        last_hidden_state = last_hidden_state.to(model_dtype)
-
-        first_hidden_state = self.action_head.first_hidden_state_fuser(first_hidden_state)
-        last_hidden_state = self.action_head.last_hidden_state_fuser(last_hidden_state)
-        vl_features = torch.cat([first_hidden_state, last_hidden_state], dim=-1)
-
         status_feature = features["status_feature"].cuda()
         if status_feature.ndim == 1:
             status_feature = status_feature.unsqueeze(0)
-        if vl_features.ndim == 2:
-            vl_features = vl_features.unsqueeze(0)
+        if first_hidden_state.ndim == 2:
+            first_hidden_state = first_hidden_state.unsqueeze(0)
+        if last_hidden_state.ndim == 2:
+            last_hidden_state = last_hidden_state.unsqueeze(0)
 
-        vl_features = vl_features.to(model_dtype)
+        first_hidden_state = first_hidden_state.to(model_dtype)
+        last_hidden_state = last_hidden_state.to(model_dtype)
         history_trajectory_reshaped = history_trajectory.view(history_trajectory.size(0), -1)
         input_state = torch.cat([status_feature, history_trajectory_reshaped], dim=1)   # “当前状态特征 + 历史轨迹”拼成一个输入向量，一共 B 条
 
         if self.training and not self.grpo:    # Planner.forward 训练
             action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
-            return self.action_head(vl_features, action_inputs)   
+            return self.action_head(first_hidden_state, last_hidden_state, action_inputs)
         elif self.training and self.grpo: # GRPO 训练
             action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
-            return self.action_head.forward_grpo(vl_features, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道“这个样本对应哪个场景/片段”的 token，用 token 去加载对应的 metric cache
+            return self.action_head.forward_grpo(first_hidden_state, last_hidden_state, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道“这个样本对应哪个场景/片段”的 token，用 token 去加载对应的 metric cache
         else:    # 推理，无 action
             action_inputs = BatchFeature({"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype)})
-            return self.action_head.get_action(vl_features, action_inputs) 
+            return self.action_head.get_action(first_hidden_state, last_hidden_state, action_inputs)
 
     def compute_trajectory(self, agent_input: AgentInput) -> Trajectory:
         self.eval()
@@ -335,7 +330,7 @@ def make_recogdrive_config(
         # 小尺寸DiT：8头注意力，每个头维度48，16层，输出维度512（最后一层输出维度）
         diffusion_model_cfg = {"num_heads": 8, "head_dim": 48, "num_layers": 16,"output_dim":512}
     elif size == "large":
-        # 大尺寸DiT：32头注意力，每个头维度48，16层，输出维度1536（最后一层输出维度）   
+        # 大尺寸DiT：32头注意力，每个头维度48，16层，输出维度1536（最后一层输出维度）
         diffusion_model_cfg = {"num_heads": 32, "head_dim": 48, "num_layers": 16,"output_dim":1536}
     else:
         raise ValueError(f"Unknown model size: {size!r}")

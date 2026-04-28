@@ -208,9 +208,9 @@ class LightningDiT(nn.Module):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
-        encoder_hidden_states: torch.Tensor,
-        conditioning_features: torch.Tensor,
+        action_latents: torch.Tensor,
+        context_tokens: torch.Tensor,
+        condition_features: torch.Tensor,
         timesteps: torch.LongTensor,
         return_hidden_states: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, List[torch.Tensor]]:
@@ -218,9 +218,9 @@ class LightningDiT(nn.Module):
         Forward pass of the UnifiedDiT model.
 
         Args:
-            hidden_states (torch.Tensor): Input sequence. Shape: (B, N, D).
-            encoder_hidden_states (torch.Tensor): Context sequence for cross-attention.
-            conditioning_features (torch.Tensor): Additional conditioning features.
+            action_latents (torch.Tensor): Action latent sequence. Shape: (B, N, D).
+            context_tokens (torch.Tensor): Context token sequence for cross-attention.
+            condition_features (torch.Tensor): Additional conditioning features.
             timesteps (torch.LongTensor): Diffusion timesteps.
             return_hidden_states (bool): If True, returns the output and a list of
                 all intermediate hidden states.
@@ -228,32 +228,31 @@ class LightningDiT(nn.Module):
         Returns:
             The final output tensor, or a tuple of the output and all hidden states.
         """
-        seq_len = hidden_states.shape[1]
+        seq_len = action_latents.shape[1]
         #hidden_states = hidden_states + self.pos_embed[:, :seq_len, :]
 
-        hidden_states = hidden_states.contiguous()
-        encoder_hidden_states = encoder_hidden_states.contiguous()
-        conditioning_features = conditioning_features.contiguous()
+        action_latents = action_latents.contiguous()
+        context_tokens = context_tokens.contiguous()
+        condition_features = condition_features.contiguous()
 
         time_embedding = self.timestep_encoder(timesteps)
-        conditioning = time_embedding + conditioning_features
+        conditioning = time_embedding + condition_features
 
-        all_hidden_states = [hidden_states]
+        all_hidden_states = [action_latents]
         for idx, block in enumerate(self.transformer_blocks):
             use_cross_attention = not (idx % 2 == 0 and self.interleave_attention)
-            current_encoder_states = encoder_hidden_states if use_cross_attention else None
+            current_context_tokens = context_tokens if use_cross_attention else None
             
-            hidden_states = block(
-                hidden_states,
+            action_latents = block(
+                action_latents,
                 conditioning=conditioning,
-                encoder_hidden_states=current_encoder_states,
+                encoder_hidden_states=current_context_tokens,
                 rotary_embedder=self.rotary_embedder,
             )
-            all_hidden_states.append(hidden_states)
+            all_hidden_states.append(action_latents)
 
-        output = self.final_layer(hidden_states, conditioning)
+        output = self.final_layer(action_latents, conditioning)
         
         return (output, all_hidden_states) if return_hidden_states else output
-
 
 

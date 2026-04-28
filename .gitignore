@@ -39,3 +39,10 @@ vis_output/
 
 # results
 results/
+
+# navsim local files
+navsim/.vscode/
+navsim/data/
+navsim/note/
+navsim/result/
+navsim/planning/script/run_select_data_from_csv.py

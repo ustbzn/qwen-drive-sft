@@ -155,13 +155,16 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             hidden_size=config.input_embedding_dim,
         )
         if config.vlm_size == "large":
-            self.first_hidden_state_fuser = nn.Linear(3584, 3584 // 2)
-            self.last_hidden_state_fuser = nn.Linear(3584, 3584 // 2)
-            self.feature_encoder = nn.Linear(3584, config.input_embedding_dim)
+            vl_hidden_dim = 3584
         else:
-            self.first_hidden_state_fuser = nn.Linear(1536, 1536 // 2)
-            self.last_hidden_state_fuser = nn.Linear(1536, 1536 // 2)
-            self.feature_encoder = nn.Linear(1536, config.input_embedding_dim)
+            vl_hidden_dim = 1536
+
+        self.vl_summary_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
+        self.vl_context_first_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
+        self.vl_context_last_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
+        self.vl_context_gate = nn.Linear(config.input_embedding_dim * 2, config.input_embedding_dim)
+        nn.init.zeros_(self.vl_context_gate.weight)
+        nn.init.constant_(self.vl_context_gate.bias, 1.0)
             
         self.fusion_projector = nn.Linear(config.input_embedding_dim * 3, config.input_embedding_dim)
 
@@ -189,6 +192,21 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         if config.grpo:
             self._init_grpo(config.grpo_cfg)
+
+    def encode_vl_summary_tokens(self, last_hidden_state: torch.Tensor) -> torch.Tensor:
+        return self.vl_summary_projector(last_hidden_state)
+
+    def encode_vl_context_tokens(
+        self,
+        first_hidden_state: torch.Tensor,
+        last_hidden_state: torch.Tensor,
+    ) -> torch.Tensor:
+        first_context_tokens = self.vl_context_first_projector(first_hidden_state)
+        last_context_tokens = self.vl_context_last_projector(last_hidden_state)
+        context_gate = torch.sigmoid(
+            self.vl_context_gate(torch.cat([first_context_tokens, last_context_tokens], dim=-1))
+        )
+        return context_gate * last_context_tokens + (1.0 - context_gate) * first_context_tokens
 
     def _init_flow_sampler(self, cfg: FlowConfig):
         """Initializes components required for Flow Matching."""
@@ -356,7 +374,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 self.ego_status_encoder.eval()
                 self.action_encoder.eval()
                 self.action_decoder.eval()
-                self.feature_encoder.eval()
+                self.vl_summary_projector.eval()
+                self.vl_context_first_projector.eval()
+                self.vl_context_last_projector.eval()
+                self.vl_context_gate.eval()
                 self.fusion_projector.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
@@ -380,7 +401,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         index: torch.Tensor,
-        vl_features: torch.Tensor,
+        vl_summary_tokens: torch.Tensor,
+        vl_context_tokens: torch.Tensor,
         his_traj_features: torch.Tensor,
         ego_status_features: torch.Tensor,
         deterministic: bool = True
@@ -396,16 +418,16 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             pos_ids = torch.arange(action_features.shape[1], device=x.device)
             action_features = action_features + self.position_embedding(pos_ids)
 
-        vl_features_mean = vl_features.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-        fused_input = self.fusion_projector(
-            torch.cat((his_traj_features, vl_features_mean, action_features), dim=2)
+        vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+        action_latents = self.fusion_projector(
+            torch.cat((his_traj_features, vl_summary, action_features), dim=2)
         )
 
         model_output = self.model(
-            hidden_states=fused_input,
-            encoder_hidden_states=vl_features,
-            conditioning_features=ego_status_features,
-            timesteps=t
+            action_latents=action_latents,
+            context_tokens=vl_context_tokens,
+            condition_features=ego_status_features,
+            timesteps=t,
         )
         pred_noise = self.action_decoder(model_output)
 
@@ -450,20 +472,27 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             model_log_variance = torch.log(sigma**2 + 1e-20)
 
         return model_mean, model_log_variance, x_recon
-    # 只做扩散训练，输入已经是 VLM 特征 + conditioning；内部只做：编码、加噪、DiT 预测、算 loss，不处理图像、不跑 VLM。
-    def forward(self, vl_features: torch.Tensor, action_input: BatchFeature) -> BatchFeature:
+    # 只做扩散训练，输入是 VLM hidden states + conditioning；内部只做编码、加噪、DiT 预测、算 loss，不处理图像、不跑 VLM。
+    def forward(
+        self,
+        first_hidden_state: torch.Tensor,
+        last_hidden_state: torch.Tensor,
+        action_input: BatchFeature,
+    ) -> BatchFeature:
         """
         Computes the training loss for a given batch.
 
         Args:
-            vl_features (torch.Tensor): The vision-language features from the backbone.
+            first_hidden_state (torch.Tensor): Early vision-language hidden states from the backbone.
+            last_hidden_state (torch.Tensor): Final vision-language hidden states from the backbone.
             action_input (BatchFeature): A batch containing ground truth actions and other conditioning.
 
         Returns:
             BatchFeature: A batch containing the computed loss.
         """
         
-        vl_embeds = self.feature_encoder(vl_features)   # [B, L, input_embedding_dim]
+        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
+        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
         his_traj_features = self.his_traj_encoder(
             action_input.his_traj.unsqueeze(1)  # [B, 12] -> [B, 1, 12]
         ).repeat(1, self.config.action_horizon, 1)  # [B, 1, 12] -> [B, 8, input_embedding_dim]，把同一份历史轨迹 embedding 复制到 8 个时间步，得到 [B, 8, D]，让每个未来时刻都能拿到这份条件信息
@@ -485,12 +514,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 pos_ids = torch.arange(action_features.shape[1], device=gt_actions.device)
                 action_features += self.position_embedding(pos_ids)
             
-            vl_embeds_mean = vl_embeds.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-            fused_input = self.fusion_projector(
-                torch.cat((his_traj_features, vl_embeds_mean, action_features), dim=2)
+            vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+            action_latents = self.fusion_projector(
+                torch.cat((his_traj_features, vl_summary, action_features), dim=2)
             )
 
-            model_output = self.model(fused_input, vl_embeds, ego_status_features, t_discrete)
+            model_output = self.model(
+                action_latents=action_latents,
+                context_tokens=vl_context_tokens,
+                condition_features=ego_status_features,
+                timesteps=t_discrete,
+            )
             pred_velocity = self.action_decoder(model_output)
             loss = F.mse_loss(pred_velocity, velocity_target, reduction='mean')
         else: 
@@ -507,12 +541,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 pos_ids = torch.arange(action_features.shape[1], device=gt_actions.device)
                 action_features += self.position_embedding(pos_ids)
             
-            vl_embeds_mean = vl_embeds.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-            fused_input = self.fusion_projector(
-                torch.cat((his_traj_features, vl_embeds_mean, action_features), dim=2)
+            vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+            action_latents = self.fusion_projector(
+                torch.cat((his_traj_features, vl_summary, action_features), dim=2)
             )
             
-            model_output = self.model(fused_input, vl_embeds, ego_status_features, t_discrete)
+            model_output = self.model(
+                action_latents=action_latents,
+                context_tokens=vl_context_tokens,
+                condition_features=ego_status_features,
+                timesteps=t_discrete,
+            )
             pred_noise = self.action_decoder(model_output)
             loss = F.mse_loss(pred_noise, noise, reduction='mean')
 
@@ -520,7 +559,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def get_action(
         self,
-        vl_features: torch.Tensor,
+        first_hidden_state: torch.Tensor,
+        last_hidden_state: torch.Tensor,
         action_input: BatchFeature,
         init_actions: Optional[torch.Tensor] = None,
         deterministic: bool = False
@@ -532,7 +572,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         including specific clipping and noise handling for DDPM and DDIM.
 
         Args:
-            vl_features (torch.Tensor): Vision-language features from the backbone.
+            first_hidden_state (torch.Tensor): Early vision-language hidden states from the backbone.
+            last_hidden_state (torch.Tensor): Final vision-language hidden states from the backbone.
             action_input (BatchFeature): Input containing conditioning features like
                 historical trajectory and ego status.
             init_actions (Optional[torch.Tensor]): An initial trajectory to start
@@ -542,7 +583,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         Returns:
             BatchFeature: A batch containing the final predicted trajectory.
         """
-        vl_embeds = self.feature_encoder(vl_features)
+        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
+        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
         
         history_embeds = self.his_traj_encoder(
             action_input.his_traj.unsqueeze(1)
@@ -552,8 +594,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             action_input.status_feature
         )
 
-        B, D = vl_embeds.shape[0], self.config.action_dim
-        device, dtype = vl_embeds.device, vl_embeds.dtype
+        B, D = vl_summary_tokens.shape[0], self.config.action_dim
+        device, dtype = vl_summary_tokens.device, vl_summary_tokens.dtype
         
         current_actions = init_actions if init_actions is not None else torch.randn(
             (B, self.config.action_horizon, D), device=device, dtype=dtype
@@ -569,12 +611,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 if hasattr(self, 'position_embedding'):
                     action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
                 
-                vl_embeds_mean = vl_embeds.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-                fused_input = self.fusion_projector(
-                    torch.cat((history_embeds, vl_embeds_mean, action_features), dim=2)
+                vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+                action_latents = self.fusion_projector(
+                    torch.cat((history_embeds, vl_summary, action_features), dim=2)
                 )
                 
-                model_output = self.model(fused_input, vl_embeds, ego_embeds, t)
+                model_output = self.model(
+                    action_latents=action_latents,
+                    context_tokens=vl_context_tokens,
+                    condition_features=ego_embeds,
+                    timesteps=t,
+                )
                 pred = self.action_decoder(model_output)
                 
                 pred_flow = pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
@@ -589,7 +636,14 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 index_batch = self.make_timesteps(B, i, device)
 
                 mean, logvar, _ = self.p_mean_variance(
-                    current_actions, t_batch, index_batch, vl_embeds, history_embeds, ego_embeds, deterministic
+                    current_actions,
+                    t_batch,
+                    index_batch,
+                    vl_summary_tokens,
+                    vl_context_tokens,
+                    history_embeds,
+                    ego_embeds,
+                    deterministic,
                 )
 
                 noise_sample = torch.randn_like(current_actions)
@@ -618,7 +672,14 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 index_batch = self.make_timesteps(B, i, device)
 
                 mean, logvar, _ = self.p_mean_variance(
-                    current_actions, t_batch, index_batch, vl_embeds, history_embeds, ego_embeds, deterministic
+                    current_actions,
+                    t_batch,
+                    index_batch,
+                    vl_summary_tokens,
+                    vl_context_tokens,
+                    history_embeds,
+                    ego_embeds,
+                    deterministic,
                 )
 
                 std = torch.exp(0.5 * logvar)
@@ -648,7 +709,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def sample_chain(
         self,
-        vl_features: torch.Tensor,
+        first_hidden_state: torch.Tensor,
+        last_hidden_state: torch.Tensor,
         his_traj_features: torch.Tensor,
         ego_status_features: torch.Tensor,
         init_actions: Optional[torch.Tensor] = None,
@@ -659,7 +721,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         This method reuses the logic from get_action but stores intermediate steps.
 
         Args:
-            vl_features (torch.Tensor): Vision-language features from the backbone.
+            first_hidden_state (torch.Tensor): Early vision-language hidden states from the backbone.
+            last_hidden_state (torch.Tensor): Final vision-language hidden states from the backbone.
             his_traj_features (torch.Tensor): Encoded historical trajectory features.
             ego_status_features (torch.Tensor): Encoded ego status features.
             init_actions (Optional[torch.Tensor]): An initial trajectory to start from.
@@ -671,10 +734,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 - The full denoising chain as a tensor of shape (B, K+1, H, D).
                 - The final, denormalized trajectory of shape (B, H, D).
         """
-        B, D = vl_features.shape[0], self.config.action_dim
-        device, dtype = vl_features.device, vl_features.dtype
+        B, D = last_hidden_state.shape[0], self.config.action_dim
+        device, dtype = last_hidden_state.device, last_hidden_state.dtype
         
-        vl_features = self.feature_encoder(vl_features)
+        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
+        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
         
         his_traj_features = self.his_traj_encoder(
             his_traj_features.unsqueeze(1)               
@@ -699,12 +763,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 if hasattr(self, 'position_embedding'):
                     action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
                 
-                vl_features_mean = vl_features.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-                fused_input = self.fusion_projector(
-                    torch.cat((his_traj_features, vl_features_mean, action_features), dim=2)
+                vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
+                action_latents = self.fusion_projector(
+                    torch.cat((his_traj_features, vl_summary, action_features), dim=2)
                 )
                 
-                model_output = self.model(fused_input, vl_features, ego_status_features, t_batch)
+                model_output = self.model(
+                    action_latents=action_latents,
+                    context_tokens=vl_context_tokens,
+                    condition_features=ego_status_features,
+                    timesteps=t_batch,
+                )
                 pred = self.action_decoder(model_output)
                 
                 pred_flow = pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
@@ -723,7 +792,14 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 index_batch = self.make_timesteps(B, i, device) if self.config.sampling_method == 'ddim' else t_batch
 
                 mean, logvar, _ = self.p_mean_variance(
-                    current_actions, t_batch, index_batch, vl_features, his_traj_features, ego_status_features, deterministic
+                    current_actions,
+                    t_batch,
+                    index_batch,
+                    vl_summary_tokens,
+                    vl_context_tokens,
+                    his_traj_features,
+                    ego_status_features,
+                    deterministic,
                 )
 
                 std = torch.exp(0.5 * logvar).to(dtype)
@@ -761,7 +837,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def get_logprobs(
         self,
-        vl_features: torch.Tensor,
+        first_hidden_state: torch.Tensor,
+        last_hidden_state: torch.Tensor,
         his_traj_features: torch.Tensor,
         ego_status_features: torch.Tensor,
         chains: torch.Tensor,
@@ -771,7 +848,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         B, K1, H, D = chains.shape
         num_denoising_steps = K1 - 1
         
-        vl_features = self.feature_encoder(vl_features)
+        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
+        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
 
         his_traj_features = self.his_traj_encoder(
             his_traj_features.unsqueeze(1)          
@@ -782,7 +860,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         )
 
         conditioning_embeds = {
-            'vl_features': vl_features,
+            'vl_summary_tokens': vl_summary_tokens,
+            'vl_context_tokens': vl_context_tokens,
             'his_traj_features': his_traj_features,
             'ego_status_features': ego_status_features
         }
@@ -812,7 +891,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         mean, logvar, _ = self.p_mean_variance(
             x_t, t_batch, indices_batch,
-            batched_conditioning['vl_features'],
+            batched_conditioning['vl_summary_tokens'],
+            batched_conditioning['vl_context_tokens'],
             batched_conditioning['his_traj_features'],
             batched_conditioning['ego_status_features'],
             deterministic=deterministic
@@ -826,7 +906,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
     def forward_grpo(
         self,
-        vl_features: torch.Tensor,
+        first_hidden_state: torch.Tensor,
+        last_hidden_state: torch.Tensor,
         action_input: BatchFeature,
         tokens_list,
         sample_time: int = 8,
@@ -836,15 +917,20 @@ class ReCogDriveDiffusionPlanner(nn.Module):
     ) -> BatchFeature:
         """Computes the Diffusion-GRPO loss."""
         self.set_frozen_modules_to_eval_mode()
-        B = vl_features.shape[0]
+        B = last_hidden_state.shape[0]
         G = sample_time 
 
-        vl_features_rep = vl_features.repeat_interleave(G, 0)
+        first_hidden_state_rep = first_hidden_state.repeat_interleave(G, 0)
+        last_hidden_state_rep = last_hidden_state.repeat_interleave(G, 0)
         his_traj_rep = action_input.his_traj.repeat_interleave(G, 0)
         status_feature_rep = action_input.status_feature.repeat_interleave(G, 0)
 
         chains, trajs = self.sample_chain(
-            vl_features_rep, his_traj_rep, status_feature_rep, deterministic=False
+            first_hidden_state_rep,
+            last_hidden_state_rep,
+            his_traj_rep,
+            status_feature_rep,
+            deterministic=False,
         )
 
         tokens_rep = [tok for tok in tokens_list for _ in range(G)]
@@ -874,7 +960,14 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         discount = discount.view(1, 1, num_denoising_steps).expand(B, G, num_denoising_steps)  
         adv_weighted_flat = (adv_steps * discount).reshape(-1)             
 
-        log_probs = self.get_logprobs(vl_features_rep, his_traj_rep, status_feature_rep, chains, deterministic=False)
+        log_probs = self.get_logprobs(
+            first_hidden_state_rep,
+            last_hidden_state_rep,
+            his_traj_rep,
+            status_feature_rep,
+            chains,
+            deterministic=False,
+        )
         log_probs = log_probs.clamp(min=-5, max=2).mean(dim=[1, 2])
         
         policy_loss = -torch.mean(log_probs * adv_weighted_flat)
@@ -884,9 +977,20 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if use_bc_loss:
             with torch.no_grad():
                 teacher_chains, _ = self.old_policy.sample_chain(
-                    vl_features, action_input.his_traj, action_input.status_feature, deterministic=False
+                    first_hidden_state,
+                    last_hidden_state,
+                    action_input.his_traj,
+                    action_input.status_feature,
+                    deterministic=False,
                 )
-            bc_logp = self.get_logprobs(vl_features, action_input.his_traj, action_input.status_feature, teacher_chains, deterministic=False)
+            bc_logp = self.get_logprobs(
+                first_hidden_state,
+                last_hidden_state,
+                action_input.his_traj,
+                action_input.status_feature,
+                teacher_chains,
+                deterministic=False,
+            )
             bc_logp = bc_logp.clamp(min=-5, max=2)
             K_steps = chains.shape[1] - 1
             bc_logp = bc_logp.view(-1, K_steps, chains.shape[2], chains.shape[3]).mean(dim=[1,2,3])
