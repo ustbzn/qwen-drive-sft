@@ -220,7 +220,8 @@ AGENT_CONFIG: Dict[SemanticMapLayer, Any] = {
         "zorder": 2,
     },
     TrackedObjectType.EGO: {
-        "fill_color": ELLIS_5[0],
+        # 避免与 planner 红色轨迹混淆：自车框用浅绿色
+        "fill_color": "#98FB98",
         "fill_color_alpha": 1.0,
         "line_color": "black",
         "line_color_alpha": 1.0,

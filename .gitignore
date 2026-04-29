@@ -33,3 +33,9 @@ checkpoints/
 
 # txt
 *.txt
+
+# vis
+vis_output/
+
+# results
+results/
