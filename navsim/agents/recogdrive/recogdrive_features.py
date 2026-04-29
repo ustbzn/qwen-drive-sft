@@ -16,6 +16,20 @@ def format_number(n, decimal_places=2):
     return f"{n:+.{decimal_places}f}" if abs(round(n, decimal_places)) > 1e-2 else "0.0"
 
 
+EGO_STATUS_FEATURE_NAMES = (
+    "cmd_0",
+    "cmd_1",
+    "cmd_2",
+    "cmd_3",
+    "vx",
+    "vy",
+    "ax",
+    "ay",
+    "yaw_rate",
+    "curvature",
+)
+
+
 class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
     def __init__(self,
                  cache_hidden_state: bool = True,
@@ -64,12 +78,18 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             [[float(e.ego_pose[0]), float(e.ego_pose[1]), float(e.ego_pose[2])] for e in ego_statuses[:4]],
             dtype=torch.float32
         )
-        high_command_one_hot = torch.tensor(ego_statuses[-1].driving_command, dtype=torch.float32)  # ego_statuses[-1]表示当前时刻
+        current_ego_status = ego_statuses[-1]
+        high_command_one_hot = torch.tensor(current_ego_status.driving_command, dtype=torch.float32)  # ego_statuses[-1]表示当前时刻
         status_feature = torch.cat([
             high_command_one_hot.clone(),
-            torch.tensor(ego_statuses[-1].ego_velocity, dtype=torch.float32),
-            torch.tensor(ego_statuses[-1].ego_acceleration, dtype=torch.float32)
+            torch.tensor(current_ego_status.ego_velocity, dtype=torch.float32),
+            torch.tensor(current_ego_status.ego_acceleration, dtype=torch.float32),
+            torch.tensor(
+                [current_ego_status.ego_yaw_rate, current_ego_status.ego_curvature],
+                dtype=torch.float32,
+            ),
         ], dim=-1)
+        assert status_feature.shape[-1] == len(EGO_STATUS_FEATURE_NAMES)
 
 
         if not self.cache_hidden_state:

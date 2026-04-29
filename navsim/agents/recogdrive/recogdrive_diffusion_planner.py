@@ -104,6 +104,7 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     add_pos_embed: bool = True
     max_seq_len: int = 8
     ego_status_encoder_type: Literal['mlp', 'attention'] = 'mlp'
+    ego_status_dim: int = 10
 
     sampling_method: Literal['flow', 'ddpm', 'ddim'] = 'ddim'
     num_inference_steps: int = 5
@@ -129,22 +130,15 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         
         self.model = LightningDiT(**config.diffusion_model_cfg)
 
-        self.his_traj_encoder = Mlp(
-            in_features=12,
-            hidden_features=config.hidden_size,
-            out_features=config.input_embedding_dim,
-            norm_layer=nn.LayerNorm
-        )
-
         if config.ego_status_encoder_type == 'attention':
             self.ego_status_encoder = StateAttentionEncoder(
-                state_dim=8,
+                state_dim=config.ego_status_dim,
                 embed_dim=config.input_embedding_dim,
                 num_kinematic_states=4 
             )
         else: 
             self.ego_status_encoder = Mlp(
-                in_features=8,
+                in_features=config.ego_status_dim,
                 hidden_features=config.hidden_size,
                 out_features=config.input_embedding_dim,
                 norm_layer=nn.LayerNorm
@@ -166,7 +160,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         nn.init.zeros_(self.vl_context_gate.weight)
         nn.init.constant_(self.vl_context_gate.bias, 1.0)
             
-        self.fusion_projector = nn.Linear(config.input_embedding_dim * 3, config.input_embedding_dim)
+        self.fusion_projector = nn.Linear(config.input_embedding_dim * 2, config.input_embedding_dim)
 
         output_dim = 2 * config.action_dim if (
             config.sampling_method == 'flow' and config.flow_cfg.mean_variance_net
@@ -370,7 +364,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if self.training:
 
             if not self.config.tune_projector:
-                self.his_traj_encoder.eval()
                 self.ego_status_encoder.eval()
                 self.action_encoder.eval()
                 self.action_decoder.eval()
@@ -395,6 +388,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         else:
             raise ValueError(f"Unsupported sampling method: {self.config.sampling_method}")
 
+    def build_action_latents(
+        self,
+        vl_summary_tokens: torch.Tensor,
+        action_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build DiT action tokens without directly injecting historical trajectory."""
+        vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).expand(
+            -1, action_features.shape[1], -1
+        )
+        return self.fusion_projector(torch.cat((vl_summary, action_features), dim=2))
+
 
     def p_mean_variance(
         self,
@@ -403,7 +407,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         index: torch.Tensor,
         vl_summary_tokens: torch.Tensor,
         vl_context_tokens: torch.Tensor,
-        his_traj_features: torch.Tensor,
         ego_status_features: torch.Tensor,
         deterministic: bool = True
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -418,10 +421,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             pos_ids = torch.arange(action_features.shape[1], device=x.device)
             action_features = action_features + self.position_embedding(pos_ids)
 
-        vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-        action_latents = self.fusion_projector(
-            torch.cat((his_traj_features, vl_summary, action_features), dim=2)
-        )
+        action_latents = self.build_action_latents(vl_summary_tokens, action_features)
 
         model_output = self.model(
             action_latents=action_latents,
@@ -493,9 +493,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
-        his_traj_features = self.his_traj_encoder(
-            action_input.his_traj.unsqueeze(1)  # [B, 12] -> [B, 1, 12]
-        ).repeat(1, self.config.action_horizon, 1)  # [B, 1, 12] -> [B, 8, input_embedding_dim]，把同一份历史轨迹 embedding 复制到 8 个时间步，得到 [B, 8, D]，让每个未来时刻都能拿到这份条件信息
         ego_status_features = self.ego_status_encoder(action_input.status_feature)
         
         gt_actions = self.norm_odo(action_input.action)
@@ -514,10 +511,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 pos_ids = torch.arange(action_features.shape[1], device=gt_actions.device)
                 action_features += self.position_embedding(pos_ids)
             
-            vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-            action_latents = self.fusion_projector(
-                torch.cat((his_traj_features, vl_summary, action_features), dim=2)
-            )
+            action_latents = self.build_action_latents(vl_summary_tokens, action_features)
 
             model_output = self.model(
                 action_latents=action_latents,
@@ -541,10 +535,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 pos_ids = torch.arange(action_features.shape[1], device=gt_actions.device)
                 action_features += self.position_embedding(pos_ids)
             
-            vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-            action_latents = self.fusion_projector(
-                torch.cat((his_traj_features, vl_summary, action_features), dim=2)
-            )
+            action_latents = self.build_action_latents(vl_summary_tokens, action_features)
             
             model_output = self.model(
                 action_latents=action_latents,
@@ -574,8 +565,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         Args:
             first_hidden_state (torch.Tensor): Early vision-language hidden states from the backbone.
             last_hidden_state (torch.Tensor): Final vision-language hidden states from the backbone.
-            action_input (BatchFeature): Input containing conditioning features like
-                historical trajectory and ego status.
+            action_input (BatchFeature): Input containing ego status conditioning.
             init_actions (Optional[torch.Tensor]): An initial trajectory to start
                 the denoising from. If None, starts from pure noise.
             deterministic (bool): If True, DDIM sampling will be deterministic (eta=0).
@@ -585,10 +575,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         """
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
-        
-        history_embeds = self.his_traj_encoder(
-            action_input.his_traj.unsqueeze(1)
-        ).repeat(1, self.config.action_horizon, 1)
 
         ego_embeds = self.ego_status_encoder(
             action_input.status_feature
@@ -611,10 +597,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 if hasattr(self, 'position_embedding'):
                     action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
                 
-                vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-                action_latents = self.fusion_projector(
-                    torch.cat((history_embeds, vl_summary, action_features), dim=2)
-                )
+                action_latents = self.build_action_latents(vl_summary_tokens, action_features)
                 
                 model_output = self.model(
                     action_latents=action_latents,
@@ -641,7 +624,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     index_batch,
                     vl_summary_tokens,
                     vl_context_tokens,
-                    history_embeds,
                     ego_embeds,
                     deterministic,
                 )
@@ -677,7 +659,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     index_batch,
                     vl_summary_tokens,
                     vl_context_tokens,
-                    history_embeds,
                     ego_embeds,
                     deterministic,
                 )
@@ -711,7 +692,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self,
         first_hidden_state: torch.Tensor,
         last_hidden_state: torch.Tensor,
-        his_traj_features: torch.Tensor,
         ego_status_features: torch.Tensor,
         init_actions: Optional[torch.Tensor] = None,
         deterministic: bool = False
@@ -723,8 +703,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         Args:
             first_hidden_state (torch.Tensor): Early vision-language hidden states from the backbone.
             last_hidden_state (torch.Tensor): Final vision-language hidden states from the backbone.
-            his_traj_features (torch.Tensor): Encoded historical trajectory features.
-            ego_status_features (torch.Tensor): Encoded ego status features.
+            ego_status_features (torch.Tensor): Raw ego status features.
             init_actions (Optional[torch.Tensor]): An initial trajectory to start from.
                 If None, starts from pure noise.
             deterministic (bool): If True, DDIM sampling will be deterministic.
@@ -739,10 +718,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
-        
-        his_traj_features = self.his_traj_encoder(
-            his_traj_features.unsqueeze(1)               
-        ).repeat(1, self.config.action_horizon, 1) 
 
         ego_status_features = self.ego_status_encoder(
             ego_status_features       
@@ -763,10 +738,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 if hasattr(self, 'position_embedding'):
                     action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
                 
-                vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).repeat(1, self.config.action_horizon, 1)
-                action_latents = self.fusion_projector(
-                    torch.cat((his_traj_features, vl_summary, action_features), dim=2)
-                )
+                action_latents = self.build_action_latents(vl_summary_tokens, action_features)
                 
                 model_output = self.model(
                     action_latents=action_latents,
@@ -797,7 +769,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     index_batch,
                     vl_summary_tokens,
                     vl_context_tokens,
-                    his_traj_features,
                     ego_status_features,
                     deterministic,
                 )
@@ -839,7 +810,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self,
         first_hidden_state: torch.Tensor,
         last_hidden_state: torch.Tensor,
-        his_traj_features: torch.Tensor,
         ego_status_features: torch.Tensor,
         chains: torch.Tensor,
         deterministic: bool = False
@@ -851,10 +821,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
 
-        his_traj_features = self.his_traj_encoder(
-            his_traj_features.unsqueeze(1)          
-        ).repeat(1, self.config.action_horizon, 1) 
-
         ego_status_features = self.ego_status_encoder(
             ego_status_features      
         )
@@ -862,7 +828,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         conditioning_embeds = {
             'vl_summary_tokens': vl_summary_tokens,
             'vl_context_tokens': vl_context_tokens,
-            'his_traj_features': his_traj_features,
             'ego_status_features': ego_status_features
         }
         
@@ -893,7 +858,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             x_t, t_batch, indices_batch,
             batched_conditioning['vl_summary_tokens'],
             batched_conditioning['vl_context_tokens'],
-            batched_conditioning['his_traj_features'],
             batched_conditioning['ego_status_features'],
             deterministic=deterministic
         )
@@ -922,13 +886,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         first_hidden_state_rep = first_hidden_state.repeat_interleave(G, 0)
         last_hidden_state_rep = last_hidden_state.repeat_interleave(G, 0)
-        his_traj_rep = action_input.his_traj.repeat_interleave(G, 0)
         status_feature_rep = action_input.status_feature.repeat_interleave(G, 0)
 
         chains, trajs = self.sample_chain(
             first_hidden_state_rep,
             last_hidden_state_rep,
-            his_traj_rep,
             status_feature_rep,
             deterministic=False,
         )
@@ -963,7 +925,6 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         log_probs = self.get_logprobs(
             first_hidden_state_rep,
             last_hidden_state_rep,
-            his_traj_rep,
             status_feature_rep,
             chains,
             deterministic=False,
@@ -979,14 +940,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 teacher_chains, _ = self.old_policy.sample_chain(
                     first_hidden_state,
                     last_hidden_state,
-                    action_input.his_traj,
                     action_input.status_feature,
                     deterministic=False,
                 )
             bc_logp = self.get_logprobs(
                 first_hidden_state,
                 last_hidden_state,
-                action_input.his_traj,
                 action_input.status_feature,
                 teacher_chains,
                 deterministic=False,

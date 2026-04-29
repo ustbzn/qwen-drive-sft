@@ -201,17 +201,15 @@ class ReCogDriveAgent(AbstractAgent):
 
         first_hidden_state = first_hidden_state.to(model_dtype)
         last_hidden_state = last_hidden_state.to(model_dtype)
-        history_trajectory_reshaped = history_trajectory.view(history_trajectory.size(0), -1)
-        input_state = torch.cat([status_feature, history_trajectory_reshaped], dim=1)   # “当前状态特征 + 历史轨迹”拼成一个输入向量，一共 B 条
 
         if self.training and not self.grpo:    # Planner.forward 训练
-            action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
+            action_inputs = BatchFeature(data={"status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
             return self.action_head(first_hidden_state, last_hidden_state, action_inputs)
         elif self.training and self.grpo: # GRPO 训练
-            action_inputs = BatchFeature(data={"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
+            action_inputs = BatchFeature(data={"status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
             return self.action_head.forward_grpo(first_hidden_state, last_hidden_state, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道“这个样本对应哪个场景/片段”的 token，用 token 去加载对应的 metric cache
         else:    # 推理，无 action
-            action_inputs = BatchFeature({"state": input_state.to(model_dtype), "his_traj": history_trajectory_reshaped.to(model_dtype), "status_feature": status_feature.to(model_dtype)})
+            action_inputs = BatchFeature({"status_feature": status_feature.to(model_dtype)})
             return self.action_head.get_action(first_hidden_state, last_hidden_state, action_inputs)
 
     def compute_trajectory(self, agent_input: AgentInput) -> Trajectory:

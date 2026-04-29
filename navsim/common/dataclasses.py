@@ -146,7 +146,29 @@ class EgoStatus:
     ego_velocity: npt.NDArray[np.float32]
     ego_acceleration: npt.NDArray[np.float32]
     driving_command: npt.NDArray[np.int]
+    ego_yaw_rate: float = 0.0
+    ego_curvature: float = 0.0
     in_global_frame: bool = False  # False for AgentInput
+
+
+def _extract_ego_yaw_rate(scene_frame: Dict) -> float:
+    """Extract ego yaw rate from can_bus angular velocity z."""
+    can_bus = scene_frame.get("can_bus", None)
+    if can_bus is None or len(can_bus) <= 15:
+        return 0.0
+    return float(can_bus[15])
+
+
+def _compute_ego_curvature(
+    ego_velocity: npt.NDArray[np.float32],
+    ego_yaw_rate: float,
+    min_speed: float = 0.5,
+) -> float:
+    """Compute ego curvature from yaw rate and speed with low-speed protection."""
+    speed = float(np.hypot(ego_velocity[0], ego_velocity[1]))
+    if speed < min_speed:
+        return 0.0
+    return float(ego_yaw_rate / speed)
 
 
 @dataclass
@@ -197,11 +219,16 @@ class AgentInput:
         for frame_idx in range(num_history_frames):
 
             ego_dynamic_state = scene_dict_list[frame_idx]["ego_dynamic_state"]
+            ego_velocity = np.array(ego_dynamic_state[:2], dtype=np.float32)
+            ego_yaw_rate = _extract_ego_yaw_rate(scene_dict_list[frame_idx])
+            ego_curvature = _compute_ego_curvature(ego_velocity, ego_yaw_rate)
             ego_status = EgoStatus(
                 ego_pose=np.array(local_ego_poses[frame_idx], dtype=np.float32),
-                ego_velocity=np.array(ego_dynamic_state[:2], dtype=np.float32),
+                ego_velocity=ego_velocity,
                 ego_acceleration=np.array(ego_dynamic_state[2:], dtype=np.float32),
                 driving_command=scene_dict_list[frame_idx]["driving_command"],
+                ego_yaw_rate=ego_yaw_rate,
+                ego_curvature=ego_curvature,
             )
             ego_statuses.append(ego_status)
 
@@ -370,6 +397,8 @@ class Scene:
                     ego_velocity=frame_ego_status.ego_velocity,
                     ego_acceleration=frame_ego_status.ego_acceleration,
                     driving_command=frame_ego_status.driving_command,
+                    ego_yaw_rate=frame_ego_status.ego_yaw_rate,
+                    ego_curvature=frame_ego_status.ego_curvature,
                 )
             )
             cameras.append(self.frames[frame_idx].cameras)
@@ -404,11 +433,16 @@ class Scene:
             dtype=np.float64,
         )
         ego_dynamic_state = scene_frame["ego_dynamic_state"]
+        ego_velocity = np.array(ego_dynamic_state[:2], dtype=np.float32)
+        ego_yaw_rate = _extract_ego_yaw_rate(scene_frame)
+        ego_curvature = _compute_ego_curvature(ego_velocity, ego_yaw_rate)
         return EgoStatus(
             ego_pose=global_ego_pose,
-            ego_velocity=np.array(ego_dynamic_state[:2], dtype=np.float32),
+            ego_velocity=ego_velocity,
             ego_acceleration=np.array(ego_dynamic_state[2:], dtype=np.float32),
             driving_command=scene_frame["driving_command"],
+            ego_yaw_rate=ego_yaw_rate,
+            ego_curvature=ego_curvature,
             in_global_frame=True,
         )
 
