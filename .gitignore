@@ -43,6 +43,9 @@ vis_result_statistics/
 # results
 results/
 
+# vis_result_statistics
+vis_result_statistics/
+
 # navsim local files
 navsim/.vscode/
 navsim/data/
