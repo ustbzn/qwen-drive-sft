@@ -52,6 +52,7 @@ class PDMScorerConfig:
     driving_direction_compliance_threshold: float = 2.0  # [m] (driving direction)
     driving_direction_violation_threshold: float = 6.0  # [m] (driving direction)
     stopped_speed_threshold: float = 5e-03  # [m/s] (ttc)
+    ttc_horizon: float = 1.0  # [s] (ttc)
     progress_distance_threshold: float = 5.0  # [m] (progress)
     drivable_area_soft_margin: float = 0.5  # [m] (drivable area)
     drivable_area_soft_score: float = 0.618  # score when only the safety margin leaves drivable area
@@ -577,7 +578,9 @@ class PDMScorer:
                         )
                         and not is_agent_behind(ego_rear_axle, track_state)
                     ):
-                        ttc_scores[proposal_idx] = np.minimum(ttc_scores[proposal_idx], 0.0)
+                        ttc_time = float(future_time_idx) * self.proposal_sampling.interval_length
+                        ttc_score = np.clip(ttc_time / self._config.ttc_horizon, 0.0, 1.0)
+                        ttc_scores[proposal_idx] = np.minimum(ttc_scores[proposal_idx], ttc_score)
                         self._ttc_time_idcs[proposal_idx] = min(time_idx, self._ttc_time_idcs[proposal_idx])
                     else:
                         temp_collided_track_ids[proposal_idx].append(token)
