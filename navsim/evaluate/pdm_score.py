@@ -130,6 +130,7 @@ def pdm_score(
     time_to_collision_within_bound = scorer._weighted_metrics[WeightedMetricIndex.TTC, pred_idx]
     comfort = scorer._weighted_metrics[WeightedMetricIndex.COMFORTABLE, pred_idx]
     driving_direction_compliance = scorer._weighted_metrics[WeightedMetricIndex.DRIVING_DIRECTION, pred_idx]
+    obstacle_clearance = scorer._weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE, pred_idx]
 
     score = scores[pred_idx]
 
@@ -140,5 +141,6 @@ def pdm_score(
         time_to_collision_within_bound,
         comfort,
         driving_direction_compliance,
+        obstacle_clearance,
         score,
     )

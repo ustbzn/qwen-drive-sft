@@ -43,6 +43,7 @@ class PDMScorerConfig:
     ttc_weight: float = 5.0
     comfortable_weight: float = 2.0
     driving_direction_weight: float = 0.0
+    obstacle_clearance_weight: float = 2.0
     comfort_metric_version: str = "v2"
 
     # thresholds
@@ -53,6 +54,9 @@ class PDMScorerConfig:
     progress_distance_threshold: float = 5.0  # [m] (progress)
     drivable_area_soft_margin: float = 0.5  # [m] (drivable area)
     drivable_area_soft_score: float = 0.618  # score when only the safety margin leaves drivable area
+    obstacle_clearance_base_margin: float = 0.3  # [m] (obstacle clearance)
+    obstacle_clearance_time_headway: float = 0.3  # [s] (obstacle clearance)
+    obstacle_clearance_max_margin: float = 1.0  # [m] (obstacle clearance)
 
     @property
     def weighted_metrics_array(self) -> npt.NDArray[np.float64]:
@@ -61,6 +65,7 @@ class PDMScorerConfig:
         weighted_metrics[WeightedMetricIndex.TTC] = self.ttc_weight
         weighted_metrics[WeightedMetricIndex.COMFORTABLE] = self.comfortable_weight
         weighted_metrics[WeightedMetricIndex.DRIVING_DIRECTION] = self.driving_direction_weight
+        weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE] = self.obstacle_clearance_weight
         return weighted_metrics
 
 
@@ -158,6 +163,7 @@ class PDMScorer:
         # 2. weighted metrics
         self._calculate_progress()
         self._calculate_ttc()
+        self._calculate_obstacle_clearance()
         self._calculate_is_comfortable()
 
         return self._aggregate_scores()
@@ -540,6 +546,101 @@ class PDMScorer:
                         temp_collided_track_ids[proposal_idx].append(token)
 
         self._weighted_metrics[WeightedMetricIndex.TTC] = ttc_scores
+
+    def _get_obstacle_velocity(self, tracked_object) -> npt.NDArray[np.float64]:
+        """
+        Returns obstacle velocity when available, otherwise treats it as static.
+        """
+        velocity = getattr(tracked_object, "velocity", None)
+        if callable(velocity):
+            velocity = velocity()
+        if velocity is None:
+            return np.zeros(2, dtype=np.float64)
+
+        if hasattr(velocity, "array"):
+            velocity_array = np.asarray(velocity.array, dtype=np.float64)
+        elif hasattr(velocity, "x") and hasattr(velocity, "y"):
+            velocity_array = np.array([velocity.x, velocity.y], dtype=np.float64)
+        else:
+            velocity_array = np.asarray(velocity, dtype=np.float64)
+
+        if velocity_array.size < 2:
+            return np.zeros(2, dtype=np.float64)
+        return np.nan_to_num(velocity_array[:2], nan=0.0)
+
+    def _compute_closing_speed(
+        self,
+        ego_state: npt.NDArray[np.float64],
+        ego_polygon,
+        obstacle_polygon,
+        tracked_object,
+    ) -> float:
+        """
+        Computes the relative speed projected onto the ego-to-obstacle direction.
+        """
+        ego_xy = np.array([ego_polygon.centroid.x, ego_polygon.centroid.y], dtype=np.float64)
+        obstacle_xy = np.array([obstacle_polygon.centroid.x, obstacle_polygon.centroid.y], dtype=np.float64)
+
+        direction = obstacle_xy - ego_xy
+        distance = np.linalg.norm(direction)
+        if distance < 1e-6:
+            return 0.0
+        direction /= distance
+
+        ego_velocity = ego_state[StateIndex.VELOCITY_2D]
+        obstacle_velocity = self._get_obstacle_velocity(tracked_object)
+        relative_velocity = ego_velocity - obstacle_velocity
+        return max(0.0, float(np.dot(relative_velocity, direction)))
+
+    def _calculate_obstacle_clearance(self) -> None:
+        """
+        Penalizes proposals that pass too close to obstacles without changing collision semantics.
+        """
+        obstacle_clearance_scores = np.ones(self._num_proposals, dtype=np.float64)
+        ignored_tokens = set(self._observation.collided_track_ids)
+        max_margin = self._config.obstacle_clearance_max_margin
+
+        for time_idx in range(self.proposal_sampling.num_poses + 1):
+            obstacle_map = self._observation[time_idx]
+
+            for proposal_idx in range(self._num_proposals):
+                ego_polygon = self._ego_polygons[proposal_idx, time_idx]
+                candidate_polygon = ego_polygon.buffer(max_margin)
+                candidate_idcs = obstacle_map.query(candidate_polygon, predicate="intersects")
+
+                for geometry_idx in candidate_idcs:
+                    token = obstacle_map.tokens[geometry_idx]
+                    if (self._observation.red_light_token in token) or (token in ignored_tokens):
+                        continue
+
+                    tracked_object = self._observation.unique_objects.get(token)
+                    if tracked_object is None:
+                        continue
+
+                    obstacle_polygon = obstacle_map[token]
+                    if ego_polygon.intersects(obstacle_polygon):
+                        continue
+
+                    closing_speed = self._compute_closing_speed(
+                        self._states[proposal_idx, time_idx],
+                        ego_polygon,
+                        obstacle_polygon,
+                        tracked_object,
+                    )
+                    clearance_margin = min(
+                        self._config.obstacle_clearance_base_margin
+                        + self._config.obstacle_clearance_time_headway * closing_speed,
+                        max_margin,
+                    )
+
+                    obstacle_distance = ego_polygon.distance(obstacle_polygon)
+                    clearance_score = np.clip(obstacle_distance / max(clearance_margin, 1e-6), 0.0, 1.0)
+                    obstacle_clearance_scores[proposal_idx] = np.minimum(
+                        obstacle_clearance_scores[proposal_idx],
+                        clearance_score,
+                    )
+
+        self._weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE] = obstacle_clearance_scores
 
     def _calculate_is_comfortable(self) -> None:
         """

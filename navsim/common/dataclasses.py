@@ -612,5 +612,6 @@ class PDMResults:
     time_to_collision_within_bound: float
     comfort: float
     driving_direction_compliance: float
+    obstacle_clearance: float
 
     score: float

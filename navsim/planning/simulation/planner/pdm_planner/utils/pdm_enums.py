@@ -174,3 +174,4 @@ class WeightedMetricIndex(IntEnum):
     TTC = 1
     COMFORTABLE = 2
     DRIVING_DIRECTION = 3
+    OBSTACLE_CLEARANCE = 4
