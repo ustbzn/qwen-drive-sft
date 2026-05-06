@@ -613,5 +613,6 @@ class PDMResults:
     comfort: float
     driving_direction_compliance: float
     obstacle_clearance: float
+    centerline_convergence: float
 
     score: float

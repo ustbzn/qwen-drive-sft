@@ -44,6 +44,7 @@ class PDMScorerConfig:
     comfortable_weight: float = 2.0
     driving_direction_weight: float = 0.0
     obstacle_clearance_weight: float = 2.0
+    centerline_weight: float = 1.0
     comfort_metric_version: str = "v2"
 
     # thresholds
@@ -57,6 +58,9 @@ class PDMScorerConfig:
     obstacle_clearance_base_margin: float = 0.3  # [m] (obstacle clearance)
     obstacle_clearance_time_headway: float = 0.3  # [s] (obstacle clearance)
     obstacle_clearance_max_margin: float = 1.0  # [m] (obstacle clearance)
+    centerline_target_distance: float = 0.3  # [m] (centerline convergence)
+    centerline_max_distance: float = 1.5  # [m] (centerline convergence)
+    centerline_horizon: float = 1.0  # [s] (centerline convergence)
 
     @property
     def weighted_metrics_array(self) -> npt.NDArray[np.float64]:
@@ -66,6 +70,7 @@ class PDMScorerConfig:
         weighted_metrics[WeightedMetricIndex.COMFORTABLE] = self.comfortable_weight
         weighted_metrics[WeightedMetricIndex.DRIVING_DIRECTION] = self.driving_direction_weight
         weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE] = self.obstacle_clearance_weight
+        weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE] = self.centerline_weight
         return weighted_metrics
 
 
@@ -162,6 +167,7 @@ class PDMScorer:
 
         # 2. weighted metrics
         self._calculate_progress()
+        self._calculate_centerline_convergence()
         self._calculate_ttc()
         self._calculate_obstacle_clearance()
         self._calculate_is_comfortable()
@@ -460,6 +466,37 @@ class PDMScorer:
             progress_in_meter[proposal_idx] = progress[1] - progress[0]
 
         self._progress_raw = np.clip(progress_in_meter, a_min=0, a_max=None)
+
+    def _calculate_centerline_convergence(self) -> None:
+        """
+        Scores whether the proposal converges toward the route centerline in the final horizon.
+        """
+        center_coordinates = self._ego_coords[:, :, BBCoordsIndex.CENTER]
+        distances = np.zeros(
+            (self._num_proposals, self.proposal_sampling.num_poses + 1),
+            dtype=np.float64,
+        )
+
+        for proposal_idx in range(self._num_proposals):
+            points = [Point(*xy) for xy in center_coordinates[proposal_idx]]
+            projected_progress = self._centerline.project(points)
+            projected_states = self._centerline.interpolate(projected_progress, as_array=True)
+            projected_xy = projected_states[:, :2]
+            distances[proposal_idx] = np.linalg.norm(center_coordinates[proposal_idx] - projected_xy, axis=-1)
+
+        horizon_steps = max(1, int(self._config.centerline_horizon / self.proposal_sampling.interval_length))
+        horizon_steps = min(horizon_steps, self.proposal_sampling.num_poses + 1)
+        mean_tail_distance = distances[:, -horizon_steps:].mean(axis=-1)
+
+        target_distance = self._config.centerline_target_distance
+        distance_range = max(self._config.centerline_max_distance - target_distance, 1e-6)
+        centerline_scores = 1.0 - np.clip(
+            (mean_tail_distance - target_distance) / distance_range,
+            0.0,
+            1.0,
+        )
+
+        self._weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE] = centerline_scores
 
     def _calculate_ttc(self):
         """

@@ -175,3 +175,4 @@ class WeightedMetricIndex(IntEnum):
     COMFORTABLE = 2
     DRIVING_DIRECTION = 3
     OBSTACLE_CLEARANCE = 4
+    CENTERLINE_CONVERGENCE = 5
