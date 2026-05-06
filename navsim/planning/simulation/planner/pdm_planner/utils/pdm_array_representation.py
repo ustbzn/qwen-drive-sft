@@ -142,18 +142,22 @@ def state_array_to_ego_states(
 def state_array_to_coords_array(
     states: npt.NDArray[np.float64],
     vehicle_parameters: VehicleParameters,
+    lon_margin: float = 0.0,
+    lat_margin: float = 0.0,
 ) -> npt.NDArray[np.float64]:
     """
     Converts multi-dim array representation of ego states to bounding box coordinates
     :param state_array: array representation of ego states
     :param vehicle_parameters: vehicle parameter of ego
+    :param lon_margin: extra longitudinal margin around ego footprint
+    :param lat_margin: extra lateral margin around ego footprint
     :return: multi-dim array bounding box coordinates
     """
     n_batch, n_time, n_states = states.shape
 
     half_length, half_width, rear_axle_to_center = (
-        vehicle_parameters.half_length,
-        vehicle_parameters.half_width,
+        vehicle_parameters.half_length + lon_margin,
+        vehicle_parameters.half_width + lat_margin,
         vehicle_parameters.rear_axle_to_center,
     )
 

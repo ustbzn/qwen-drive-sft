@@ -51,6 +51,8 @@ class PDMScorerConfig:
     driving_direction_violation_threshold: float = 6.0  # [m] (driving direction)
     stopped_speed_threshold: float = 5e-03  # [m/s] (ttc)
     progress_distance_threshold: float = 5.0  # [m] (progress)
+    drivable_area_soft_margin: float = 0.5  # [m] (drivable area)
+    drivable_area_soft_score: float = 0.618  # score when only the safety margin leaves drivable area
 
     @property
     def weighted_metrics_array(self) -> npt.NDArray[np.float64]:
@@ -357,13 +359,46 @@ class PDMScorer:
 
         self._multi_metrics[MultiMetricIndex.NO_COLLISION] = no_collision_scores
 
+    def _calculate_soft_drivable_area_violation(self) -> npt.NDArray[np.bool_]:
+        """
+        Checks whether the ego footprint with safety margin leaves the drivable area.
+        """
+        margin = self._config.drivable_area_soft_margin
+        if margin <= 0.0:
+            return np.zeros((self._num_proposals, self.proposal_sampling.num_poses + 1), dtype=np.bool_)
+
+        soft_ego_coords = state_array_to_coords_array(
+            self._states,
+            self._vehicle_parameters,
+            lon_margin=margin,
+            lat_margin=margin,
+        )
+        in_polygons = self._drivable_area_map.points_in_polygons(soft_ego_coords)
+        in_polygons = in_polygons.transpose(1, 2, 0, 3)
+
+        drivable_area_idcs = self._drivable_area_map.get_indices_of_map_type(
+            [
+                SemanticMapLayer.ROADBLOCK,
+                SemanticMapLayer.INTERSECTION,
+                SemanticMapLayer.DRIVABLE_AREA,
+                SemanticMapLayer.CARPARK_AREA,
+            ]
+        )
+
+        corners_in_polygon = in_polygons[..., :-1]
+        return (corners_in_polygon[:, :, drivable_area_idcs].sum(axis=-2) > 0).sum(axis=-1) < 4
+
     def _calculate_drivable_area_compliance(self) -> None:
         """
-        Re-implementation of nuPlan's drivable area compliance metric
+        Re-implementation of nuPlan's drivable area compliance metric.
+        The hard check keeps off-road proposals at 0, while the soft margin check penalizes near-boundary proposals.
         """
         drivable_area_compliance_scores = np.ones(self._num_proposals, dtype=np.float64)
-        off_road_mask = self._ego_areas[:, :, EgoAreaIndex.NON_DRIVABLE_AREA].any(axis=-1)
-        drivable_area_compliance_scores[off_road_mask] = 0.0
+        hard_off_road_mask = self._ego_areas[:, :, EgoAreaIndex.NON_DRIVABLE_AREA].any(axis=-1)
+        soft_off_road_mask = self._calculate_soft_drivable_area_violation().any(axis=-1)
+
+        drivable_area_compliance_scores[soft_off_road_mask] = self._config.drivable_area_soft_score
+        drivable_area_compliance_scores[hard_off_road_mask] = 0.0
         self._multi_metrics[MultiMetricIndex.DRIVABLE_AREA] = drivable_area_compliance_scores
 
     def _calculate_driving_direction_compliance(self) -> None:
