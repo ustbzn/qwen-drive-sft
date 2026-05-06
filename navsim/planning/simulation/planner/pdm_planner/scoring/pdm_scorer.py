@@ -43,7 +43,7 @@ class PDMScorerConfig:
     ttc_weight: float = 5.0
     comfortable_weight: float = 2.0
     driving_direction_weight: float = 0.0
-    comfort_metric_version: str = "v1"
+    comfort_metric_version: str = "v2"
 
     # thresholds
     driving_direction_horizon: float = 1.0  # [s] (driving direction)
