@@ -59,6 +59,7 @@ class PDMScorerConfig:
     obstacle_clearance_base_margin: float = 0.3  # [m] (obstacle clearance)
     obstacle_clearance_time_headway: float = 0.3  # [s] (obstacle clearance)
     obstacle_clearance_max_margin: float = 1.0  # [m] (obstacle clearance)
+    obstacle_clearance_score_exponent: float = 0.5  # < 1 makes near-obstacle clearance change faster
     centerline_target_distance: float = 0.3  # [m] (centerline convergence)
     centerline_max_distance: float = 1.5  # [m] (centerline convergence)
     centerline_horizon: float = 1.0  # [s] (centerline convergence)
@@ -164,13 +165,13 @@ class PDMScorer:
         # 1. multiplicative metrics
         self._calculate_no_at_fault_collision()
         self._calculate_drivable_area_compliance()
-        self._calculate_driving_direction_compliance()
 
         # 2. weighted metrics
         self._calculate_progress()
         self._calculate_centerline_convergence()
         self._calculate_ttc()
         self._calculate_obstacle_clearance()
+        self._calculate_driving_direction_compliance()
         self._calculate_is_comfortable()
 
         return self._aggregate_scores()
@@ -468,6 +469,14 @@ class PDMScorer:
 
         self._progress_raw = np.clip(progress_in_meter, a_min=0, a_max=None)
 
+    @staticmethod
+    def _smoothstep(value: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """
+        Smoothly maps values from [0, 1] to [0, 1] with flatter slopes near both ends.
+        """
+        value = np.clip(value, 0.0, 1.0)
+        return value * value * (3.0 - 2.0 * value)
+
     def _calculate_centerline_convergence(self) -> None:
         """
         Scores whether the proposal converges toward the route centerline in the final horizon.
@@ -491,11 +500,8 @@ class PDMScorer:
 
         target_distance = self._config.centerline_target_distance
         distance_range = max(self._config.centerline_max_distance - target_distance, 1e-6)
-        centerline_scores = 1.0 - np.clip(
-            (mean_tail_distance - target_distance) / distance_range,
-            0.0,
-            1.0,
-        )
+        normalized_distance = (mean_tail_distance - target_distance) / distance_range
+        centerline_scores = 1.0 - self._smoothstep(normalized_distance)
 
         self._weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE] = centerline_scores
 
@@ -510,8 +516,9 @@ class PDMScorer:
             for proposal_idx in range(self._num_proposals)
         }
 
-        # calculate TTC for 1s in the future with less temporal resolution.
-        future_time_idcs = np.arange(0, 10, 3)
+        # calculate TTC for 1s in the future with denser near-term projections.
+        future_time_idcs = np.array([0, 1, 3, 6, 10])
+        future_scores = np.linspace(0.0, 1.0, len(future_time_idcs))
         n_future_steps = len(future_time_idcs)
 
         # create polygons for each ego position and 1s future projection
@@ -578,9 +585,7 @@ class PDMScorer:
                         )
                         and not is_agent_behind(ego_rear_axle, track_state)
                     ):
-                        ttc_time = float(future_time_idx) * self.proposal_sampling.interval_length
-                        ttc_score = np.clip(ttc_time / self._config.ttc_horizon, 0.0, 1.0)
-                        ttc_scores[proposal_idx] = np.minimum(ttc_scores[proposal_idx], ttc_score)
+                        ttc_scores[proposal_idx] = np.minimum(ttc_scores[proposal_idx], future_scores[step_idx])
                         self._ttc_time_idcs[proposal_idx] = min(time_idx, self._ttc_time_idcs[proposal_idx])
                     else:
                         temp_collided_track_ids[proposal_idx].append(token)
@@ -674,7 +679,8 @@ class PDMScorer:
                     )
 
                     obstacle_distance = ego_polygon.distance(obstacle_polygon)
-                    clearance_score = np.clip(obstacle_distance / max(clearance_margin, 1e-6), 0.0, 1.0)
+                    clearance_ratio = np.clip(obstacle_distance / max(clearance_margin, 1e-6), 0.0, 1.0)
+                    clearance_score = clearance_ratio ** self._config.obstacle_clearance_score_exponent
                     obstacle_clearance_scores[proposal_idx] = np.minimum(
                         obstacle_clearance_scores[proposal_idx],
                         clearance_score,
