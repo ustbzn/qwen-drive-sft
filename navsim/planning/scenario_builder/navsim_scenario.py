@@ -160,13 +160,11 @@ class NavSimScenario(AbstractScenario):
         ), f"Iteration {frame_idx} out of bound of {self.get_number_of_iterations()} iterations!"
         return self._time_points[frame_idx]
 
-    def get_ego_state_at_iteration(self, iteration: int) -> EgoState:
-        """Inherited, see superclass."""
-
-        frame_idx = self._initial_frame_idx + iteration
+    def _get_ego_state_at_frame_idx(self, frame_idx: int) -> EgoState:
+        """Builds ego state from an absolute frame index in the NAVSIM scene."""
         assert (
             0 <= frame_idx < self.get_number_of_iterations()
-        ), f"Iteration {frame_idx} out of bound of {self.get_number_of_iterations()} iterations!"
+        ), f"Frame index {frame_idx} out of bound of {self.get_number_of_iterations()} iterations!"
 
         rear_axle_velocity_2d = StateVector2D(*self._scene.frames[frame_idx].ego_status.ego_velocity)
         rear_axle_acceleration_2d = StateVector2D(*self._scene.frames[frame_idx].ego_status.ego_acceleration)
@@ -174,10 +172,16 @@ class NavSimScenario(AbstractScenario):
             StateSE2(*self._scene.frames[frame_idx].ego_status.ego_pose),
             tire_steering_angle=0.0,
             vehicle_parameters=self._ego_vehicle_parameters,
-            time_point=self.get_time_point(iteration),
+            time_point=self._time_points[frame_idx],
             rear_axle_velocity_2d=rear_axle_velocity_2d,
             rear_axle_acceleration_2d=rear_axle_acceleration_2d,
         )
+
+    def get_ego_state_at_iteration(self, iteration: int) -> EgoState:
+        """Inherited, see superclass."""
+
+        frame_idx = self._initial_frame_idx + iteration
+        return self._get_ego_state_at_frame_idx(frame_idx)
 
     def get_tracked_objects_at_iteration(
         self,
@@ -222,15 +226,21 @@ class NavSimScenario(AbstractScenario):
         self, iteration: int, time_horizon: float, num_samples: Optional[int] = None
     ) -> Generator[TimePoint, None, None]:
         """Inherited, see superclass."""
-        # FIXME:
-        yield self.get_time_point(0)
+        current_frame_idx = self._initial_frame_idx + iteration
+        num_samples = num_samples if num_samples is not None else int(time_horizon / self.database_interval)
+        start_frame_idx = max(0, current_frame_idx - num_samples)
+        for frame_idx in range(start_frame_idx, current_frame_idx):
+            yield self._time_points[frame_idx]
 
     def get_ego_past_trajectory(
         self, iteration: int, time_horizon: float, num_samples: Optional[int] = None
     ) -> Generator[EgoState, None, None]:
         """Inherited, see superclass."""
-        # FIXME:
-        yield self.get_ego_state_at_iteration(0)
+        current_frame_idx = self._initial_frame_idx + iteration
+        num_samples = num_samples if num_samples is not None else int(time_horizon / self.database_interval)
+        start_frame_idx = max(0, current_frame_idx - num_samples)
+        for frame_idx in range(start_frame_idx, current_frame_idx):
+            yield self._get_ego_state_at_frame_idx(frame_idx)
 
     def get_ego_future_trajectory(
         self, iteration: int, time_horizon: float, num_samples: Optional[int] = None

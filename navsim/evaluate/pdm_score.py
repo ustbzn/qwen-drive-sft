@@ -1,7 +1,7 @@
 import numpy as np
 import numpy.typing as npt
 
-from typing import List
+from typing import List, Optional
 
 from nuplan.common.actor_state.state_representation import StateSE2, TimePoint
 from nuplan.common.actor_state.ego_state import EgoState
@@ -86,6 +86,7 @@ def pdm_score(
     future_sampling: TrajectorySampling,
     simulator: PDMSimulator,
     scorer: PDMScorer,
+    history_states: Optional[npt.NDArray[np.float64]] = None,
 ) -> PDMResults:
     """
     Runs PDM-Score and saves results in dataclass.
@@ -111,6 +112,10 @@ def pdm_score(
         initial_ego_state,
     )
 
+    history_states = history_states if history_states is not None else getattr(metric_cache, "history_states", None)
+    if history_states is not None and history_states.ndim == 2:
+        history_states = np.repeat(history_states[None, ...], len(simulated_states), axis=0)
+
     scores = scorer.score_proposals(
         simulated_states,
         simulated_reference_signals,
@@ -118,6 +123,7 @@ def pdm_score(
         metric_cache.centerline,
         metric_cache.route_lane_ids,
         metric_cache.drivable_area_map,
+        history_states=history_states,
     )
 
     # TODO: Refactor & add / modify existing metrics.
@@ -132,6 +138,7 @@ def pdm_score(
     driving_direction_compliance = scorer._weighted_metrics[WeightedMetricIndex.DRIVING_DIRECTION, pred_idx]
     obstacle_clearance = scorer._weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE, pred_idx]
     centerline_convergence = scorer._weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE, pred_idx]
+    start_anchor_comfort = scorer._weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT, pred_idx]
 
     score = scores[pred_idx]
 
@@ -144,5 +151,6 @@ def pdm_score(
         driving_direction_compliance,
         obstacle_clearance,
         centerline_convergence,
+        start_anchor_comfort,
         score,
     )

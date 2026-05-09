@@ -21,7 +21,7 @@ from navsim.planning.simulation.planner.pdm_planner.pdm_closed_planner import PD
 from navsim.planning.simulation.planner.pdm_planner.proposal.batch_idm_policy import BatchIDMPolicy
 from navsim.planning.simulation.planner.pdm_planner.observation.pdm_observation import PDMObservation
 from navsim.planning.metric_caching.metric_cache import MetricCache
-from navsim.planning.metric_caching.metric_caching_utils import StateInterpolator
+from navsim.planning.metric_caching.metric_caching_utils import StateInterpolator, build_history_states_from_scenario
 
 
 class MetricCacheProcessor:
@@ -219,6 +219,11 @@ class MetricCacheProcessor:
         pdm_closed_trajectory = self._pdm_closed.compute_planner_trajectory(planner_input)
 
         observation = self._interpolate_gt_observation(scenario)
+        history_states = build_history_states_from_scenario(
+            scenario,
+            history_horizon=1.5,
+            interval_length=scenario.database_interval,
+        )
 
         # save and dump features
         MetricCache(
@@ -229,6 +234,7 @@ class MetricCacheProcessor:
             self._pdm_closed._centerline,
             list(self._pdm_closed._route_lane_dict.keys()),
             self._pdm_closed._drivable_area_map,
+            history_states,
         ).dump()
 
         # return metadata

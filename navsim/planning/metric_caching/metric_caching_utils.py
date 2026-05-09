@@ -1,12 +1,43 @@
 from __future__ import annotations
 
-from typing import Any, Tuple, Type, Union
+from typing import Any, Optional, Tuple, Type, Union
 
 import numpy as np
 import numpy.typing as npt
 from scipy.interpolate import interp1d
 
+from nuplan.planning.scenario_builder.abstract_scenario import AbstractScenario
+
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import normalize_angle
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_array_representation import ego_states_to_state_array
+
+
+def build_history_states_from_scenario(
+    scenario: AbstractScenario,
+    history_horizon: float,
+    interval_length: float,
+) -> Optional[npt.NDArray[np.float64]]:
+    """
+    Builds right-aligned historical ego states before the current scenario iteration.
+    """
+    if history_horizon <= 0.0 or interval_length <= 0.0:
+        return None
+
+    num_samples = int(round(history_horizon / interval_length))
+    if num_samples <= 0:
+        return None
+
+    history_ego_states = list(
+        scenario.get_ego_past_trajectory(
+            iteration=0,
+            time_horizon=history_horizon,
+            num_samples=num_samples,
+        )
+    )
+    if len(history_ego_states) < num_samples:
+        return None
+
+    return ego_states_to_state_array(history_ego_states[-num_samples:])
 
 
 class StateInterpolator:

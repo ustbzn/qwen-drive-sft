@@ -19,6 +19,7 @@ from navsim.planning.simulation.planner.pdm_planner.observation.pdm_occupancy_ma
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_comfort_metrics import (
     ego_is_comfortable,
     ego_is_comfortable_v2,
+    ego_is_start_anchor_comfortable,
 )
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer_utils import get_collision_type
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_path import PDMPath
@@ -45,6 +46,7 @@ class PDMScorerConfig:
     driving_direction_weight: float = 0.0
     obstacle_clearance_weight: float = 2.0
     centerline_weight: float = 1.0
+    start_anchor_comfort_weight: float = 2.0
     comfort_metric_version: str = "v2"
 
     # thresholds
@@ -63,6 +65,12 @@ class PDMScorerConfig:
     centerline_target_distance: float = 0.3  # [m] (centerline convergence)
     centerline_max_distance: float = 1.5  # [m] (centerline convergence)
     centerline_horizon: float = 1.0  # [s] (centerline convergence)
+    start_anchor_comfort_horizon: float = 0.5  # [s] (start anchor comfort)
+    start_anchor_comfort_interval_length: float = 0.5  # [s] (start anchor comfort)
+    start_anchor_history_horizon: float = 1.5  # [s] (start anchor comfort)
+    start_anchor_comfort_strict_ratio: float = 0.618  # stricter near current state, relaxed over anchor horizon
+    start_anchor_jerk_penalty: float = 1e-4  # same default as BatchLQRTracker
+    start_anchor_curvature_rate_penalty: float = 1e-2  # same default as BatchLQRTracker
 
     @property
     def weighted_metrics_array(self) -> npt.NDArray[np.float64]:
@@ -73,6 +81,7 @@ class PDMScorerConfig:
         weighted_metrics[WeightedMetricIndex.DRIVING_DIRECTION] = self.driving_direction_weight
         weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE] = self.obstacle_clearance_weight
         weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE] = self.centerline_weight
+        weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT] = self.start_anchor_comfort_weight
         return weighted_metrics
 
 
@@ -102,6 +111,7 @@ class PDMScorer:
         self._num_proposals: Optional[int] = None
         self._states: Optional[npt.NDArray[np.float64]] = None
         self._reference_signal: Optional[npt.NDArray[np.float64]] = None
+        self._history_states: Optional[npt.NDArray[np.float64]] = None
         self._ego_coords: Optional[npt.NDArray[np.float64]] = None
         self._ego_polygons: Optional[npt.NDArray[np.object_]] = None
 
@@ -113,6 +123,7 @@ class PDMScorer:
 
         self._collision_time_idcs: Optional[npt.NDArray[np.float64]] = None
         self._ttc_time_idcs: Optional[npt.NDArray[np.float64]] = None
+        self._start_anchor_comfort_available: bool = False
 
     def time_to_at_fault_collision(self, proposal_idx: int) -> float:
         """
@@ -138,6 +149,7 @@ class PDMScorer:
         centerline: PDMPath,
         route_lane_ids: List[str],
         drivable_area_map: PDMDrivableMap,
+        history_states: Optional[npt.NDArray[np.float64]] = None,
     ) -> npt.NDArray[np.float64]:
         """
         Scores proposal similar to nuPlan's closed-loop metrics
@@ -157,6 +169,7 @@ class PDMScorer:
             centerline,
             route_lane_ids,
             drivable_area_map,
+            history_states,
         )
 
         # fill value ego-area array (used in multiple metrics)
@@ -172,6 +185,7 @@ class PDMScorer:
         self._calculate_ttc()
         self._calculate_obstacle_clearance()
         self._calculate_driving_direction_compliance()
+        self._calculate_start_anchor_comfort()
         self._calculate_is_comfortable()
 
         return self._aggregate_scores()
@@ -196,7 +210,9 @@ class PDMScorer:
         self._weighted_metrics[WeightedMetricIndex.PROGRESS] = normalized_progress
 
         # accumulate weighted metrics
-        weighted_metrics_array = self._config.weighted_metrics_array
+        weighted_metrics_array = self._config.weighted_metrics_array.copy()
+        if not self._start_anchor_comfort_available:
+            weighted_metrics_array[WeightedMetricIndex.START_ANCHOR_COMFORT] = 0.0
         weighted_metric_scores = (self._weighted_metrics * weighted_metrics_array[..., None]).sum(axis=0)
         weighted_metric_scores /= weighted_metrics_array.sum()
 
@@ -213,6 +229,7 @@ class PDMScorer:
         centerline: PDMPath,
         route_lane_ids: List[str],
         drivable_area_map: PDMDrivableMap,
+        history_states: Optional[npt.NDArray[np.float64]] = None,
     ) -> None:
         """
         Resets metric values and lazy loads input classes.
@@ -225,6 +242,14 @@ class PDMScorer:
         assert states.ndim == 3
         assert states.shape[1] == self.proposal_sampling.num_poses + 1
         assert states.shape[2] == StateIndex.size()
+        if history_states is not None:
+            assert history_states.ndim in (2, 3)
+            if history_states.ndim == 2:
+                assert history_states.shape[1] == StateIndex.size()
+                history_states = np.repeat(history_states[None, ...], states.shape[0], axis=0)
+            else:
+                assert history_states.shape[0] == states.shape[0]
+                assert history_states.shape[2] == StateIndex.size()
 
         self._observation = observation
         self._centerline = centerline
@@ -236,6 +261,8 @@ class PDMScorer:
         # save ego state values
         self._states = states
         self._reference_signal = reference_signal
+        self._history_states = history_states
+        self._start_anchor_comfort_available = False
 
         # calculate coordinates of ego corners and center
         self._ego_coords = state_array_to_coords_array(states, self._vehicle_parameters)
@@ -687,6 +714,57 @@ class PDMScorer:
                     )
 
         self._weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE] = obstacle_clearance_scores
+
+    def _calculate_start_anchor_comfort(self) -> None:
+        """
+        Checks start-window comfort with historical left context.
+        """
+        start_anchor_comfort_scores = np.ones(self._num_proposals, dtype=np.float64)
+        if self._history_states is None:
+            self._weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT] = start_anchor_comfort_scores
+            return
+
+        anchor_interval = self._config.start_anchor_comfort_interval_length
+        sample_interval = self.proposal_sampling.interval_length
+        sample_stride = int(round(anchor_interval / sample_interval))
+        if sample_stride <= 0 or not np.isclose(sample_stride * sample_interval, anchor_interval):
+            self._weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT] = start_anchor_comfort_scores
+            return
+
+        history_steps = int(round(self._config.start_anchor_history_horizon / anchor_interval))
+        if history_steps <= 0 or self._history_states.shape[1] < history_steps:
+            self._weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT] = start_anchor_comfort_scores
+            return
+
+        check_steps = max(1, int(round(self._config.start_anchor_comfort_horizon / anchor_interval)) + 1)
+        max_future_idx = (check_steps - 1) * sample_stride
+        if max_future_idx >= self._states.shape[1]:
+            self._weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT] = start_anchor_comfort_scores
+            return
+
+        history_anchor_states = self._history_states[:, -history_steps:]
+        sampled_state_idcs = np.arange(0, check_steps * sample_stride, sample_stride)
+        sampled_start_states = self._states[:, sampled_state_idcs]
+
+        anchor_states = np.concatenate([history_anchor_states, sampled_start_states], axis=1)
+        history_time_point_s = -anchor_interval * np.arange(history_steps, 0, -1, dtype=np.float64)
+        start_time_point_s = anchor_interval * np.arange(check_steps, dtype=np.float64)
+        anchor_time_point_s = np.concatenate([history_time_point_s, start_time_point_s])
+
+        is_start_anchor_comfortable = ego_is_start_anchor_comfortable(
+            anchor_states,
+            anchor_time_point_s,
+            check_start_idx=history_steps,
+            check_steps=check_steps,
+            strict_ratio=self._config.start_anchor_comfort_strict_ratio,
+            jerk_penalty=self._config.start_anchor_jerk_penalty,
+            curvature_rate_penalty=self._config.start_anchor_curvature_rate_penalty,
+        )
+        self._weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT] = np.all(
+            is_start_anchor_comfortable,
+            axis=-1,
+        ).astype(np.float64)
+        self._start_anchor_comfort_available = True
 
     def _calculate_is_comfortable(self) -> None:
         """

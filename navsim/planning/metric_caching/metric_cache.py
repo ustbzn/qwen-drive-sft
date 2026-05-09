@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 from dataclasses import dataclass
 
 import lzma
 import pickle
+
+import numpy as np
+import numpy.typing as npt
 
 from nuplan.common.utils.io_utils import save_buffer
 from nuplan.common.actor_state.ego_state import EgoState
@@ -28,6 +31,7 @@ class MetricCache:
     centerline: PDMPath
     route_lane_ids: List[str]
     drivable_area_map: PDMDrivableMap
+    history_states: Optional[npt.NDArray[np.float64]] = None
 
     def dump(self) -> None:
         """Dump metric cache to pickle with lzma compression."""
