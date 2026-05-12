@@ -19,7 +19,11 @@ export PORT=${PORT}
 echo "GPUS: ${GPUS}"
 export CUDA_LAUNCH_BLOCKING=0
 
+<<<<<<< HEAD
 CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/IL/train_il_hs0_hsL_4.ckpt"
+=======
+CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/IL/train_il_hs0_hsL_3.ckpt"
+>>>>>>> f62d956 (modify training set whitelist path.)
 
 # Defaults for single-node runs (torchrun requires valid values).
 # If your launcher provides MLP_* envs, they override these.
