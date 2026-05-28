@@ -64,6 +64,31 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
             for lane in block.interior_edges:
                 self._route_lane_dict[lane.id] = lane
 
+        self._load_route_connector_edges()
+
+    def _load_route_connector_edges(self) -> None:
+        """Add connector edges linking loaded route lanes without changing the roadblock route sequence."""
+        route_roadblock_ids = set(self._route_roadblock_dict.keys())
+        connector_edges = {}
+
+        for lane in list(self._route_lane_dict.values()):
+            for outgoing_edge in lane.outgoing_edges:
+                if outgoing_edge.id in self._route_lane_dict:
+                    continue
+
+                outgoing_targets = getattr(outgoing_edge, "outgoing_edges", [])
+                target_roadblock_ids = {
+                    target_edge.get_roadblock_id()
+                    for target_edge in outgoing_targets
+                    if hasattr(target_edge, "get_roadblock_id")
+                }
+                edge_roadblock_id = outgoing_edge.get_roadblock_id()
+                connects_route = bool(target_roadblock_ids.intersection(route_roadblock_ids))
+                if edge_roadblock_id in route_roadblock_ids or connects_route:
+                    connector_edges[outgoing_edge.id] = outgoing_edge
+
+        self._route_lane_dict.update(connector_edges)
+
     def _route_roadblock_correction(self, ego_state: EgoState) -> None:
         """
         Corrects the roadblock route and reloads lane-graph dictionaries.
@@ -71,6 +96,34 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
         """
         route_roadblock_ids = route_roadblock_correction(ego_state.rear_axle, self._map_api, self._route_roadblock_dict)
         self._load_route_dicts(route_roadblock_ids)
+
+    def _get_current_roadblock_index(self, current_lane: LaneGraphEdgeMapObject, roadblock_ids: List[str]) -> int:
+        """
+        Resolve the route roadblock index for a lane or lane-connector edge.
+        :param current_lane: current lane or connector edge.
+        :param roadblock_ids: ordered route roadblock ids.
+        :return: index in ordered route roadblocks.
+        """
+        roadblock_idcs = np.where(np.array(roadblock_ids) == current_lane.get_roadblock_id())[0]
+        if len(roadblock_idcs) > 0:
+            return int(roadblock_idcs[0])
+
+        # Connector edges are not part of the route roadblock sequence. When ego is
+        # already on a connector, continue the centerline search from its downstream
+        # route roadblock while keeping the connector itself as the Dijkstra start.
+        for adjacent_edges in (current_lane.outgoing_edges, current_lane.incoming_edges):
+            for adjacent_edge in adjacent_edges:
+                if not hasattr(adjacent_edge, "get_roadblock_id"):
+                    continue
+
+                adjacent_roadblock_idcs = np.where(np.array(roadblock_ids) == adjacent_edge.get_roadblock_id())[0]
+                if len(adjacent_roadblock_idcs) > 0:
+                    return int(adjacent_roadblock_idcs[0])
+
+        raise ValueError(
+            f"Unable to resolve current lane {current_lane.id} with roadblock "
+            f"{current_lane.get_roadblock_id()} in route roadblocks."
+        )
 
     def _get_discrete_centerline(self, current_lane: LaneGraphEdgeMapObject, search_depth: int = 30) -> List[StateSE2]:
         """
@@ -84,7 +137,7 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
         roadblock_ids = list(self._route_roadblock_dict.keys())
 
         # find current roadblock index
-        start_idx = np.argmax(np.array(roadblock_ids) == current_lane.get_roadblock_id())
+        start_idx = self._get_current_roadblock_index(current_lane, roadblock_ids)
         roadblock_window = roadblocks[start_idx : start_idx + search_depth]
 
         graph_search = Dijkstra(current_lane, list(self._route_lane_dict.keys()))
@@ -92,7 +145,10 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
 
         centerline_discrete_path: List[StateSE2] = []
         for lane in route_plan:
-            centerline_discrete_path.extend(lane.baseline_path.discrete_path)
+            for state in lane.baseline_path.discrete_path:
+                if centerline_discrete_path and np.allclose(centerline_discrete_path[-1].array, state.array):
+                    continue
+                centerline_discrete_path.append(state)
 
         return centerline_discrete_path
 

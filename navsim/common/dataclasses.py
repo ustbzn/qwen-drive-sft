@@ -454,7 +454,8 @@ class Scene:
         num_history_frames: int,
         num_future_frames: int,
         sensor_config: SensorConfig,
-        load_image_path: bool = False 
+        load_image_path: bool = False,
+        map_api: Optional[AbstractMap] = None,
     ) -> Scene:
         """
         Load scene dataclass from scene dictionary list (for log loading).
@@ -463,6 +464,7 @@ class Scene:
         :param num_history_frames: number of past and current frames to load
         :param num_future_frames: number of future frames to load
         :param sensor_config: sensor config dataclass
+        :param map_api: optional injected map api, used by Mogo/internal data adapters.
         :return: scene dataclass
         """
         assert len(scene_dict_list) >= 0, "Scene list is empty!"
@@ -474,7 +476,7 @@ class Scene:
             num_history_frames=num_history_frames,
             num_future_frames=num_future_frames,
         )
-        map_api = cls._build_map_api(scene_metadata.map_name)
+        map_api = map_api or cls._build_map_api(scene_metadata.map_name)
 
         frames: List[Frame] = []
         for frame_idx in range(len(scene_dict_list)):

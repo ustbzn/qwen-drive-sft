@@ -1,0 +1,31 @@
+hydra:
+  run:
+    dir: ${output_dir}
+  output_subdir: ${output_dir}/code/hydra
+  searchpath:
+    - pkg://navsim.planning.script.config.common
+  job:
+    chdir: False
+
+defaults:
+  - default_common
+  - _self_
+  - override train_test_split: trainval
+
+cache:
+  cache_path: ${oc.env:NAVSIM_EXP_ROOT}/metric_cache
+  use_cache_without_dataset: false
+  force_feature_computation: false
+
+output_dir: ${cache.cache_path}/metadata
+navsim_log_path: ${oc.env:OPENSCENE_DATA_ROOT}/navsim_logs/${train_test_split.data_split}
+
+mogo_map:
+  sqlite_path: ${oc.env:OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite
+  map_name: mogo
+  query_radius_m: 150.0
+  max_segment_length_m: 2.0
+  enable_route_edge_filter: true
+  geometry_srid: 4326
+  utm_zone: 50
+  utm_south: false

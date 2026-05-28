@@ -45,4 +45,6 @@ navsim/.vscode/
 navsim/data/
 navsim/note/
 navsim/result/
+navsim/rosbag_inputs/
+navsim/nuplan_maps/
 navsim/planning/script/run_select_data_from_csv.py
