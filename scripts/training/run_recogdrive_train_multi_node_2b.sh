@@ -49,6 +49,6 @@ torchrun \
     dataloader.params.batch_size=64 \
     experiment_name=training_recogdrive_agent \
     train_test_split=$TRAIN_TEST_SPLIT \
-    cache_path="/NXT/lst/vla/navsim/exp/recogdrive_agent_cache_dir_train_hs0_hsL" \
+    cache_path="/NXT/lst/vla/navsim/exp/recogdrive_agent_cache_dir_train_v2" \
     use_cache_without_dataset=True \
     force_cache_computation=False > train_recogdrive_exp_2b.txt 2>&1

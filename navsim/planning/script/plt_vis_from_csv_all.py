@@ -503,6 +503,71 @@ def tokens_from_csv(
     return df, uniq
 
 
+def _dedupe_tokens(tokens: list[str]) -> list[str]:
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in tokens:
+        if t not in seen:
+            uniq.append(t)
+            seen.add(t)
+    return uniq
+
+
+def select_tokens(df: pd.DataFrame, args: argparse.Namespace) -> list[str]:
+    """按 CLI 筛选要渲染的 token 列表。"""
+    if args.tokens_csv:
+        sub_df, tokens = tokens_from_csv(str(args.tokens_csv))
+        if "score" in df.columns and "score" in sub_df.columns:
+            return tokens
+        token_set = set(tokens)
+        return [t for t in tokens if t in set(df["token"].astype(str))]
+
+    work = df.copy()
+    if "score" in work.columns:
+        work["score"] = pd.to_numeric(work["score"], errors="coerce")
+        work = work.dropna(subset=["score", "token"])
+    work["token"] = work["token"].astype(str)
+
+    if args.selection == "top100":
+        if "score" not in work.columns:
+            raise ValueError("--selection top100 需要 CSV 含 score 列")
+        return work.sort_values("score", ascending=True).head(100)["token"].tolist()
+
+    if args.selection == "p1_p5":
+        if "score" not in work.columns:
+            raise ValueError("--selection p1_p5 需要 CSV 含 score 列")
+        q_low = float(work["score"].quantile(float(args.percentile_low)))
+        q_high = float(work["score"].quantile(float(args.percentile_high)))
+        mask = (work["score"] >= q_low) & (work["score"] <= q_high)
+        print(f"p{args.percentile_low:.0%}-p{args.percentile_high:.0%}: score in [{q_low:.6f}, {q_high:.6f}]")
+        return work.loc[mask, "token"].tolist()
+
+    needs_score = (
+        args.score_max is not None
+        or args.score_min is not None
+        or args.score_zero
+        or args.top_k_lowest is not None
+    )
+    if needs_score and "score" not in work.columns:
+        raise ValueError("score 区间/零分/top_k 筛选需要 CSV 含 score 列")
+
+    mask = pd.Series(True, index=work.index)
+    if args.score_max is not None:
+        mask &= work["score"] <= float(args.score_max)
+    if args.score_min is not None:
+        mask &= work["score"] >= float(args.score_min)
+    if args.score_zero:
+        mask &= work["score"].abs() <= 1e-9
+    filtered = work.loc[mask]
+
+    if args.top_k_lowest is not None and int(args.top_k_lowest) > 0:
+        filtered = filtered.sort_values("score", ascending=True).head(int(args.top_k_lowest))
+
+    if not needs_score and not args.selection:
+        return _dedupe_tokens(work["token"].tolist())
+    return _dedupe_tokens(filtered["token"].tolist())
+
+
 def save_vis_for_tokens(
     *,
     tokens: list[str],
