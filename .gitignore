@@ -37,6 +37,9 @@ checkpoints/
 # vis
 vis_output/
 
+# vis_result
+vis_result_statistics/
+
 # results
 results/
 
