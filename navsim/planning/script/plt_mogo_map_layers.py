@@ -2,13 +2,15 @@
 """Visualize Mogo SQLite map layers and PDM drivable area / route centerline.
 
 Map layers: LANE, ROADBLOCK, LANE_CONNECTOR, ROADBLOCK_CONNECTOR, INTERSECTION.
+Combined layers: ROADBLOCK_INTERSECTION, LANE_LANE_CONNECTOR.
 PDM layers: DRIVABLE_AREA (PDMDrivableMap), CENTERLINE (route Dijkstra centerline).
 
 Example:
   python navsim/planning/script/plt_mogo_map_layers.py \\
     --data-root /NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \\
     --pkl JLBJA20073D_20260313152238.pkl \\
-    --frame-idx 150
+    --frame-idx 150 \\
+    --query-radius-m 200 --map-radius-m 200 --margin-m 200
 
   # Saves one png per layer under vis_output/map/ by default.
 """
@@ -69,6 +71,12 @@ MAP_LAYER_ORDER: Tuple[str, ...] = (
     "ROADBLOCK_CONNECTOR",
     "LANE",
     "LANE_CONNECTOR",
+)
+
+# Extra combined views: (output suffix, layer names in draw order).
+COMBINED_LAYER_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("ROADBLOCK_INTERSECTION", ("ROADBLOCK", "INTERSECTION")),
+    ("LANE_LANE_CONNECTOR", ("LANE", "LANE_CONNECTOR")),
 )
 
 PDM_LAYER_ORDER: Tuple[str, ...] = (
@@ -492,6 +500,60 @@ def plot_single_layer(
     return fig
 
 
+def plot_combined_layers(
+    layers: Dict[Any, List[Any]],
+    ego_xy: np.ndarray,
+    layer_names: Sequence[str],
+    *,
+    title: str,
+    show_baselines: bool,
+    margin_m: float,
+    combined_label: str,
+) -> plt.Figure:
+    """Plot multiple semantic layers on one figure."""
+    fig, ax = plt.subplots(figsize=(14, 14))
+    counts: Dict[str, int] = {}
+
+    for layer_name in layer_names:
+        style = LAYER_STYLES[layer_name]
+        objects = layers.get(_layer_key(layer_name), [])
+        counts[layer_name] = len(objects)
+        for obj in objects:
+            _plot_polygon(ax, obj.polygon, style, zorder=10)
+            if show_baselines and hasattr(obj, "baseline_path"):
+                _plot_baseline(ax, obj.baseline_path.linestring, style["edgecolor"], zorder=20)
+
+    _plot_ego_marker(ax, ego_xy)
+    _apply_bev_axes(ax, ego_xy, margin_m)
+
+    legend_handles = [
+        Patch(
+            facecolor=LAYER_STYLES[name]["facecolor"],
+            edgecolor=LAYER_STYLES[name]["edgecolor"],
+            label=f"{name} (n={counts.get(name, 0)})",
+        )
+        for name in layer_names
+    ]
+    legend_handles.append(
+        plt.Line2D(
+            [0],
+            [0],
+            marker="*",
+            color="w",
+            markerfacecolor="#f1c40f",
+            markeredgecolor="#7d6608",
+            markersize=14,
+            label="ego",
+        )
+    )
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=9)
+    total = sum(counts.values())
+    counts_str = ", ".join(f"{name}={counts.get(name, 0)}" for name in layer_names)
+    ax.set_title(f"{title}\n{combined_label}: {total} objects ({counts_str})", fontsize=11)
+    fig.tight_layout()
+    return fig
+
+
 def save_layers_separately(
     layers: Dict[Any, List[Any]],
     ego_xy: np.ndarray,
@@ -524,6 +586,23 @@ def save_layers_separately(
         plt.close(fig)
         saved.append(out_path)
         logger.info("Saved %s (%d objects)", out_path.name, _count_objects(layers, layer_name))
+
+    for combined_label, layer_names in COMBINED_LAYER_GROUPS:
+        fig = plot_combined_layers(
+            layers,
+            ego_xy,
+            layer_names,
+            title=title,
+            show_baselines=show_baselines,
+            margin_m=margin_m,
+            combined_label=combined_label,
+        )
+        out_path = output_dir / f"{file_prefix}_{combined_label}.png"
+        fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(out_path)
+        total = sum(_count_objects(layers, name) for name in layer_names)
+        logger.info("Saved %s (%d objects)", out_path.name, total)
 
     if drivable_map is not None:
         fig = plot_drivable_area(drivable_map, ego_xy, title=title, margin_m=margin_m)
@@ -562,15 +641,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sqlite-path", type=Path, default=None, help="SQLite map file (default: first under dataset/maps).")
     parser.add_argument("--pkl", type=str, default=None, help="Navsim log pkl name or path under trainval.")
     parser.add_argument("--frame-idx", type=int, default=-1, help="Frame index in pkl (-1 = last frame).")
-    parser.add_argument("--query-radius-m", type=float, default=150.0, help="Local map query radius around ego.")
+    parser.add_argument("--query-radius-m", type=float, default=200.0, help="Local map query radius around ego.")
     parser.add_argument("--utm-zone", type=int, default=50)
     parser.add_argument("--utm-south", action="store_true")
-    parser.add_argument("--margin-m", type=float, default=180.0, help="Half-width of BEV plot around ego.")
+    parser.add_argument("--margin-m", type=float, default=200.0, help="Half-width of BEV plot around ego.")
     parser.add_argument(
         "--map-radius-m",
         type=float,
-        default=100.0,
-        help="Radius for PDMDrivableMap query (metric cache default: 100m).",
+        default=200.0,
+        help="Radius for PDMDrivableMap query.",
     )
     parser.add_argument("--no-route", action="store_true", help="Do not pass roadblock_ids from pkl (local map only).")
     parser.add_argument(
