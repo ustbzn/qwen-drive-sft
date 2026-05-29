@@ -256,4 +256,16 @@ TRAJECTORY_CONFIG: Dict[str, Any] = {
         "marker_edge_color": "black",
         "zorder": 3,
     },
+    "pdm": {
+        "fill_color": ELLIS_5[4],
+        "fill_color_alpha": 1.0,
+        "line_color": ELLIS_5[4],
+        "line_color_alpha": 1.0,
+        "line_width": 2.0,
+        "line_style": "--",
+        "marker": "s",
+        "marker_size": 4,
+        "marker_edge_color": "black",
+        "zorder": 3,
+    },
 }

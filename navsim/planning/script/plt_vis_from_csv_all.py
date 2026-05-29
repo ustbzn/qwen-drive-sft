@@ -15,11 +15,16 @@ from hydra.utils import instantiate
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import numpy as np
 
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
 import csv
+import traceback
+
+from nuplan.common.actor_state.state_representation import StateSE2
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.planning.metrics.utils.collision_utils import CollisionType
@@ -42,8 +47,15 @@ from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils imp
     convert_absolute_to_relative_se2_array,
 )
 from navsim.visualization.plots import plot_bev_and_camera_with_agent
+from navsim.visualization.config import TRAJECTORY_CONFIG
+from navsim.visualization.bev import add_trajectory_to_bev_ax
+from navsim.visualization.camera import add_trajectory_to_camera_ax
 from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
-from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+from navsim.evaluate.pdm_score import get_trajectory_as_array
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
+    convert_absolute_to_relative_se2_array,
+)
+from navsim.planning.metric_caching.metric_cache import MetricCache
 
 
 def init_distributed():
@@ -507,8 +519,12 @@ def save_vis_for_tokens(
     scorer: PDMScorer | None = None,
 ) -> int:
     _ensure_dir(out_dir)
+    if max_items is not None:
+        tokens = tokens[:max_items]
     df_index = df.set_index("token", drop=False) if "token" in df.columns else None
     local_tokens = tokens[rank::world_size]
+    plot_pdm = metric_cache_loader is not None and trajectory_sampling is not None
+    legend_text = TRAJECTORY_LEGEND_WITH_PDM if plot_pdm else TRAJECTORY_LEGEND_NO_PDM
     saved = 0
     index_rows: list[dict[str, object]] = []
 
@@ -616,6 +632,7 @@ def save_vis_for_tokens(
             index_rows.append(index_row)
         except Exception as e:
             print(f"[WARN] token={token} 渲染失败: {e}")
+            traceback.print_exc()
 
     # 每个 rank 写索引，方便检索
     index_path = out_dir / f"index_rank{rank}.csv"
@@ -636,12 +653,40 @@ def save_vis_for_tokens(
     return saved
 
 
+def resolve_tokens(args) -> tuple[pd.DataFrame, list[str]]:
+    """从 CSV、--token 或 --tokens 解析待渲染 token 列表。"""
+    if args.tokens:
+        tokens = [t.strip() for t in str(args.tokens).split(",") if t.strip()]
+        df = pd.DataFrame({"token": tokens})
+        return df, tokens
+
+    if args.token:
+        token = str(args.token).strip()
+        if args.csv:
+            df, _ = tokens_from_csv(args.csv)
+            if token not in df["token"].astype(str).values:
+                print(f"[INFO] --token {token} 不在 CSV 中，仍将渲染该 token")
+            df_token = df[df["token"].astype(str) == token]
+            if len(df_token) == 0:
+                df = pd.concat([df, pd.DataFrame({"token": [token]})], ignore_index=True)
+        else:
+            df = pd.DataFrame({"token": [token]})
+        return df, [token]
+
+    if not args.csv:
+        raise ValueError("需要 --csv，或使用 --token / --tokens 指定场景")
+    df, tokens = tokens_from_csv(args.csv)
+    return df, tokens
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="从指定 CSV 渲染所有 token 的轨迹图")
+    parser = argparse.ArgumentParser(
+        description="从 CSV 或指定 token 渲染 BEV+前视轨迹图（可选叠加 PDM-Closed 轨迹）"
+    )
     parser.add_argument(
         "--csv",
-        required=True,
-        help="推理结果 CSV 路径（至少包含 token 列）",
+        default="",
+        help="推理结果 CSV（含 token 列）；与 --token/--tokens 二选一或组合使用",
     )
     parser.add_argument("--out", default="vis_output/eval/0428_163122", help="输出目录")
     parser.add_argument("--token", default="", help="可选：只渲染单个 token（快速自测）")
@@ -690,13 +735,37 @@ def parse_args():
     return parser.parse_args()
 
 
+def _resolve_data_root(cli_value: str, env_key: str) -> str:
+    """CLI 显式传空字符串时，回退到环境变量。"""
+    return (cli_value or os.getenv(env_key, "")).strip()
+
+
+def _require_env_paths(openscene_data_root: str) -> None:
+    if not openscene_data_root:
+        raise ValueError(
+            "需要设置 --openscene_data_root 或环境变量 OPENSCENE_DATA_ROOT。\n"
+            "示例: --openscene_data_root /NXT/lst/vla/navsim/download"
+        )
+    nuplan_maps_root = os.getenv("NUPLAN_MAPS_ROOT", "").strip()
+    if not nuplan_maps_root:
+        raise ValueError(
+            "需要设置环境变量 NUPLAN_MAPS_ROOT（BEV 地图加载依赖）。\n"
+            "示例:\n"
+            "  export NUPLAN_MAPS_ROOT=/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0\n"
+            "  export NUPLAN_MAP_VERSION=nuplan-maps-v1.0"
+        )
+    if not Path(nuplan_maps_root).exists():
+        raise ValueError(f"NUPLAN_MAPS_ROOT 路径不存在: {nuplan_maps_root}")
+
+
 def main():
     args = parse_args()
     rank, world_size, local_rank = init_distributed()
     device = torch.device("cuda", local_rank) if torch.cuda.is_available() else torch.device("cpu")
 
-    if not args.openscene_data_root:
-        raise ValueError("需要设置 --openscene_data_root 或环境变量 OPENSCENE_DATA_ROOT")
+    openscene_data_root = _resolve_data_root(args.openscene_data_root, "OPENSCENE_DATA_ROOT")
+    _require_env_paths(openscene_data_root)
+    args.openscene_data_root = openscene_data_root
 
     df, tokens = tokens_from_csv(
         args.csv,
