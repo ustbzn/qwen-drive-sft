@@ -10,8 +10,8 @@ export NCCL_SHM_DISABLE=0
 
 MASTER_PORT=${MASTER_PORT:-63669}
 PORT=${PORT:-63665}
-GPUS=${GPUS:-2}
-GPUS_PER_NODE=${GPUS_PER_NODE:-2}
+GPUS=${GPUS:-1}
+GPUS_PER_NODE=${GPUS_PER_NODE:-1}
 NODES=$((GPUS / GPUS_PER_NODE))
 export MASTER_PORT=${MASTER_PORT}
 export PORT=${PORT}
@@ -19,7 +19,7 @@ export PORT=${PORT}
 echo "GPUS: ${GPUS}"
 export CUDA_LAUNCH_BLOCKING=0
 
-CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/IL/train_il_hs0_hsL.ckpt"
+CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/IL/train_il_hs0_hsL_4.ckpt"
 
 # Defaults for single-node runs (torchrun requires valid values).
 # If your launcher provides MLP_* envs, they override these.
@@ -45,15 +45,15 @@ torchrun \
     agent.dit_type="small" \
     agent.vlm_size="small" \
     agent.sampling_method="ddim" \
-    agent.metric_cache_path="/NXT/lst/vla/navsim/exp/metric_cache_train" \
+    agent.metric_cache_path="/NXT/lst/vla/navsim/exp/metric_cache_train_v2" \
     agent.reference_policy_checkpoint="$CHECKPOINT" \
-    trainer.params.max_epochs=10 \
+    trainer.params.max_epochs=20 \
     trainer.params.num_nodes=1 \
-    trainer.params.devices=2 \
+    trainer.params.devices=${GPUS} \
     dataloader.params.batch_size=8 \
     experiment_name=training_recogdrive_agent \
     train_test_split=$TRAIN_TEST_SPLIT \
-    cache_path="/NXT/lst/vla/navsim/exp/recogdrive_agent_cache_dir_train_hs0_hsL" \
+    cache_path="/NXT/lst/vla/navsim/exp/recogdrive_agent_cache_dir_train_v2" \
     use_cache_without_dataset=True \
     force_cache_computation=False > train_recogdrive_rl_2b.txt 2>&1
   # 2>&1 | tee -a "training_log.txt" &
