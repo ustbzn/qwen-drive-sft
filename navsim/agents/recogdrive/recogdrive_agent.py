@@ -263,7 +263,7 @@ class ReCogDriveAgent(AbstractAgent):
         optimizer = build_from_configs(optim, optimizer_cfg, params=params)
         
         if self.grpo:
-            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=0.0, epochs=10, warmup_epochs=0)
+            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=0.0, epochs=20, warmup_epochs=0)
         else:
             scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=1e-6, epochs=200, warmup_epochs=3)
             
