@@ -1578,12 +1578,12 @@ class MogoSQLiteLayerBuilder:
         ]
 
         if missing_link_lane_count:
-            logger.warning(
+            logger.debug(
                 "Mogo lane link references missing lanes: count=%d, examples=%s",
                 missing_link_lane_count,
                 missing_link_lane_examples,
             )
-        logger.info(
+        logger.debug(
             "Mogo map layer build summary: route_road_count=%d, raw_lanes=%d, raw_links=%d, "
             "lanes=%d, roadblocks=%d, lane_connectors=%d, roadblock_connectors=%d, "
             "empty_topology_links=%d, skipped_non_route_links=%d, empty_connector_polygons=%d, "
