@@ -51,9 +51,12 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for standalone reader
 
 try:
     from nuplan.common.maps.abstract_map import AbstractMap
-    from nuplan.common.maps.abstract_map_objects import MapObject
+    from nuplan.common.maps import abstract_map_objects as _nuplan_map_objects
     from nuplan.common.maps.maps_datatypes import SemanticMapLayer
-except ModuleNotFoundError:  # pragma: no cover - reader can run without full nuPlan map deps
+
+    # nuPlan renamed MapObject -> AbstractMapObject in some releases.
+    MapObject = getattr(_nuplan_map_objects, "MapObject", _nuplan_map_objects.AbstractMapObject)
+except (ModuleNotFoundError, ImportError):  # pragma: no cover - reader can run without full nuPlan map deps
     class AbstractMap:  # type: ignore[no-redef]
         pass
 
