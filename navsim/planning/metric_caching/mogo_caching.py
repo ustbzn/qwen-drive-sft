@@ -67,7 +67,10 @@ def cache_mogo_scenarios(args: List[Dict[str, Union[List[str], DictConfig]]]) ->
                 sensor_config=SensorConfig.build_no_sensors(),
                 map_api=map_api,
             )
-            scenario = MogoNavSimScenario(scene)
+            scenario = MogoNavSimScenario(
+                scene,
+                database_interval=float(cfg.mogo_observation.annotation_interval_length),
+            )
             return processor.compute_metric_cache(scenario)
 
         node_id = int(os.environ.get("NODE_RANK", 0))
@@ -91,6 +94,7 @@ def cache_mogo_scenarios(args: List[Dict[str, Union[List[str], DictConfig]]]) ->
         processor = MetricCacheProcessor(
             cache_path=cfg.cache.cache_path,
             force_feature_computation=cfg.cache.force_feature_computation,
+            use_dense_annotations=bool(cfg.mogo_observation.use_dense_annotations),
         )
 
         logger.info(f"Extracted {len(scene_loader)} Mogo scenarios for thread_id={thread_id}, node_id={node_id}.")

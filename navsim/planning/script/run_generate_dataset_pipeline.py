@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
+from navsim.common.command_utils import command_code_to_text
 from navsim.planning.training.dataset import Dataset_For_Pipeline
 from navsim.planning.training.agent_lightning_module import AgentLightningModule
 import json
@@ -968,10 +969,7 @@ async def process_data_and_create_qa_pair(idx, ego_statuses, cameras, future_tra
             "heading": format_number(ego_status.ego_pose[2])
         })
 
-    high_command_one_hot = ego_statuses[-1].driving_command
-    navigation_commands = ['turn left', 'go straight', 'turn right']
-    command_str = [navigation_commands[i] for i in range(len(high_command_one_hot)) if high_command_one_hot[i] == 1]
-    command_str = command_str[0] if command_str else "unknown"
+    command_str = command_code_to_text(ego_statuses[-1].driving_command)
 
     image_paths = []
     image_prompt_lines = []  # 存储每个视角的图像描述

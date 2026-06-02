@@ -19,6 +19,7 @@ from navsim.common.dataclasses import (
     SensorConfig,
     Trajectory,
 )
+from navsim.common.command_utils import command_code_to_text
 from navsim.common.enums import BoundingBoxIndex, LidarIndex
 from navsim.planning.training.abstract_feature_target_builder import (
     AbstractFeatureBuilder,
@@ -159,10 +160,7 @@ class QwenVLAgent(AbstractAgent):
                 "heading": format_number(ego_status.ego_pose[2])
             })
 
-        high_command_one_hot = ego_statuses[-1].driving_command
-        navigation_commands = ['turn left', 'go straight', 'turn right']
-        command_str = [navigation_commands[i] for i in range(len(high_command_one_hot)) if high_command_one_hot[i] == 1]
-        command_str = command_str[0] if command_str else "unknown"
+        command_str = command_code_to_text(ego_statuses[-1].driving_command)
 
         image_paths = []
         image_prompt_lines = []

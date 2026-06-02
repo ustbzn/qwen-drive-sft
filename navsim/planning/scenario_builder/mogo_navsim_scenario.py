@@ -4,6 +4,7 @@ from typing import Any, Tuple, Type
 
 from nuplan.common.actor_state.vehicle_parameters import VehicleParameters, get_pacifica_parameters
 from nuplan.common.maps.abstract_map import AbstractMap
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 from navsim.common.dataclasses import Scene
 from navsim.planning.scenario_builder.navsim_scenario import NavSimScenario
@@ -18,6 +19,7 @@ class MogoNavSimScenario(NavSimScenario):
         map_root: str = "",
         map_version: str = "mogo-sqlite",
         ego_vehicle_parameters: VehicleParameters = get_pacifica_parameters(),
+        database_interval: float = 0.1,
     ) -> None:
         """Initialize scenario with map api already attached to the Scene."""
         super().__init__(
@@ -27,6 +29,11 @@ class MogoNavSimScenario(NavSimScenario):
             ego_vehicle_parameters=ego_vehicle_parameters,
         )
         self._mogo_map_api = scene.map_api
+        self._database_interval = database_interval
+        self._future_sampling = TrajectorySampling(
+            num_poses=len(self._time_points) + 1,
+            interval_length=database_interval,
+        )
 
     def __reduce__(self) -> Tuple[Type[MogoNavSimScenario], Tuple[Any, ...]]:
         """Hints on how to reconstruct the object when pickling."""
@@ -37,6 +44,7 @@ class MogoNavSimScenario(NavSimScenario):
                 self._map_root,
                 self._map_version,
                 self._ego_vehicle_parameters,
+                self._database_interval,
             ),
         )
 

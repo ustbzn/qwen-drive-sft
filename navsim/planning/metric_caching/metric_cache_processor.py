@@ -31,6 +31,7 @@ class MetricCacheProcessor:
         self,
         cache_path: Optional[str],
         force_feature_computation: bool,
+        use_dense_annotations: bool = False,
     ):
         """
         Initialize class.
@@ -39,6 +40,7 @@ class MetricCacheProcessor:
         """
         self._cache_path = pathlib.Path(cache_path) if cache_path else None
         self._force_feature_computation = force_feature_computation
+        self._use_dense_annotations = use_dense_annotations
 
         # TODO: Add to some config
         self._future_sampling = TrajectorySampling(num_poses=50, interval_length=0.1)
@@ -206,6 +208,46 @@ class MetricCacheProcessor:
         pdm_observation.update_detections_tracks(interpolated_detection_tracks)
         return pdm_observation
 
+    def _build_dense_gt_observation(self, scenario: AbstractScenario) -> PDMObservation:
+        """Build PDM observation directly from dense 10Hz annotations without interpolation."""
+        expected_interval = self._future_sampling.interval_length
+        if not np.isclose(scenario.database_interval, expected_interval):
+            raise ValueError(
+                "Dense annotations require scenario.database_interval to match PDM interval: "
+                f"scenario={scenario.database_interval}, pdm={expected_interval}"
+            )
+
+        observation_samples = max(
+            self._proposal_sampling.num_poses + int(1 / self._future_sampling.interval_length),
+            self._future_sampling.num_poses,
+        )
+        required_iterations = observation_samples + 1
+        if scenario.get_number_of_iterations() < required_iterations:
+            raise ValueError(
+                "Dense annotations require enough scene frames for PDM observation: "
+                f"required={required_iterations}, available={scenario.get_number_of_iterations()}"
+            )
+
+        detection_tracks = [
+            scenario.get_tracked_objects_at_iteration(iteration=iteration)
+            for iteration in range(required_iterations)
+        ]
+
+        pdm_observation = PDMObservation(
+            self._future_sampling,
+            self._proposal_sampling,
+            self._map_radius,
+            observation_sample_res=1,
+        )
+        pdm_observation.update_detections_tracks(detection_tracks)
+        return pdm_observation
+
+    def _build_gt_observation(self, scenario: AbstractScenario) -> PDMObservation:
+        """Build observation using dense annotations when available, otherwise interpolate GT tracks."""
+        if self._use_dense_annotations:
+            return self._build_dense_gt_observation(scenario)
+        return self._interpolate_gt_observation(scenario)
+
     def compute_metric_cache(self, scenario: AbstractScenario) -> Optional[CacheMetadataEntry]:
 
         file_name = self._cache_path / scenario.log_name / scenario.scenario_type / scenario.token / "metric_cache.pkl"
@@ -218,7 +260,7 @@ class MetricCacheProcessor:
         self._pdm_closed.initialize(planner_initialization)
         pdm_closed_trajectory = self._pdm_closed.compute_planner_trajectory(planner_input)
 
-        observation = self._interpolate_gt_observation(scenario)
+        observation = self._build_gt_observation(scenario)
         history_states = build_history_states_from_scenario(
             scenario,
             history_horizon=1.5,

@@ -10,6 +10,7 @@ import math
 
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import AgentInput, SensorConfig, Trajectory
+from navsim.common.command_utils import command_code_to_text
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
@@ -156,9 +157,7 @@ class ReCogDriveAgent(AbstractAgent):
             pixel_values_cat = torch.cat(pixel_values_list, dim=0).cuda()   # 把多张图的 patch 序列拼成一个大序列，放到 GPU 上
             
 
-            navigation_commands = ['turn left', 'go straight', 'turn right']
-            command_indices = torch.argmax(high_command_one_hot, dim=-1)
-            command_str_list = [navigation_commands[idx.item()] for idx in command_indices] # 将 one-hot 的高层指令转成字符串
+            command_str_list = [command_code_to_text(command) for command in high_command_one_hot.detach().cpu()]
 
             # 为 batch 内每个样本拼一个 prompt（questions）
             questions = []

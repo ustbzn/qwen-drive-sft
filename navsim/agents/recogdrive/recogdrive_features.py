@@ -8,6 +8,7 @@ from PIL import Image
 from navsim.agents.abstract_agent import AgentInput
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from navsim.common.dataclasses import Scene, Trajectory
+from navsim.common.command_utils import command_code_to_text
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from .recogdrive_backbone import RecogDriveBackbone
 from .utils.internvl_preprocess import load_image
@@ -115,8 +116,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             num_patches_list = [pv.shape[0] for pv in pixel_values_squeezed]
             pixel_values_cat = torch.cat(list(pixel_values_squeezed), dim=0)
 
-            navigation_commands = ['turn left', 'go straight', 'turn right']
-            command_str = next((navigation_commands[i] for i, v in enumerate(high_command_one_hot) if v == 1), "unknown")
+            command_str = command_code_to_text(current_ego_status.driving_command)
             history_str = " ".join([f'   - t-{3-i}: ({format_number(history_trajectory[i, 0].item())}, {format_number(history_trajectory[i, 1].item())}, {format_number(history_trajectory[i, 2].item())})' for i in range(4)])
             
             prompt = f"<image>\nAs an autonomous driving system, predict the vehicle's trajectory based on:\n1. Visual perception from front camera view\n2. Historical motion context (last 4 timesteps):{history_str}\n3. Active navigation command: [{command_str.upper()}]"

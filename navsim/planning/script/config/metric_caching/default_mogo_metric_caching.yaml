@@ -12,6 +12,14 @@ defaults:
   - _self_
   - override train_test_split: trainval
 
+train_test_split:
+  scene_filter:
+    # Mogo pkl frames are dense 10Hz. Use 1.5s history + 5.0s future for metric cache,
+    # and advance scene centers every 0.5s to match the original NAVSIM sample cadence.
+    num_history_frames: 16
+    num_future_frames: 50
+    frame_interval: 5
+
 cache:
   cache_path: ${oc.env:NAVSIM_EXP_ROOT}/metric_cache
   use_cache_without_dataset: false
@@ -29,3 +37,8 @@ mogo_map:
   geometry_srid: 4326
   utm_zone: 50
   utm_south: false
+
+
+mogo_observation:
+  annotation_interval_length: 0.1
+  use_dense_annotations: true
