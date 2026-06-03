@@ -5,9 +5,10 @@ export NAVSIM_DEVKIT_ROOT="/NXT/lst/vla/recog_drive"
 export OPENSCENE_DATA_ROOT="/NXT/lst/vla/navsim/download"
 
 python -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv "/NXT/lst/vla/navsim/exp/recogdrive_agent_eval_il/2026.04.28.14.35.28/2026.04.28.16.31.22.csv" \
-  --out "vis_output/eval/0428_163122" \
-  --checkpoint "checkpoints/IL/train_il_hs0_hsL_2.ckpt" \
+  --csv "/NXT/lst/vla/navsim/exp/recogdrive_agent_eval/2026.06.03.05.04.20/2026.06.03.07.05.43.csv" \
+  --out "vis_output/eval/0603_070543/score_lt_0.5" \
+  --max_score 0.5 \
+  --checkpoint "checkpoints/RL/train_rl_hs0_hsL_5.ckpt" \
   --vlm_path "/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B" \
   --openscene_data_root "$OPENSCENE_DATA_ROOT" \
   --split test \

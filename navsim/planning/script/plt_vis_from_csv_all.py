@@ -140,12 +140,28 @@ def build_scene_loaders(
     return scene_loader, scene_loader_traj
 
 
-def tokens_from_csv(csv_path: str) -> tuple[pd.DataFrame, list[str]]:
+def tokens_from_csv(
+    csv_path: str,
+    *,
+    min_score: float | None = None,
+    max_score: float | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
     # 强制 token 为字符串，保留前导 0
     df = pd.read_csv(csv_path, dtype={"token": "string"})
     if "token" not in df.columns:
         raise ValueError(f"CSV 缺少 token 列: {csv_path}")
-    tokens = [str(t).strip() for t in df["token"].dropna().astype(str).tolist()]
+
+    df["token"] = df["token"].astype(str).str.strip()
+    df = df[df["token"].notna() & (df["token"] != "") & (df["token"].str.lower() != "average")]
+
+    if "score" in df.columns and (min_score is not None or max_score is not None):
+        df["score"] = pd.to_numeric(df["score"], errors="coerce")
+        if min_score is not None:
+            df = df[df["score"].notna() & (df["score"] >= min_score)]
+        if max_score is not None:
+            df = df[df["score"].notna() & (df["score"] < max_score)]
+
+    tokens = df["token"].tolist()
     # 去重但保持顺序
     seen: set[str] = set()
     uniq: list[str] = []
@@ -275,6 +291,18 @@ def parse_args():
     )
     parser.add_argument("--out", default="vis_output/eval/0428_163122", help="输出目录")
     parser.add_argument("--token", default="", help="可选：只渲染单个 token（快速自测）")
+    parser.add_argument(
+        "--min_score",
+        type=float,
+        default=None,
+        help="只渲染 score >= 该值的样本（含边界）",
+    )
+    parser.add_argument(
+        "--max_score",
+        type=float,
+        default=None,
+        help="只渲染 score < 该值的样本，例如 0.5 表示低于 0.5 分",
+    )
 
     parser.add_argument("--split", default="test", choices=["mini", "test", "trainval"], help="NAVSIM split")
     parser.add_argument("--scene_filter", default="navtest", help="scene_filter 配置名（Hydra）")
@@ -306,9 +334,23 @@ def main():
     if not args.openscene_data_root:
         raise ValueError("需要设置 --openscene_data_root 或环境变量 OPENSCENE_DATA_ROOT")
 
-    df, tokens = tokens_from_csv(args.csv)
+    df, tokens = tokens_from_csv(
+        args.csv,
+        min_score=args.min_score,
+        max_score=args.max_score,
+    )
     if args.token:
         tokens = [str(args.token)]
+    elif rank == 0:
+        filter_desc = []
+        if args.min_score is not None:
+            filter_desc.append(f"score>={args.min_score}")
+        if args.max_score is not None:
+            filter_desc.append(f"score<{args.max_score}")
+        if filter_desc:
+            print(f"Score filter: {' & '.join(filter_desc)} -> {len(tokens)} tokens")
+        else:
+            print(f"No score filter -> {len(tokens)} tokens")
 
     scene_filter = build_scene_filter(args.scene_filter)
     agent = build_agent(args, device)
