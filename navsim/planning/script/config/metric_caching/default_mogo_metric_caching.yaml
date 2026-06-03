@@ -9,8 +9,8 @@ hydra:
 
 defaults:
   - default_common
-  - _self_
   - override train_test_split: trainval
+  - _self_
 
 train_test_split:
   scene_filter:
@@ -42,3 +42,5 @@ mogo_map:
 mogo_observation:
   annotation_interval_length: 0.1
   use_dense_annotations: true
+  # Keep start-anchor history at the same 2Hz cadence as NAVSIM while reading dense anns at 10Hz.
+  history_interval_length: 0.5

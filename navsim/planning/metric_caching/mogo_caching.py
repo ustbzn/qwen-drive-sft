@@ -95,6 +95,7 @@ def cache_mogo_scenarios(args: List[Dict[str, Union[List[str], DictConfig]]]) ->
             cache_path=cfg.cache.cache_path,
             force_feature_computation=cfg.cache.force_feature_computation,
             use_dense_annotations=bool(cfg.mogo_observation.use_dense_annotations),
+            history_interval_length=float(cfg.mogo_observation.history_interval_length),
         )
 
         logger.info(f"Extracted {len(scene_loader)} Mogo scenarios for thread_id={thread_id}, node_id={node_id}.")

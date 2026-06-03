@@ -27,17 +27,33 @@ def build_history_states_from_scenario(
     if num_samples <= 0:
         return None
 
+    scenario_interval = scenario.database_interval
+    if scenario_interval <= 0.0:
+        return None
+
+    sample_stride = max(1, int(round(interval_length / scenario_interval)))
+    if not np.isclose(sample_stride * scenario_interval, interval_length):
+        raise ValueError(
+            "History interval must be an integer multiple of scenario.database_interval: "
+            f"history_interval={interval_length}, scenario_interval={scenario_interval}"
+        )
+
+    source_num_samples = num_samples * sample_stride
     history_ego_states = list(
         scenario.get_ego_past_trajectory(
             iteration=0,
             time_horizon=history_horizon,
-            num_samples=num_samples,
+            num_samples=source_num_samples,
         )
     )
-    if len(history_ego_states) < num_samples:
+    if len(history_ego_states) < source_num_samples:
         return None
 
-    return ego_states_to_state_array(history_ego_states[-num_samples:])
+    sampled_history_ego_states = history_ego_states[-source_num_samples::sample_stride]
+    if len(sampled_history_ego_states) < num_samples:
+        return None
+
+    return ego_states_to_state_array(sampled_history_ego_states[-num_samples:])
 
 
 class StateInterpolator:

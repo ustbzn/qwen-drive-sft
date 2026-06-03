@@ -32,6 +32,7 @@ class MetricCacheProcessor:
         cache_path: Optional[str],
         force_feature_computation: bool,
         use_dense_annotations: bool = False,
+        history_interval_length: Optional[float] = None,
     ):
         """
         Initialize class.
@@ -41,6 +42,7 @@ class MetricCacheProcessor:
         self._cache_path = pathlib.Path(cache_path) if cache_path else None
         self._force_feature_computation = force_feature_computation
         self._use_dense_annotations = use_dense_annotations
+        self._history_interval_length = history_interval_length
 
         # TODO: Add to some config
         self._future_sampling = TrajectorySampling(num_poses=50, interval_length=0.1)
@@ -264,7 +266,7 @@ class MetricCacheProcessor:
         history_states = build_history_states_from_scenario(
             scenario,
             history_horizon=1.5,
-            interval_length=scenario.database_interval,
+            interval_length=self._history_interval_length or scenario.database_interval,
         )
 
         # save and dump features
