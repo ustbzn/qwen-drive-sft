@@ -56,37 +56,25 @@ def _fmt_metric(v: object) -> str:
         return str(v)
 
 
+METRIC_OVERLAY_FIELDS = [
+    ("no_at_fault_collisions", "NC"),
+    ("drivable_area_compliance", "DAC"),
+    ("ego_progress", "EP"),
+    ("time_to_collision_within_bound", "TTC"),
+    ("comfort", "C"),
+    ("driving_direction_compliance", "DDC"),
+    ("obstacle_clearance", "OC"),
+    ("centerline_convergence", "CC"),
+    ("start_anchor_comfort", "SAC"),
+    ("score", "score"),
+]
+
+
 def _build_camera_overlay_text(token: str, metrics: dict[str, object]) -> str:
     # 兼容 CSV 里不存在的列：不存在就显示 NA
     parts = [f"token: {token}"]
-    for k in [
-        "no_at_fault_collisions",
-        "drivable_area_compliance",
-        "ego_progress",
-        "time_to_collision_within_bound",
-        "comfort",
-        "driving_direction_compliance",
-        "score",
-    ]:
-        if k in metrics or k in {
-            "no_at_fault_collisions",
-            "drivable_area_compliance",
-            "ego_progress",
-            "time_to_collision_within_bound",
-            "comfort",
-            "driving_direction_compliance",
-            "score",
-        }:
-            short = {
-                "no_at_fault_collisions": "NC",
-                "drivable_area_compliance": "DAC",
-                "ego_progress": "EP",
-                "time_to_collision_within_bound": "TTC",
-                "comfort": "C",
-                "driving_direction_compliance": "DDC",
-                "score": "score",
-            }[k]
-            parts.append(f"{short}: {_fmt_metric(metrics.get(k))}")
+    for key, short in METRIC_OVERLAY_FIELDS:
+        parts.append(f"{short}: {_fmt_metric(metrics.get(key))}")
     return " | ".join(parts)
 
 
