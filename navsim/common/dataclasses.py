@@ -132,7 +132,11 @@ class Lidar:
 
         # NOTE: this could be extended to load specific LiDARs in the merged pc
         if "lidar_pc" in sensor_names:
+            if not str(lidar_path):
+                return Lidar()
             global_lidar_path = sensor_blobs_path / lidar_path
+            if global_lidar_path.is_dir():
+                return Lidar()
             lidar_pc = LidarPointCloud.from_buffer(cls._load_bytes(global_lidar_path), "pcd").points
             return Lidar(lidar_pc)
         return Lidar()  # empty lidar
@@ -487,8 +491,12 @@ class Scene:
         return AgentInput(ego_statuses, cameras, lidars)
 
     @classmethod
-    def _build_map_api(cls, map_name: str) -> AbstractMap:
+    def _build_map_api(cls, map_name: str) -> Optional[AbstractMap]:
         """Helper classmethod to load map api from name."""
+        if map_name == "las_vegas":
+            # Mogo conversion uses this as a placeholder. Metric caching injects
+            # a Mogo map adapter explicitly; training caches do not need map_api.
+            return None
         assert map_name in MAP_LOCATIONS, f"The map name {map_name} is invalid, must be in {MAP_LOCATIONS}"
         return get_maps_api(NUPLAN_MAPS_ROOT, "nuplan-maps-v1.0", map_name)
 

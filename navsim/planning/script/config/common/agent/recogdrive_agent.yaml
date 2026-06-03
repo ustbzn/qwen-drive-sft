@@ -18,5 +18,6 @@ metric_cache_path: ''
 reference_policy_checkpoint: ''
 vlm_size: 'small'
 train_backbone: false
+vl_hidden_dim: 1536
 grpo: False
 lr: 1e-4

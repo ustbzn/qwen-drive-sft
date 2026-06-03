@@ -111,6 +111,7 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     model_dtype: str = "float16"
     grpo: bool = False
     vlm_size: str = 'large'
+    vl_hidden_dim: int = 1536
     
     tune_projector: bool = True
     tune_diffusion_model: bool = True
@@ -148,10 +149,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             action_dim=config.action_dim,
             hidden_size=config.input_embedding_dim,
         )
-        if config.vlm_size == "large":
-            vl_hidden_dim = 3584
-        else:
-            vl_hidden_dim = 1536
+        vl_hidden_dim = int(config.vl_hidden_dim)
 
         self.vl_summary_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
         self.vl_context_first_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)

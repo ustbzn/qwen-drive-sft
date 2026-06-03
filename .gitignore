@@ -54,3 +54,6 @@ navsim/result/
 navsim/rosbag_inputs/
 navsim/nuplan_maps/
 navsim/planning/script/run_select_data_from_csv.py
+docs
+*.md
+*.pdf

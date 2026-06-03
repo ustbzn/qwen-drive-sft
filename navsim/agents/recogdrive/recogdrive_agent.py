@@ -14,7 +14,6 @@ from navsim.common.command_utils import command_code_to_text
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
-from .utils.internvl_preprocess import load_image
 from .utils.lr_scheduler import WarmupCosLR
 from .utils.utils import format_number, build_from_configs
 from .recogdrive_features import ReCogDriveFeatureBuilder ,TrajectoryTargetBuilder
@@ -43,6 +42,7 @@ class ReCogDriveAgent(AbstractAgent):
         reference_policy_checkpoint: Optional[str] = '', 
         vlm_size: Optional[str] = 'small', 
         train_backbone: bool = False,
+        vl_hidden_dim: Optional[int] = None,
     ):
         super().__init__()
         self._trajectory_sampling = trajectory_sampling
@@ -59,6 +59,7 @@ class ReCogDriveAgent(AbstractAgent):
         self.reference_policy_checkpoint = reference_policy_checkpoint
         self.vlm_size = vlm_size
         self.train_backbone = train_backbone
+        self.vl_hidden_dim = vl_hidden_dim
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -81,10 +82,18 @@ class ReCogDriveAgent(AbstractAgent):
                     p.requires_grad = True
 
         # action 为 [x, y, heading]，因此action_dim=3; action_horizon=8 表示预测未来8个时间步的轨迹，每一个时间步为0.5s;
+        if self.vl_hidden_dim is None:
+            if self.vlm_type == "qwen3":
+                self.vl_hidden_dim = 2048
+            elif self.vlm_size == "large":
+                self.vl_hidden_dim = 3584
+            else:
+                self.vl_hidden_dim = 1536
+
         if self.dit_type == "large":
-            cfg = make_recogdrive_config(self.dit_type, action_dim=3, action_horizon=8, grpo=self.grpo, input_embedding_dim=1536,sampling_method=sampling_method)
+            cfg = make_recogdrive_config(self.dit_type, action_dim=3, action_horizon=8, grpo=self.grpo, input_embedding_dim=1536, sampling_method=sampling_method, vl_hidden_dim=self.vl_hidden_dim)
         elif self.dit_type == "small":
-            cfg = make_recogdrive_config(self.dit_type, action_dim=3, action_horizon=8, grpo=self.grpo, input_embedding_dim=384,sampling_method=sampling_method)
+            cfg = make_recogdrive_config(self.dit_type, action_dim=3, action_horizon=8, grpo=self.grpo, input_embedding_dim=384, sampling_method=sampling_method, vl_hidden_dim=self.vl_hidden_dim)
 
         cfg.vlm_size = self.vlm_size
 
@@ -151,13 +160,9 @@ class ReCogDriveAgent(AbstractAgent):
                 image_path_tensor = image_path_tensor.unsqueeze(0)
             image_paths = self._decode_paths_from_tensor(image_path_tensor) # 图片路径解码 tensor → list[str]
             
-            pixel_values_list = [load_image(path) for path in image_paths] # 逐张图转成模型要的 patch/token 形式的 pixel_values
-            
-            num_patches_list = [p.shape[0] for p in pixel_values_list]  # 记录每张图对应的 patch 数
-            pixel_values_cat = torch.cat(pixel_values_list, dim=0).cuda()   # 把多张图的 patch 序列拼成一个大序列，放到 GPU 上
-            
-
-            command_str_list = [command_code_to_text(command) for command in high_command_one_hot.detach().cpu()]
+            navigation_commands = ['turn left', 'go straight', 'turn right']
+            command_indices = torch.argmax(high_command_one_hot, dim=-1)
+            command_str_list = [navigation_commands[idx.item()] for idx in command_indices] # 将 one-hot 的高层指令转成字符串
 
             # 为 batch 内每个样本拼一个 prompt（questions）
             questions = []
@@ -187,7 +192,7 @@ class ReCogDriveAgent(AbstractAgent):
                 )
                 questions.append(f"{prompt}{output_requirements}")
 
-            outputs = self.backbone(pixel_values_cat, questions, num_patches_list=num_patches_list)
+            outputs = self.backbone.forward_from_paths(image_paths, questions)
             first_hidden_state = outputs.hidden_states[0]
             last_hidden_state = outputs.hidden_states[-1]
         status_feature = features["status_feature"].cuda()
@@ -301,6 +306,7 @@ def make_recogdrive_config(
     num_inference_steps: int = 5,
     grpo: bool = False,
     model_dtype: str = "float16",
+    vl_hidden_dim: int = 1536,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -351,6 +357,7 @@ def make_recogdrive_config(
         num_inference_steps=num_inference_steps,
         grpo=grpo,
         model_dtype=model_dtype,
+        vl_hidden_dim=vl_hidden_dim,
     )
     
     return config

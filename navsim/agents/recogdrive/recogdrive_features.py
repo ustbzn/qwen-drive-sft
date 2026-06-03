@@ -58,6 +58,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
         # False：特征里不包含 hidden state，只给路径；hidden state 由 agent 里的 backbone 每次 forward 时现算。
         super().__init__()
         self.cache_hidden_state = cache_hidden_state
+        self.model_type = (model_type or "internvl").lower()
         self.backbone = None
         self.cache_mode = cache_mode
 
@@ -65,12 +66,14 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             if not model_type or not checkpoint_path:
                 raise ValueError("In online mode (cache_hidden_state=True), `model_type` and `checkpoint_path` must be provided.")
             self.backbone = RecogDriveBackbone(
-                model_type=model_type,
+                model_type=self.model_type,
                 checkpoint_path=checkpoint_path,
                 device=device
             )
 
     def get_unique_name(self) -> str:
+        if self.model_type == "qwen3":
+            return "qwen3_feature"
         return "internvl_feature"
 
     def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
@@ -119,20 +122,16 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             if self.backbone is None:
                 raise RuntimeError("FeatureBuilder is in online mode, but the backbone was not initialized.")
             
-            pixel_values = load_image(str(cameras[-1].cam_f0.image),max_num=12).unsqueeze(0)
-
-            pixel_values_squeezed = pixel_values.squeeze(1)
-            num_patches_list = [pv.shape[0] for pv in pixel_values_squeezed]
-            pixel_values_cat = torch.cat(list(pixel_values_squeezed), dim=0)
-
-            command_str = command_code_to_text(current_ego_status.driving_command)
+            navigation_commands = ['turn left', 'go straight', 'turn right']
+            command_str = next((navigation_commands[i] for i, v in enumerate(high_command_one_hot) if v == 1), "unknown")
             history_str = " ".join([f'   - t-{3-i}: ({format_number(history_trajectory[i, 0].item())}, {format_number(history_trajectory[i, 1].item())}, {format_number(history_trajectory[i, 2].item())})' for i in range(4)])
             
             prompt = f"<image>\nAs an autonomous driving system, predict the vehicle's trajectory based on:\n1. Visual perception from front camera view\n2. Historical motion context (last 4 timesteps):{history_str}\n3. Active navigation command: [{command_str.upper()}]"
             output_requirements = "\nOutput requirements:\n- Predict 8 future trajectory points\n- Each point format: (x:float, y:float, heading:float)\n- Use [PT, ...] to encapsulate the trajectory\n- Maintain numerical precision to 2 decimal places"
             questions = [f"{prompt}{output_requirements}"]
 
-            outputs = self.backbone(pixel_values_cat.cuda(), questions, num_patches_list=num_patches_list)
+            image_path = str(cameras[-1].cam_f0.image)
+            outputs = self.backbone.forward_from_paths([image_path], questions)
             first_hidden_state = outputs.hidden_states[0]
             last_hidden_state = outputs.hidden_states[-1]
 
