@@ -23,7 +23,7 @@ echo "GPUS: ${GPUS}"
 export CUDA_LAUNCH_BLOCKING=0
 
 
-CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/IL/train_il_hs0_hsL_2.ckpt"
+CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/RL/train_rl_hs0_hsL_5.ckpt"
 
 
 # 1. Set NAVSIM dataset and related environment variables
@@ -39,7 +39,7 @@ torchrun \
     agent=recogdrive_agent \
     agent.checkpoint_path="$CHECKPOINT" \
     agent.vlm_path='/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B' \
-    metric_cache_path=/NXT/lst/vla/navsim/exp/metric_cache2 \
+    metric_cache_path=/NXT/lst/vla/navsim/exp/metric_cache2_v2 \
     agent.cam_type='single' \
     agent.grpo=False \
     agent.cache_hidden_state=False \
@@ -47,5 +47,5 @@ torchrun \
     agent.dit_type="small" \
     agent.vlm_size="small" \
     agent.sampling_method="ddim" \
-    experiment_name=recogdrive_agent_eval_il
+    experiment_name=recogdrive_agent_eval
 
