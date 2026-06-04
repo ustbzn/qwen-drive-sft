@@ -130,6 +130,9 @@ def build_agent(args, device: torch.device) -> ReCogDriveAgent:
         cache_hidden_state=bool(args.cache_hidden_state),
         vlm_size=args.vlm_size,
         grpo=bool(args.grpo),
+        normalize_vl_hidden_states=bool(args.normalize_vl_hidden_states),
+        first_hidden_state_index=int(args.first_hidden_state_index),
+        last_hidden_state_index=int(args.last_hidden_state_index),
     ).to(device)
     agent.initialize()
     return agent
@@ -292,6 +295,9 @@ def parse_args():
     parser.add_argument("--cache_hidden_state", action="store_true", help="特征中包含 hidden state（通常和 --cache_mode 配合）")
     parser.add_argument("--vlm_size", default="small")
     parser.add_argument("--grpo", action="store_true")
+    parser.add_argument("--normalize_vl_hidden_states", action="store_true")
+    parser.add_argument("--first_hidden_state_index", type=int, default=0)
+    parser.add_argument("--last_hidden_state_index", type=int, default=-1)
 
     parser.add_argument("--time_horizon", type=float, default=4.0)
     parser.add_argument("--interval_length", type=float, default=0.5)
@@ -386,4 +392,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

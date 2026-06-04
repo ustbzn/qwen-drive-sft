@@ -34,13 +34,20 @@ EGO_STATUS_FEATURE_NAMES = (
 )
 
 
+def select_hidden_state(hidden_states, layer_index: int) -> torch.Tensor:
+    """Select a hidden-state layer by index while preserving Python negative-index semantics."""
+    return hidden_states[int(layer_index)]
+
+
 class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
     def __init__(self,
                  cache_hidden_state: bool = True,
                  model_type: Optional[str] = None,
                  checkpoint_path: Optional[str] = None,
                  device: str = "cuda",
-                 cache_mode: bool = False, ):
+                 cache_mode: bool = False,
+                 first_hidden_state_index: int = 0,
+                 last_hidden_state_index: int = -1, ):
         """
         Initializes the feature builder.
 
@@ -61,6 +68,8 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
         self.model_type = (model_type or "internvl").lower()
         self.backbone = None
         self.cache_mode = cache_mode
+        self.first_hidden_state_index = int(first_hidden_state_index)
+        self.last_hidden_state_index = int(last_hidden_state_index)
 
         if self.cache_hidden_state and self.cache_mode:
             if not model_type or not checkpoint_path:
@@ -132,8 +141,8 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
 
             image_path = str(cameras[-1].cam_f0.image)
             outputs = self.backbone.forward_from_paths([image_path], questions)
-            first_hidden_state = outputs.hidden_states[0]
-            last_hidden_state = outputs.hidden_states[-1]
+            first_hidden_state = select_hidden_state(outputs.hidden_states, self.first_hidden_state_index)
+            last_hidden_state = select_hidden_state(outputs.hidden_states, self.last_hidden_state_index)
 
             return {
                 "history_trajectory": history_trajectory.cpu(),

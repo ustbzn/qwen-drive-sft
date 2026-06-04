@@ -16,7 +16,7 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 
 from .utils.lr_scheduler import WarmupCosLR
 from .utils.utils import format_number, build_from_configs
-from .recogdrive_features import ReCogDriveFeatureBuilder ,TrajectoryTargetBuilder
+from .recogdrive_features import ReCogDriveFeatureBuilder, TrajectoryTargetBuilder, select_hidden_state
 from .recogdrive_backbone import RecogDriveBackbone
 from .recogdrive_diffusion_planner import (
     ReCogDriveDiffusionPlanner,
@@ -43,6 +43,9 @@ class ReCogDriveAgent(AbstractAgent):
         vlm_size: Optional[str] = 'small', 
         train_backbone: bool = False,
         vl_hidden_dim: Optional[int] = None,
+        normalize_vl_hidden_states: bool = False,
+        first_hidden_state_index: int = 0,
+        last_hidden_state_index: int = -1,
     ):
         super().__init__()
         self._trajectory_sampling = trajectory_sampling
@@ -60,6 +63,9 @@ class ReCogDriveAgent(AbstractAgent):
         self.vlm_size = vlm_size
         self.train_backbone = train_backbone
         self.vl_hidden_dim = vl_hidden_dim
+        self.normalize_vl_hidden_states = normalize_vl_hidden_states
+        self.first_hidden_state_index = int(first_hidden_state_index)
+        self.last_hidden_state_index = int(last_hidden_state_index)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -91,9 +97,27 @@ class ReCogDriveAgent(AbstractAgent):
                 self.vl_hidden_dim = 1536
 
         if self.dit_type == "large":
-            cfg = make_recogdrive_config(self.dit_type, action_dim=3, action_horizon=8, grpo=self.grpo, input_embedding_dim=1536, sampling_method=sampling_method, vl_hidden_dim=self.vl_hidden_dim)
+            cfg = make_recogdrive_config(
+                self.dit_type,
+                action_dim=3,
+                action_horizon=8,
+                grpo=self.grpo,
+                input_embedding_dim=1536,
+                sampling_method=sampling_method,
+                vl_hidden_dim=self.vl_hidden_dim,
+                normalize_vl_hidden_states=self.normalize_vl_hidden_states,
+            )
         elif self.dit_type == "small":
-            cfg = make_recogdrive_config(self.dit_type, action_dim=3, action_horizon=8, grpo=self.grpo, input_embedding_dim=384, sampling_method=sampling_method, vl_hidden_dim=self.vl_hidden_dim)
+            cfg = make_recogdrive_config(
+                self.dit_type,
+                action_dim=3,
+                action_horizon=8,
+                grpo=self.grpo,
+                input_embedding_dim=384,
+                sampling_method=sampling_method,
+                vl_hidden_dim=self.vl_hidden_dim,
+                normalize_vl_hidden_states=self.normalize_vl_hidden_states,
+            )
 
         cfg.vlm_size = self.vlm_size
 
@@ -132,6 +156,8 @@ class ReCogDriveAgent(AbstractAgent):
             checkpoint_path=self.vlm_path,
             device=self.device,
             cache_mode=self.cache_mode,
+            first_hidden_state_index=self.first_hidden_state_index,
+            last_hidden_state_index=self.last_hidden_state_index,
         )]
     # 从 features 拿到或算出 VLM 的 first/last hidden states，拼好 action inputs，交给 Diffusion Planner 做轨迹预测。
     def forward(self, features: Dict[str, torch.Tensor], targets=None, tokens_list=None) -> Dict[str, torch.Tensor]:
@@ -193,8 +219,8 @@ class ReCogDriveAgent(AbstractAgent):
                 questions.append(f"{prompt}{output_requirements}")
 
             outputs = self.backbone.forward_from_paths(image_paths, questions)
-            first_hidden_state = outputs.hidden_states[0]
-            last_hidden_state = outputs.hidden_states[-1]
+            first_hidden_state = select_hidden_state(outputs.hidden_states, self.first_hidden_state_index)
+            last_hidden_state = select_hidden_state(outputs.hidden_states, self.last_hidden_state_index)
         status_feature = features["status_feature"].cuda()
         if status_feature.ndim == 1:
             status_feature = status_feature.unsqueeze(0)
@@ -307,6 +333,7 @@ def make_recogdrive_config(
     grpo: bool = False,
     model_dtype: str = "float16",
     vl_hidden_dim: int = 1536,
+    normalize_vl_hidden_states: bool = False,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -358,6 +385,7 @@ def make_recogdrive_config(
         grpo=grpo,
         model_dtype=model_dtype,
         vl_hidden_dim=vl_hidden_dim,
+        normalize_vl_hidden_states=normalize_vl_hidden_states,
     )
     
     return config

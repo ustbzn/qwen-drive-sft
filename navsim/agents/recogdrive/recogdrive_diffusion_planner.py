@@ -112,6 +112,8 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     grpo: bool = False
     vlm_size: str = 'large'
     vl_hidden_dim: int = 1536
+    normalize_vl_hidden_states: bool = False
+    vl_hidden_norm_eps: float = 1e-5
     
     tune_projector: bool = True
     tune_diffusion_model: bool = True
@@ -151,6 +153,15 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         )
         vl_hidden_dim = int(config.vl_hidden_dim)
 
+        if config.normalize_vl_hidden_states:
+            self.vl_summary_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
+            self.vl_context_first_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
+            self.vl_context_last_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
+        else:
+            self.vl_summary_norm = nn.Identity()
+            self.vl_context_first_norm = nn.Identity()
+            self.vl_context_last_norm = nn.Identity()
+
         self.vl_summary_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
         self.vl_context_first_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
         self.vl_context_last_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
@@ -186,15 +197,15 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             self._init_grpo(config.grpo_cfg)
 
     def encode_vl_summary_tokens(self, last_hidden_state: torch.Tensor) -> torch.Tensor:
-        return self.vl_summary_projector(last_hidden_state)
+        return self.vl_summary_projector(self.vl_summary_norm(last_hidden_state))
 
     def encode_vl_context_tokens(
         self,
         first_hidden_state: torch.Tensor,
         last_hidden_state: torch.Tensor,
     ) -> torch.Tensor:
-        first_context_tokens = self.vl_context_first_projector(first_hidden_state)
-        last_context_tokens = self.vl_context_last_projector(last_hidden_state)
+        first_context_tokens = self.vl_context_first_projector(self.vl_context_first_norm(first_hidden_state))
+        last_context_tokens = self.vl_context_last_projector(self.vl_context_last_norm(last_hidden_state))
         context_gate = torch.sigmoid(
             self.vl_context_gate(torch.cat([first_context_tokens, last_context_tokens], dim=-1))
         )

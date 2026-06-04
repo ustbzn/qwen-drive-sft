@@ -19,5 +19,8 @@ reference_policy_checkpoint: ''
 vlm_size: 'small'
 train_backbone: false
 vl_hidden_dim: 1536
+normalize_vl_hidden_states: false
+first_hidden_state_index: 0
+last_hidden_state_index: -1
 grpo: False
 lr: 1e-4

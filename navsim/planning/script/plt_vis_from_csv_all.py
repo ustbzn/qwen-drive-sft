@@ -25,6 +25,7 @@ import traceback
 
 from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+from typing import Callable
 
 from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.planning.metrics.utils.collision_utils import CollisionType
@@ -51,12 +52,17 @@ from navsim.visualization.config import TRAJECTORY_CONFIG
 from navsim.visualization.bev import add_trajectory_to_bev_ax
 from navsim.visualization.camera import add_trajectory_to_camera_ax
 from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+
 from navsim.evaluate.pdm_score import get_trajectory_as_array
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
     convert_absolute_to_relative_se2_array,
 )
 from navsim.planning.metric_caching.metric_cache import MetricCache
-
+from navsim.planning.scenario_builder.mogo_sqlite_map_adapter import (
+    MogoRouteContext,
+    MogoSQLiteMapConfig,
+    MogoSQLiteMapAdapter,
+)
 
 def init_distributed():
     """可选分布式初始化：支持 torchrun 多卡分摊渲染任务。"""
@@ -443,6 +449,9 @@ def build_agent(args, device: torch.device) -> ReCogDriveAgent:
         cache_hidden_state=bool(args.cache_hidden_state),
         vlm_size=str(args.vlm_size),
         grpo=bool(args.grpo),
+        normalize_vl_hidden_states=bool(args.normalize_vl_hidden_states),
+        first_hidden_state_index=int(args.first_hidden_state_index),
+        last_hidden_state_index=int(args.last_hidden_state_index),
     ).to(device)
     agent.initialize()
     return agent
@@ -454,12 +463,14 @@ def build_scene_loaders(
     split: str,
     scene_filter: SceneFilter,
     sensor_config: SensorConfig,
+    map_api_builder: Callable | None = None,
 ) -> tuple[SceneLoader, SceneLoader]:
     scene_loader = SceneLoader(
         openscene_data_root / f"navsim_logs/{split}",
         openscene_data_root / f"sensor_blobs/{split}",
         scene_filter,
         sensor_config=sensor_config,
+        map_api_builder=map_api_builder,
     )
     scene_loader_traj = SceneLoader(
         openscene_data_root / f"navsim_logs/{split}",
@@ -467,8 +478,33 @@ def build_scene_loaders(
         scene_filter,
         sensor_config=sensor_config,
         load_image_path=True,
+        map_api_builder=map_api_builder,
     )
     return scene_loader, scene_loader_traj
+
+
+def build_mogo_map_api_builder(args) -> Callable | None:
+    if not args.mogo_map_sqlite_path:
+        return None
+
+    map_config = MogoSQLiteMapConfig(
+        sqlite_path=Path(args.mogo_map_sqlite_path),
+        map_name=str(args.mogo_map_name),
+        query_radius_m=float(args.mogo_map_query_radius_m),
+        max_segment_length_m=float(args.mogo_map_max_segment_length_m),
+        enable_route_edge_filter=bool(args.mogo_map_enable_route_edge_filter),
+        geometry_srid=int(args.mogo_map_geometry_srid),
+        utm_zone=int(args.mogo_map_utm_zone),
+        utm_south=bool(args.mogo_map_utm_south),
+    )
+
+    def _builder(scene_dict_list):
+        frame_idx = int(args.num_history_frames) - 1
+        route_roadblock_ids = list(scene_dict_list[frame_idx]["roadblock_ids"])
+        route_context = MogoRouteContext(roadblock_ids=route_roadblock_ids)
+        return MogoSQLiteMapAdapter(config=map_config, route_context=route_context)
+
+    return _builder
 
 
 def tokens_from_csv(
@@ -784,6 +820,9 @@ def parse_args():
     parser.add_argument("--cache_hidden_state", action="store_true")
     parser.add_argument("--vlm_size", default="small")
     parser.add_argument("--grpo", action="store_true")
+    parser.add_argument("--normalize_vl_hidden_states", action="store_true")
+    parser.add_argument("--first_hidden_state_index", type=int, default=0)
+    parser.add_argument("--last_hidden_state_index", type=int, default=-1)
 
     parser.add_argument("--time_horizon", type=float, default=4.0)
     parser.add_argument("--interval_length", type=float, default=0.5)
@@ -797,6 +836,15 @@ def parse_args():
         default="",
         help="metric cache 目录（debug_failures 必需，默认 $NAVSIM_EXP_ROOT/metric_cache2_v2）",
     )
+    parser.add_argument("--num_history_frames", type=int, default=4)
+    parser.add_argument("--mogo_map_sqlite_path", default="")
+    parser.add_argument("--mogo_map_name", default="mogo")
+    parser.add_argument("--mogo_map_query_radius_m", type=float, default=150.0)
+    parser.add_argument("--mogo_map_max_segment_length_m", type=float, default=2.0)
+    parser.add_argument("--mogo_map_enable_route_edge_filter", action="store_true", default=True)
+    parser.add_argument("--mogo_map_geometry_srid", type=int, default=4326)
+    parser.add_argument("--mogo_map_utm_zone", type=int, default=50)
+    parser.add_argument("--mogo_map_utm_south", action="store_true")
     return parser.parse_args()
 
 
@@ -856,11 +904,13 @@ def main():
     # 这里显式只加载 cam_f0（所有 history iteration）。
     sensor_cfg = SensorConfig.build_all_sensors(include=False)
     sensor_cfg.cam_f0 = True
+    map_api_builder = build_mogo_map_api_builder(args)
     scene_loader, scene_loader_traj = build_scene_loaders(
         openscene_data_root=Path(args.openscene_data_root),
         split=args.split,
         scene_filter=scene_filter,
         sensor_config=sensor_cfg,
+        map_api_builder=map_api_builder,
     )
 
     out_dir = Path(args.out)
@@ -896,4 +946,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

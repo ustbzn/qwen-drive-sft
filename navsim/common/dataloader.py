@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
 
 from tqdm import tqdm
@@ -78,7 +78,8 @@ class SceneLoader:
         sensor_blobs_path: Path,
         scene_filter: SceneFilter,
         sensor_config: SensorConfig = SensorConfig.build_no_sensors(),
-        load_image_path: bool = False
+        load_image_path: bool = False,
+        map_api_builder: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
     ):
         """
         Initializes the scene data loader.
@@ -93,6 +94,7 @@ class SceneLoader:
         self._scene_filter = scene_filter
         self._sensor_config = sensor_config
         self.load_image_path = load_image_path
+        self._map_api_builder = map_api_builder
         
         self.token_to_log_file: Dict[str, str] = {}
         self._build_token_to_log_file()  # 构建 token_to_log_file 字典
@@ -130,13 +132,15 @@ class SceneLoader:
         :return: scene dataclass
         """
         assert token in self.tokens
+        map_api = self._map_api_builder(self.scene_frames_dicts[token]) if self._map_api_builder else None
         return Scene.from_scene_dict_list(
             self.scene_frames_dicts[token],
             self._sensor_blobs_path,
             num_history_frames=self._scene_filter.num_history_frames,
             num_future_frames=self._scene_filter.num_future_frames,
             sensor_config=self._sensor_config,
-            load_image_path=self.load_image_path
+            load_image_path=self.load_image_path,
+            map_api=map_api,
         )
 
     def get_agent_input_from_token(self, token: str) -> AgentInput:
