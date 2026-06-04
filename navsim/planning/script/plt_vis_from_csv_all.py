@@ -1,13 +1,19 @@
+import copy
+import lzma
 import os
 import argparse
 import sys
 import math
+import pickle
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import hydra
 from hydra import initialize_config_dir
 from hydra.utils import instantiate
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 import torch
@@ -15,13 +21,26 @@ import torch.distributed as dist
 from tqdm import tqdm
 import csv
 
+from nuplan.common.actor_state.state_representation import StateSE2
+from nuplan.planning.metrics.utils.collision_utils import CollisionType
+from shapely.geometry import Polygon
+
 # 确保从任意工作目录运行都能 import `navsim`
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if _REPO_ROOT.as_posix() not in sys.path:
     sys.path.insert(0, _REPO_ROOT.as_posix())
 
-from navsim.common.dataloader import SceneLoader
-from navsim.common.dataclasses import SceneFilter, SensorConfig
+from navsim.common.dataloader import MetricCacheLoader, SceneLoader
+from navsim.common.dataclasses import SceneFilter, SensorConfig, Trajectory
+from navsim.evaluate.pdm_score import get_trajectory_as_array, transform_trajectory
+from navsim.planning.metric_caching.metric_cache import MetricCache
+from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
+from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer_utils import get_collision_type
+from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import EgoAreaIndex, StateIndex
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
+    convert_absolute_to_relative_se2_array,
+)
 from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
@@ -56,9 +75,12 @@ def _fmt_metric(v: object) -> str:
         return str(v)
 
 
-METRIC_OVERLAY_FIELDS = [
+PRIMARY_METRIC_FIELDS = [
     ("no_at_fault_collisions", "NC"),
     ("drivable_area_compliance", "DAC"),
+]
+
+OTHER_METRIC_FIELDS = [
     ("ego_progress", "EP"),
     ("time_to_collision_within_bound", "TTC"),
     ("comfort", "C"),
@@ -66,16 +88,325 @@ METRIC_OVERLAY_FIELDS = [
     ("obstacle_clearance", "OC"),
     ("centerline_convergence", "CC"),
     ("start_anchor_comfort", "SAC"),
-    ("score", "score"),
 ]
 
 
-def _build_camera_overlay_text(token: str, metrics: dict[str, object]) -> str:
-    # 兼容 CSV 里不存在的列：不存在就显示 NA
-    parts = [f"token: {token}"]
-    for key, short in METRIC_OVERLAY_FIELDS:
-        parts.append(f"{short}: {_fmt_metric(metrics.get(key))}")
-    return " | ".join(parts)
+def _build_overlay_text(token: str, metrics: dict[str, object], debug_notes: list[str] | None = None) -> str:
+    """相机图左上角分行显示：token/score → NC/DAC → 其余指标 → 失败诊断。"""
+    lines: list[str] = []
+
+    # 第一行：token + 总 score
+    lines.append(f"token: {token} | score: {_fmt_metric(metrics.get('score'))}")
+
+    # 第二行：NC + DAC
+    nc_dac = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in PRIMARY_METRIC_FIELDS)
+    lines.append(nc_dac)
+
+    # 第三行：其余指标
+    other = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in OTHER_METRIC_FIELDS)
+    lines.append(other)
+
+    # 最后一行：NC 或 DAC 为 0 时显示碰撞/越界诊断
+    if debug_notes and (
+        _metric_is_zero(metrics.get("no_at_fault_collisions"))
+        or _metric_is_zero(metrics.get("drivable_area_compliance"))
+    ):
+        lines.append(" | ".join(debug_notes))
+
+    return "\n".join(lines)
+
+
+DEBUG_SIM_TRAJ_CONFIG = {
+    "line_color": "#FFA500",
+    "line_color_alpha": 0.9,
+    "line_width": 2.5,
+    "line_style": "--",
+    "zorder": 6,
+}
+DEBUG_EGO_EVENT_BOX_CONFIG = {
+    "fill_color": "#FFD700",
+    "fill_color_alpha": 0.35,
+    "line_color": "#FFD700",
+    "line_color_alpha": 1.0,
+    "line_width": 2.5,
+    "line_style": "-",
+    "zorder": 9,
+}
+DEBUG_OBJ_EVENT_BOX_CONFIG = {
+    "fill_color": "#FF00FF",
+    "fill_color_alpha": 0.30,
+    "line_color": "#FF00FF",
+    "line_color_alpha": 1.0,
+    "line_width": 2.5,
+    "line_style": "-",
+    "zorder": 8,
+}
+DEBUG_OFFROAD_EGO_BOX_CONFIG = {
+    "fill_color": "#FF4500",
+    "fill_color_alpha": 0.35,
+    "line_color": "#FF4500",
+    "line_color_alpha": 1.0,
+    "line_width": 2.5,
+    "line_style": "-",
+    "zorder": 9,
+}
+
+
+@dataclass
+class PDMFailureDiagnostics:
+    debug_notes: list[str] = field(default_factory=list)
+    simulated_xy_local: np.ndarray | None = None
+    collision_time_s: float | None = None
+    collision_type: str | None = None
+    collision_object_type: str | None = None
+    collision_object_token: str | None = None
+    collision_ego_polygon_global: Polygon | None = None
+    collision_object_polygon_global: Polygon | None = None
+    offroad_time_s: float | None = None
+    offroad_ego_polygon_global: Polygon | None = None
+
+
+def build_pdm_simulator_scorer() -> tuple[PDMSimulator, PDMScorer]:
+    config_dir = (Path(__file__).resolve().parent / "config" / "pdm_scoring").as_posix()
+    with initialize_config_dir(config_dir=config_dir, version_base=None):
+        cfg = hydra.compose(config_name="default_run_pdm_score")
+    simulator: PDMSimulator = instantiate(cfg.simulator)
+    scorer: PDMScorer = instantiate(cfg.scorer)
+    return simulator, scorer
+
+
+def _metric_is_zero(value: object) -> bool:
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _should_debug_failures(metrics: dict[str, object], debug_failures: bool) -> bool:
+    if not debug_failures:
+        return False
+    nc = metrics.get("no_at_fault_collisions")
+    dac = metrics.get("drivable_area_compliance")
+    return _metric_is_zero(nc) or _metric_is_zero(dac)
+
+
+def _global_polygon_to_ego_local(polygon: Polygon, origin: StateSE2) -> np.ndarray:
+    x, y = polygon.exterior.xy
+    global_pts = np.column_stack([x, y])
+    se2 = np.column_stack([global_pts, np.zeros(len(global_pts), dtype=np.float64)])
+    local = convert_absolute_to_relative_se2_array(origin, se2)
+    return local[:, :2]
+
+
+def _plot_local_polygon_on_bev(ax: plt.Axes, local_xy: np.ndarray, config: dict[str, Any]) -> None:
+    closed = np.vstack([local_xy, local_xy[:1]])
+    ax.fill(
+        closed[:, 1],
+        closed[:, 0],
+        color=config["fill_color"],
+        alpha=config["fill_color_alpha"],
+        zorder=config["zorder"],
+    )
+    ax.plot(
+        closed[:, 1],
+        closed[:, 0],
+        color=config["line_color"],
+        alpha=config["line_color_alpha"],
+        linewidth=config["line_width"],
+        linestyle=config["line_style"],
+        zorder=config["zorder"],
+    )
+
+
+def _plot_local_xy_path_on_bev(ax: plt.Axes, local_xy: np.ndarray, config: dict[str, Any]) -> None:
+    if local_xy is None or len(local_xy) == 0:
+        return
+    ax.plot(
+        local_xy[:, 1],
+        local_xy[:, 0],
+        color=config["line_color"],
+        alpha=config["line_color_alpha"],
+        linewidth=config["line_width"],
+        linestyle=config["line_style"],
+        zorder=config["zorder"],
+        label="Simulated (PDM)",
+    )
+
+
+def _find_first_at_fault_collision(scorer: PDMScorer, pred_idx: int) -> dict[str, Any] | None:
+    proposal_collided_track_ids = copy.deepcopy(scorer._observation.collided_track_ids)
+    observation = scorer._observation
+    interval = scorer.proposal_sampling.interval_length
+
+    for time_idx in range(scorer.proposal_sampling.num_poses + 1):
+        ego_polygon = scorer._ego_polygons[pred_idx, time_idx]
+        intersecting = observation[time_idx].query(
+            np.asarray([ego_polygon], dtype=object),
+            predicate="intersects",
+        )
+        if len(intersecting) == 0:
+            continue
+
+        tree_indices = intersecting[1] if len(intersecting) > 1 else intersecting[0]
+        if len(tree_indices) == 0:
+            continue
+
+        for geometry_idx in np.atleast_1d(tree_indices):
+            token = observation[time_idx].tokens[int(geometry_idx)]
+            if observation.red_light_token in token or token in proposal_collided_track_ids:
+                continue
+
+            ego_in_bad_area = (
+                scorer._ego_areas[pred_idx, time_idx, EgoAreaIndex.MULTIPLE_LANES]
+                or scorer._ego_areas[pred_idx, time_idx, EgoAreaIndex.NON_DRIVABLE_AREA]
+            )
+            tracked_object = observation.unique_objects[token]
+            collision_type = get_collision_type(
+                scorer._states[pred_idx, time_idx],
+                ego_polygon,
+                tracked_object,
+                observation[time_idx][token],
+            )
+            at_fault = collision_type in [
+                CollisionType.ACTIVE_FRONT_COLLISION,
+                CollisionType.STOPPED_TRACK_COLLISION,
+            ] or (ego_in_bad_area and collision_type == CollisionType.ACTIVE_LATERAL_COLLISION)
+
+            if at_fault:
+                return {
+                    "time_idx": time_idx,
+                    "time_s": time_idx * interval,
+                    "collision_type": collision_type.name,
+                    "object_type": str(tracked_object.tracked_object_type),
+                    "object_token": token,
+                    "ego_polygon": ego_polygon,
+                    "object_polygon": observation[time_idx][token],
+                }
+            proposal_collided_track_ids.append(token)
+    return None
+
+
+def _find_first_hard_offroad(scorer: PDMScorer, pred_idx: int) -> dict[str, Any] | None:
+    mask = scorer._ego_areas[pred_idx, :, EgoAreaIndex.NON_DRIVABLE_AREA]
+    if not mask.any():
+        return None
+    time_idx = int(np.where(mask)[0][0])
+    return {
+        "time_idx": time_idx,
+        "time_s": time_idx * scorer.proposal_sampling.interval_length,
+        "ego_polygon": scorer._ego_polygons[pred_idx, time_idx],
+    }
+
+
+def run_pdm_failure_diagnostics(
+    *,
+    metric_cache: MetricCache,
+    model_trajectory: Trajectory,
+    simulator: PDMSimulator,
+    scorer: PDMScorer,
+    metrics: dict[str, object],
+) -> PDMFailureDiagnostics:
+    pred_idx = 1
+    initial_ego_state = metric_cache.ego_state
+    pdm_trajectory = metric_cache.trajectory
+    pred_trajectory = transform_trajectory(model_trajectory, initial_ego_state)
+    pdm_states = get_trajectory_as_array(
+        pdm_trajectory,
+        simulator.proposal_sampling,
+        initial_ego_state.time_point,
+    )
+    pred_states = get_trajectory_as_array(
+        pred_trajectory,
+        simulator.proposal_sampling,
+        initial_ego_state.time_point,
+    )
+    trajectory_states = np.concatenate([pdm_states[None, ...], pred_states[None, ...]], axis=0)
+
+    history_states = getattr(metric_cache, "history_states", None)
+    if history_states is not None and history_states.ndim == 2:
+        history_states = np.repeat(history_states[None, ...], len(trajectory_states), axis=0)
+
+    simulated_states, simulated_reference_signals = simulator.simulate_proposals(
+        trajectory_states,
+        initial_ego_state,
+    )
+    scorer.score_proposals(
+        simulated_states,
+        simulated_reference_signals,
+        metric_cache.observation,
+        metric_cache.centerline,
+        metric_cache.route_lane_ids,
+        metric_cache.drivable_area_map,
+        history_states=history_states,
+    )
+
+    origin = StateSE2(*initial_ego_state.rear_axle.serialize())
+    global_xy = simulated_states[pred_idx, :, StateIndex.POINT]
+    global_se2 = np.column_stack([global_xy, simulated_states[pred_idx, :, StateIndex.HEADING]])
+    simulated_xy_local = convert_absolute_to_relative_se2_array(origin, global_se2)[:, :2]
+
+    diagnostics = PDMFailureDiagnostics(simulated_xy_local=simulated_xy_local)
+
+    if _metric_is_zero(metrics.get("no_at_fault_collisions")):
+        collision = _find_first_at_fault_collision(scorer, pred_idx)
+        if collision is not None:
+            diagnostics.collision_time_s = collision["time_s"]
+            diagnostics.collision_type = collision["collision_type"]
+            diagnostics.collision_object_type = collision["object_type"]
+            diagnostics.collision_object_token = collision["object_token"]
+            diagnostics.collision_ego_polygon_global = collision["ego_polygon"]
+            diagnostics.collision_object_polygon_global = collision["object_polygon"]
+            diagnostics.debug_notes.append(
+                f"NC fail @ {collision['time_s']:.1f}s | {collision['collision_type']} | "
+                f"{collision['object_type']} | obj={collision['object_token'][:8]}"
+            )
+
+    if _metric_is_zero(metrics.get("drivable_area_compliance")):
+        offroad = _find_first_hard_offroad(scorer, pred_idx)
+        if offroad is not None:
+            diagnostics.offroad_time_s = offroad["time_s"]
+            diagnostics.offroad_ego_polygon_global = offroad["ego_polygon"]
+            diagnostics.debug_notes.append(f"DAC hard off-road @ {offroad['time_s']:.1f}s")
+
+    return diagnostics
+
+
+def add_failure_debug_overlays(
+    bev_ax: plt.Axes,
+    origin: StateSE2,
+    diagnostics: PDMFailureDiagnostics,
+) -> None:
+    _plot_local_xy_path_on_bev(bev_ax, diagnostics.simulated_xy_local, DEBUG_SIM_TRAJ_CONFIG)
+
+    if diagnostics.collision_ego_polygon_global is not None:
+        ego_local = _global_polygon_to_ego_local(diagnostics.collision_ego_polygon_global, origin)
+        _plot_local_polygon_on_bev(bev_ax, ego_local, DEBUG_EGO_EVENT_BOX_CONFIG)
+        center = ego_local[:-1].mean(axis=0)
+        bev_ax.scatter(
+            [center[1]],
+            [center[0]],
+            s=80,
+            c=DEBUG_EGO_EVENT_BOX_CONFIG["line_color"],
+            marker="x",
+            zorder=10,
+        )
+
+    if diagnostics.collision_object_polygon_global is not None:
+        obj_local = _global_polygon_to_ego_local(diagnostics.collision_object_polygon_global, origin)
+        _plot_local_polygon_on_bev(bev_ax, obj_local, DEBUG_OBJ_EVENT_BOX_CONFIG)
+
+    if diagnostics.offroad_ego_polygon_global is not None:
+        offroad_local = _global_polygon_to_ego_local(diagnostics.offroad_ego_polygon_global, origin)
+        _plot_local_polygon_on_bev(bev_ax, offroad_local, DEBUG_OFFROAD_EGO_BOX_CONFIG)
+        center = offroad_local[:-1].mean(axis=0)
+        bev_ax.scatter(
+            [center[1]],
+            [center[0]],
+            s=80,
+            c=DEBUG_OFFROAD_EGO_BOX_CONFIG["line_color"],
+            marker="x",
+            zorder=10,
+        )
 
 
 def build_scene_filter(scene_filter_name: str) -> SceneFilter:
@@ -170,6 +501,10 @@ def save_vis_for_tokens(
     agent: ReCogDriveAgent,
     rank: int,
     world_size: int,
+    debug_failures: bool = False,
+    metric_cache_loader: MetricCacheLoader | None = None,
+    simulator: PDMSimulator | None = None,
+    scorer: PDMScorer | None = None,
 ) -> int:
     _ensure_dir(out_dir)
     df_index = df.set_index("token", drop=False) if "token" in df.columns else None
@@ -203,9 +538,34 @@ def save_vis_for_tokens(
                     except Exception:
                         comfort = None
 
-            fig, _bev_ax, camera_ax = plot_bev_and_camera_with_agent(scene, scene_traj, frame_idx, agent)
+            fig, bev_ax, camera_ax = plot_bev_and_camera_with_agent(scene, scene_traj, frame_idx, agent)
+
+            debug_notes: list[str] = []
+            if _should_debug_failures(metrics, debug_failures):
+                if metric_cache_loader is None or simulator is None or scorer is None:
+                    print(f"[WARN] token={token} debug_failures 需要 metric_cache/simulator/scorer，已跳过")
+                elif token not in metric_cache_loader.tokens:
+                    print(f"[WARN] token={token} 无 metric cache，debug 已跳过")
+                else:
+                    try:
+                        with lzma.open(metric_cache_loader.metric_cache_paths[token], "rb") as f:
+                            metric_cache: MetricCache = pickle.load(f)
+                        model_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input())
+                        diagnostics = run_pdm_failure_diagnostics(
+                            metric_cache=metric_cache,
+                            model_trajectory=model_trajectory,
+                            simulator=simulator,
+                            scorer=scorer,
+                            metrics=metrics,
+                        )
+                        origin = StateSE2(*scene.frames[frame_idx].ego_status.ego_pose)
+                        add_failure_debug_overlays(bev_ax, origin, diagnostics)
+                        debug_notes = diagnostics.debug_notes
+                    except Exception as debug_exc:
+                        print(f"[WARN] token={token} debug_failures 失败: {debug_exc}")
+
             if camera_ax is not None:
-                overlay = _build_camera_overlay_text(token, metrics)
+                overlay = _build_overlay_text(token, metrics, debug_notes)
                 camera_ax.text(
                     0.01,
                     0.99,
@@ -213,19 +573,25 @@ def save_vis_for_tokens(
                     transform=camera_ax.transAxes,
                     ha="left",
                     va="top",
-                    fontsize=10,
+                    fontsize=13 if debug_notes else 14,
                     color="white",
                     bbox=dict(facecolor="black", alpha=0.55, edgecolor="none", pad=3),
                     zorder=10,
                 )
+
+                legend_lines = ["GT: green | Planner: red"]
+                if debug_notes:
+                    legend_lines.append(
+                        "Sim: orange dash | Collision ego: gold | Collision obj: magenta | Off-road ego: orange-red"
+                    )
                 camera_ax.text(
                     0.01,
                     0.01,
-                    "GT trajectory: green | Planner trajectory: red",
+                    " | ".join(legend_lines),
                     transform=camera_ax.transAxes,
                     ha="left",
                     va="bottom",
-                    fontsize=10,
+                    fontsize=13,
                     color="white",
                     bbox=dict(facecolor="black", alpha=0.55, edgecolor="none", pad=3),
                     zorder=10,
@@ -311,6 +677,16 @@ def parse_args():
 
     parser.add_argument("--time_horizon", type=float, default=4.0)
     parser.add_argument("--interval_length", type=float, default=0.5)
+    parser.add_argument(
+        "--debug_failures",
+        action="store_true",
+        help="对 NC=0 或 DAC=0 的样本叠加 PDM 仿真轨迹及碰撞/越界 box",
+    )
+    parser.add_argument(
+        "--metric_cache_path",
+        default="",
+        help="metric cache 目录（debug_failures 必需，默认 $NAVSIM_EXP_ROOT/metric_cache2_v2）",
+    )
     return parser.parse_args()
 
 
@@ -354,6 +730,19 @@ def main():
     )
 
     out_dir = Path(args.out)
+
+    metric_cache_loader = None
+    simulator = None
+    scorer = None
+    if args.debug_failures:
+        metric_cache_path = args.metric_cache_path or str(
+            Path(os.getenv("NAVSIM_EXP_ROOT", "/NXT/lst/vla/navsim/exp")) / "metric_cache2"
+        )
+        if rank == 0:
+            print(f"debug_failures enabled, metric_cache_path={metric_cache_path}")
+        metric_cache_loader = MetricCacheLoader(Path(metric_cache_path))
+        simulator, scorer = build_pdm_simulator_scorer()
+
     saved = save_vis_for_tokens(
         tokens=tokens,
         df=df,
@@ -363,6 +752,10 @@ def main():
         agent=agent,
         rank=rank,
         world_size=world_size,
+        debug_failures=bool(args.debug_failures),
+        metric_cache_loader=metric_cache_loader,
+        simulator=simulator,
+        scorer=scorer,
     )
     print(f"Rank {rank}: 保存 {saved} 张 -> {out_dir}")
 
