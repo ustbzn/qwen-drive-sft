@@ -19,9 +19,12 @@ def filter_scenes(data_path: Path, scene_filter: SceneFilter) -> Dict[str, List[
     :return: dictionary of raw logs format
     """
 
-    def split_list(input_list: List[Any], num_frames: int, frame_interval: int) -> List[List[Any]]:
+    def split_list(input_list: List[Any], scene_filter: SceneFilter) -> List[List[Any]]:
         """Helper function to split frame list according to sampling specification."""
-        return [input_list[i : i + num_frames] for i in range(0, len(input_list), frame_interval)]
+        return [
+            input_list[i : i + scene_filter.num_raw_frames : scene_filter.frame_stride]
+            for i in range(0, len(input_list), scene_filter.frame_interval)
+        ]
 
     filtered_scenes: Dict[str, Scene] = {}
     stop_loading: bool = False
@@ -40,7 +43,7 @@ def filter_scenes(data_path: Path, scene_filter: SceneFilter) -> Dict[str, List[
     for log_pickle_path in tqdm(log_files, desc="Loading logs"):
 
         scene_dict_list = pickle.load(open(log_pickle_path, "rb"))
-        for frame_list in split_list(scene_dict_list, scene_filter.num_frames, scene_filter.frame_interval):
+        for frame_list in split_list(scene_dict_list, scene_filter):
             # Filter scenes which are too short
             if len(frame_list) < scene_filter.num_frames:
                 continue

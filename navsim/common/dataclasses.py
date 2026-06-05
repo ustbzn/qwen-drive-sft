@@ -608,6 +608,7 @@ class SceneFilter:
     num_history_frames: int = 4
     num_future_frames: int = 10
     frame_interval: Optional[int] = None
+    frame_stride: int = 1
     has_route: bool = True
 
     max_scenes: Optional[int] = None
@@ -618,11 +619,12 @@ class SceneFilter:
     def __post_init__(self):
 
         if self.frame_interval is None:
-            self.frame_interval = self.num_frames
+            self.frame_interval = self.num_raw_frames
 
         assert self.num_history_frames >= 1, "SceneFilter: num_history_frames must greater equal one."
         assert self.num_future_frames >= 0, "SceneFilter: num_future_frames must greater equal zero."
         assert self.frame_interval >= 1, "SceneFilter: frame_interval must greater equal one."
+        assert self.frame_stride >= 1, "SceneFilter: frame_stride must greater equal one."
 
     @property
     def num_frames(self) -> int:
@@ -630,6 +632,13 @@ class SceneFilter:
         :return: total number for frames for scenes to extract.
         """
         return self.num_history_frames + self.num_future_frames
+
+    @property
+    def num_raw_frames(self) -> int:
+        """
+        :return: number of raw frames required before applying frame_stride.
+        """
+        return (self.num_frames - 1) * self.frame_stride + 1
 
 
 @dataclass

@@ -1,0 +1,4 @@
+defaults:
+  - scene_filter: mogo_10hz
+
+data_split: trainval

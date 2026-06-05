@@ -1,0 +1,17 @@
+_target_: navsim.common.dataclasses.SceneFilter
+_convert_: 'all'
+
+# Mogo pkl frames are dense 10Hz. Keep the model-facing history/target cadence
+# aligned with NAVSIM 2Hz by sampling every 5 raw frames inside each scene window.
+num_history_frames: 4
+num_future_frames: 10
+frame_stride: 5
+
+# Advance sample centers every 0.5s in the raw 10Hz pkl.
+frame_interval: 5
+
+has_route: true
+
+max_scenes: null
+log_names: null
+tokens: null
