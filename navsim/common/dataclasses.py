@@ -148,15 +148,33 @@ class EgoStatus:
     driving_command: npt.NDArray[np.int]
     ego_yaw_rate: float = 0.0
     ego_curvature: float = 0.0
+    ego_curvature_rate: float = 0.0
+    ego_steering_wheel_angle: float = 0.0
+    ego_steering_wheel_rate: float = 0.0
     in_global_frame: bool = False  # False for AgentInput
+
+
+def _extract_can_bus_value(scene_frame: Dict, value_index: int) -> float:
+    """Extract a scalar can_bus value with zero fallback for missing fields."""
+    can_bus = scene_frame.get("can_bus", None)
+    if can_bus is None or len(can_bus) <= value_index:
+        return 0.0
+    return float(can_bus[value_index])
 
 
 def _extract_ego_yaw_rate(scene_frame: Dict) -> float:
     """Extract ego yaw rate from can_bus angular velocity z."""
-    can_bus = scene_frame.get("can_bus", None)
-    if can_bus is None or len(can_bus) <= 15:
-        return 0.0
-    return float(can_bus[15])
+    return _extract_can_bus_value(scene_frame, 15)
+
+
+def _extract_ego_steering_wheel_angle(scene_frame: Dict) -> float:
+    """Extract steering wheel angle when available; NAVSIM/nuPlan falls back to zero."""
+    return _extract_can_bus_value(scene_frame, 16)
+
+
+def _extract_ego_steering_wheel_rate(scene_frame: Dict) -> float:
+    """Extract steering wheel rate when available; NAVSIM/nuPlan falls back to zero."""
+    return _extract_can_bus_value(scene_frame, 17)
 
 
 def _compute_ego_curvature(
@@ -169,6 +187,45 @@ def _compute_ego_curvature(
     if speed < min_speed:
         return 0.0
     return float(ego_yaw_rate / speed)
+
+
+def _extract_frame_timestamp_s(scene_frame: Dict) -> Optional[float]:
+    """Extract frame timestamp in seconds. NAVSIM stores timestamps in microseconds."""
+    timestamp = scene_frame.get("timestamp", None)
+    if timestamp is None:
+        return None
+    return float(timestamp) * 1e-6
+
+
+def _compute_ego_curvature_rates(
+    ego_curvatures: List[float],
+    scene_frames: List[Dict],
+    default_interval_s: float = NAVSIM_INTERVAL_LENGTH,
+) -> List[float]:
+    """Compute curvature rate from past-to-current curvature differences."""
+    ego_curvature_rates: List[float] = []
+    timestamps_s = [_extract_frame_timestamp_s(scene_frame) for scene_frame in scene_frames]
+
+    for frame_idx, ego_curvature in enumerate(ego_curvatures):
+        if frame_idx == 0:
+            ego_curvature_rates.append(0.0)
+            continue
+
+        dt_s = default_interval_s
+        current_timestamp_s = timestamps_s[frame_idx]
+        previous_timestamp_s = timestamps_s[frame_idx - 1]
+        if current_timestamp_s is not None and previous_timestamp_s is not None:
+            timestamp_dt_s = current_timestamp_s - previous_timestamp_s
+            if timestamp_dt_s > 1e-6:
+                dt_s = timestamp_dt_s
+
+        if dt_s <= 1e-6:
+            ego_curvature_rates.append(0.0)
+            continue
+
+        ego_curvature_rates.append(float((ego_curvature - ego_curvatures[frame_idx - 1]) / dt_s))
+
+    return ego_curvature_rates
 
 
 @dataclass
@@ -216,19 +273,39 @@ class AgentInput:
         cameras: List[EgoStatus] = []
         lidars: List[Lidar] = []
 
+        ego_velocities: List[npt.NDArray[np.float32]] = []
+        ego_accelerations: List[npt.NDArray[np.float32]] = []
+        ego_yaw_rates: List[float] = []
+        ego_curvatures: List[float] = []
+        ego_steering_wheel_angles: List[float] = []
+        ego_steering_wheel_rates: List[float] = []
         for frame_idx in range(num_history_frames):
-
             ego_dynamic_state = scene_dict_list[frame_idx]["ego_dynamic_state"]
             ego_velocity = np.array(ego_dynamic_state[:2], dtype=np.float32)
             ego_yaw_rate = _extract_ego_yaw_rate(scene_dict_list[frame_idx])
-            ego_curvature = _compute_ego_curvature(ego_velocity, ego_yaw_rate)
+
+            ego_velocities.append(ego_velocity)
+            ego_accelerations.append(np.array(ego_dynamic_state[2:], dtype=np.float32))
+            ego_yaw_rates.append(ego_yaw_rate)
+            ego_curvatures.append(_compute_ego_curvature(ego_velocity, ego_yaw_rate))
+            ego_steering_wheel_angles.append(_extract_ego_steering_wheel_angle(scene_dict_list[frame_idx]))
+            ego_steering_wheel_rates.append(_extract_ego_steering_wheel_rate(scene_dict_list[frame_idx]))
+
+        ego_curvature_rates = _compute_ego_curvature_rates(
+            ego_curvatures, scene_dict_list[:num_history_frames]
+        )
+
+        for frame_idx in range(num_history_frames):
             ego_status = EgoStatus(
                 ego_pose=np.array(local_ego_poses[frame_idx], dtype=np.float32),
-                ego_velocity=ego_velocity,
-                ego_acceleration=np.array(ego_dynamic_state[2:], dtype=np.float32),
+                ego_velocity=ego_velocities[frame_idx],
+                ego_acceleration=ego_accelerations[frame_idx],
                 driving_command=scene_dict_list[frame_idx]["driving_command"],
-                ego_yaw_rate=ego_yaw_rate,
-                ego_curvature=ego_curvature,
+                ego_yaw_rate=ego_yaw_rates[frame_idx],
+                ego_curvature=ego_curvatures[frame_idx],
+                ego_curvature_rate=ego_curvature_rates[frame_idx],
+                ego_steering_wheel_angle=ego_steering_wheel_angles[frame_idx],
+                ego_steering_wheel_rate=ego_steering_wheel_rates[frame_idx],
             )
             ego_statuses.append(ego_status)
 
@@ -399,6 +476,9 @@ class Scene:
                     driving_command=frame_ego_status.driving_command,
                     ego_yaw_rate=frame_ego_status.ego_yaw_rate,
                     ego_curvature=frame_ego_status.ego_curvature,
+                    ego_curvature_rate=frame_ego_status.ego_curvature_rate,
+                    ego_steering_wheel_angle=frame_ego_status.ego_steering_wheel_angle,
+                    ego_steering_wheel_rate=frame_ego_status.ego_steering_wheel_rate,
                 )
             )
             cameras.append(self.frames[frame_idx].cameras)
@@ -443,6 +523,8 @@ class Scene:
             driving_command=scene_frame["driving_command"],
             ego_yaw_rate=ego_yaw_rate,
             ego_curvature=ego_curvature,
+            ego_steering_wheel_angle=_extract_ego_steering_wheel_angle(scene_frame),
+            ego_steering_wheel_rate=_extract_ego_steering_wheel_rate(scene_frame),
             in_global_frame=True,
         )
 
@@ -509,6 +591,12 @@ class Scene:
                 cameras=cameras,
             )
             frames.append(frame)
+
+        ego_curvature_rates = _compute_ego_curvature_rates(
+            [frame.ego_status.ego_curvature for frame in frames], scene_dict_list
+        )
+        for frame, ego_curvature_rate in zip(frames, ego_curvature_rates):
+            frame.ego_status.ego_curvature_rate = ego_curvature_rate
 
         return Scene(scene_metadata=scene_metadata, map_api=map_api, frames=frames)
 

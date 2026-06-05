@@ -28,6 +28,9 @@ EGO_STATUS_FEATURE_NAMES = (
     "ay",
     "yaw_rate",
     "curvature",
+    "curvature_rate",
+    "steering_wheel_angle",
+    "steering_wheel_rate",
 )
 
 
@@ -86,7 +89,13 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             torch.tensor(current_ego_status.ego_velocity, dtype=torch.float32),
             torch.tensor(current_ego_status.ego_acceleration, dtype=torch.float32),
             torch.tensor(
-                [current_ego_status.ego_yaw_rate, current_ego_status.ego_curvature],
+                [
+                    current_ego_status.ego_yaw_rate,
+                    current_ego_status.ego_curvature,
+                    current_ego_status.ego_curvature_rate,
+                    current_ego_status.ego_steering_wheel_angle,
+                    current_ego_status.ego_steering_wheel_rate,
+                ],
                 dtype=torch.float32,
             ),
         ], dim=-1)

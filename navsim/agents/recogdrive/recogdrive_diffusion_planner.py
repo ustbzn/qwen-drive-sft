@@ -104,7 +104,7 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     add_pos_embed: bool = True
     max_seq_len: int = 8
     ego_status_encoder_type: Literal['mlp', 'attention'] = 'mlp'
-    ego_status_dim: int = 10
+    ego_status_dim: int = 13
 
     sampling_method: Literal['flow', 'ddpm', 'ddim'] = 'ddim'
     num_inference_steps: int = 5
