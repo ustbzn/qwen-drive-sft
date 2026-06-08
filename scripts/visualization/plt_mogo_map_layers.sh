@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/NXT/lst/vla/mogo_data/2026-03-13-15-22-20}"
+DATA_ROOT="${DATA_ROOT:-/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20}"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/vis_output/map}"
 
 mkdir -p "${OUT_DIR}"

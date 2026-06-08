@@ -7,7 +7,7 @@ PDM layers: DRIVABLE_AREA (PDMDrivableMap), CENTERLINE (route Dijkstra centerlin
 
 Example:
   python navsim/planning/script/plt_mogo_map_layers.py \\
-    --data-root /NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \\
+    --data-root /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \\
     --pkl JLBJA20073D_20260313152238.pkl \\
     --frame-idx 150 \\
     --query-radius-m 200 --map-radius-m 200 --margin-m 200
@@ -635,7 +635,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("/NXT/lst/vla/mogo_data/2026-03-13-15-22-20"),
+        default=Path("/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20"),
         help="Dataset root containing dataset/maps and dataset/navsim_logs.",
     )
     parser.add_argument("--sqlite-path", type=Path, default=None, help="SQLite map file (default: first under dataset/maps).")

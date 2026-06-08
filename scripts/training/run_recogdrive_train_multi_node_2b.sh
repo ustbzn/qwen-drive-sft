@@ -1,8 +1,8 @@
 export NUPLAN_MAP_VERSION="nuplan-maps-v1.0"
-export NUPLAN_MAPS_ROOT="/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0"
-export NAVSIM_EXP_ROOT="/NXT/lst/vla/navsim/exp"
-export NAVSIM_DEVKIT_ROOT="/NXT/lst/vla/recog_drive"
-export OPENSCENE_DATA_ROOT="/NXT/lst/vla/navsim/download"
+export NUPLAN_MAPS_ROOT="/D2/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0"
+export NAVSIM_EXP_ROOT="/D2/NXT/lst/vla/navsim/exp"
+export NAVSIM_DEVKIT_ROOT="/D2/NXT/lst/vla/recog_drive"
+export OPENSCENE_DATA_ROOT="/D2/NXT/lst/vla/navsim/download"
 TRAIN_TEST_SPLIT=navtrain
 export NCCL_IB_DISABLE=0
 export NCCL_P2P_DISABLE=0
@@ -36,7 +36,7 @@ torchrun \
     agent=recogdrive_agent \
     agent.lr=1e-4 \
     agent.grpo=False \
-    agent.vlm_path='/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B' \
+    agent.vlm_path='/D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B' \
     agent.cam_type='single' \
     agent.cache_hidden_state=True \
     agent.vlm_type="internvl" \
@@ -49,6 +49,6 @@ torchrun \
     dataloader.params.batch_size=64 \
     experiment_name=training_recogdrive_agent \
     train_test_split=$TRAIN_TEST_SPLIT \
-    cache_path="/NXT/lst/vla/navsim/exp/recogdrive_agent_cache_dir_train_v2" \
+    cache_path="/D2/NXT/lst/vla/navsim/exp/recogdrive_agent_cache_dir_train_hs0_hsL" \
     use_cache_without_dataset=True \
     force_cache_computation=False > train_recogdrive_exp_2b.txt 2>&1

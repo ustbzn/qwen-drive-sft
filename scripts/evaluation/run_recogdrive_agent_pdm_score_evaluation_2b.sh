@@ -3,10 +3,10 @@ set -x
 TRAIN_TEST_SPLIT=navtest
 
 export NUPLAN_MAP_VERSION="nuplan-maps-v1.0"
-export NUPLAN_MAPS_ROOT="/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0"
-export NAVSIM_EXP_ROOT="/NXT/lst/vla/navsim/exp"
-export NAVSIM_DEVKIT_ROOT="/NXT/lst/vla/recog_drive"
-export OPENSCENE_DATA_ROOT="/NXT/lst/vla/navsim/download"
+export NUPLAN_MAPS_ROOT="/D2/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0"
+export NAVSIM_EXP_ROOT="/D2/NXT/lst/vla/navsim/exp"
+export NAVSIM_DEVKIT_ROOT="/D2/NXT/lst/vla/recog_drive"
+export OPENSCENE_DATA_ROOT="/D2/NXT/lst/vla/navsim/download"
 export NCCL_IB_DISABLE=0
 export NCCL_P2P_DISABLE=0
 export NCCL_SHM_DISABLE=0
@@ -23,7 +23,7 @@ echo "GPUS: ${GPUS}"
 export CUDA_LAUNCH_BLOCKING=0
 
 
-CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/RL/train_rl_hs0_hsL_8.ckpt"
+CHECKPOINT="/D2/NXT/lst/vla/recog_drive/checkpoints/IL/train_il_hs0_hsL_2.ckpt"
 
 
 # 1. Set NAVSIM dataset and related environment variables
@@ -38,8 +38,8 @@ torchrun \
     train_test_split=$TRAIN_TEST_SPLIT \
     agent=recogdrive_agent \
     agent.checkpoint_path="$CHECKPOINT" \
-    agent.vlm_path='/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B' \
-    metric_cache_path=/NXT/lst/vla/navsim/exp/metric_cache2_v2 \
+    agent.vlm_path='/D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B' \
+    metric_cache_path=/D2/NXT/lst/vla/navsim/exp/metric_cache2_v2 \
     agent.cam_type='single' \
     agent.grpo=False \
     agent.cache_hidden_state=False \

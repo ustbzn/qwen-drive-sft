@@ -104,16 +104,16 @@ def test_qwen3_feature_cache_name_is_model_specific_for_cache_read_and_write(mon
 
 
 def test_load_qwen3_processor_from_local_model_path():
-    processor = load_qwen3_processor("/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct")
+    processor = load_qwen3_processor("/pcpt/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct")
 
     assert type(processor).__name__ == "Qwen3VLProcessor"
     assert type(processor.tokenizer).__name__ == "Qwen2Tokenizer"
 
 
 def test_qwen3_processor_accepts_mogo_image_message():
-    processor = load_qwen3_processor("/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct")
+    processor = load_qwen3_processor("/pcpt/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct")
     image = (
-        "/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/sensor_blobs/trainval/"
+        "/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/sensor_blobs/trainval/"
         "JLBJA20073D_20260313152238/front/1773386553936696.jpg"
     )
     messages = [[
@@ -143,7 +143,7 @@ def test_qwen3_processor_accepts_mogo_image_message():
 
 def test_mogo_scene_can_be_built_without_nuplan_map_for_training_cache():
     pkl_path = (
-        "/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/navsim_logs/trainval/"
+        "/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/navsim_logs/trainval/"
         "JLBJA20073D_20260313152238.pkl"
     )
     with open(pkl_path, "rb") as f:
@@ -151,7 +151,7 @@ def test_mogo_scene_can_be_built_without_nuplan_map_for_training_cache():
 
     scene = Scene.from_scene_dict_list(
         frames[:12],
-        sensor_blobs_path=Path("/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/sensor_blobs/trainval"),
+        sensor_blobs_path=Path("/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/sensor_blobs/trainval"),
         num_history_frames=4,
         num_future_frames=8,
         sensor_config=SensorConfig.build_all_sensors(include=[0, 1, 2, 3]),

@@ -9,11 +9,11 @@
 Mogo 数据统一使用以下根目录：
 
 ```bash
-export DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20
+export DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20
 export NUPLAN_MAP_VERSION=nuplan-maps-v1.0
 export NUPLAN_MAPS_ROOT=${DATA_ROOT}/dataset/maps
 export NAVSIM_EXP_ROOT=${DATA_ROOT}/exp
-export NAVSIM_DEVKIT_ROOT=/pcpt/project/lijun/.code/qw3/recog_drive_mogo
+export NAVSIM_DEVKIT_ROOT=/pcpt/pcpt/project/lijun/.code/qw3/recog_drive_mogo
 export OPENSCENE_DATA_ROOT=${DATA_ROOT}/dataset
 export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH}
 ```
@@ -37,7 +37,7 @@ export MOGO_MAP_SQLITE=${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sql
 | 参数 | 作用 | Qwen3-VL 推荐值 | InternVL 推荐值 |
 | --- | --- | --- | --- |
 | `agent.vlm_type` | VLM 类型 | `qwen3` | `internvl` |
-| `agent.vlm_path` | VLM 权重路径 | Qwen3 或 Qwen3 Mogo 微调路径 | `/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B` |
+| `agent.vlm_path` | VLM 权重路径 | Qwen3 或 Qwen3 Mogo 微调路径 | `/D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B` |
 | `agent.vl_hidden_dim` | VLM hidden state 维度 | `2048` | `1536` |
 | `agent.cache_hidden_state` | 是否使用缓存 hidden state | 训练通常为 `True`；评测通常为 `False` | 同左 |
 | `agent.cache_mode` | 是否在缓存阶段加载 VLM 计算 hidden state | 缓存阶段为 `True` | 缓存阶段为 `True` |
@@ -59,9 +59,9 @@ scripts/cache_dataset/run_mogo_metric_caching.sh
 推荐命令：
 
 ```bash
-export NAVSIM_EXP_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp
-export OPENSCENE_DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset
-export NUPLAN_MAPS_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps
+export NAVSIM_EXP_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp
+export OPENSCENE_DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset
+export NUPLAN_MAPS_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps
 
 python navsim/planning/script/run_mogo_metric_caching.py \
   train_test_split=trainval \
@@ -85,9 +85,9 @@ scripts/cache_dataset/run_caching_recogdrive_qwen3_hidden_state.sh
 ### 4.1 原始 Qwen3-VL cache
 
 ```bash
-DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
-QWEN3_VL_PATH=/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct \
-CACHE_PATH=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3_full_20260602_125622_cache \
+DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
+QWEN3_VL_PATH=/pcpt/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct \
+CACHE_PATH=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3_full_20260602_125622_cache \
 GPUS=1 \
 sh scripts/cache_dataset/run_caching_recogdrive_qwen3_hidden_state.sh
 ```
@@ -97,15 +97,15 @@ sh scripts/cache_dataset/run_caching_recogdrive_qwen3_hidden_state.sh
 微调模型路径：
 
 ```text
-/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924
+/D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924
 ```
 
 推荐命令：
 
 ```bash
-DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
-QWEN3_VL_PATH=/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
-CACHE_PATH=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_hs-8_hs-2_20260603_cache \
+DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
+QWEN3_VL_PATH=/D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+CACHE_PATH=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_hs-8_hs-2_20260603_cache \
 GPUS=1 \
 sh scripts/cache_dataset/run_caching_recogdrive_qwen3_hidden_state.sh \
   agent.first_hidden_state_index=-8 \
@@ -129,9 +129,9 @@ scripts/training/run_recogdrive_qwen3_train_multi_node_2b.sh
 ### 5.1 原始 Qwen3-VL IL
 
 ```bash
-DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
-QWEN3_VL_PATH=/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct \
-CACHE_PATH=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3_full_20260602_125622_cache \
+DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
+QWEN3_VL_PATH=/pcpt/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct \
+CACHE_PATH=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3_full_20260602_125622_cache \
 GPUS=1 \
 BATCH_SIZE=8 \
 MAX_EPOCHS=20 \
@@ -148,9 +148,9 @@ sh scripts/training/run_recogdrive_qwen3_train_multi_node_2b.sh \
 ### 5.2 Mogo 微调 Qwen3-VL 默认配置
 
 ```bash
-DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
-QWEN3_VL_PATH=/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
-CACHE_PATH=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_20260603_0718_cache \
+DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
+QWEN3_VL_PATH=/D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+CACHE_PATH=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_20260603_0718_cache \
 GPUS=1 \
 BATCH_SIZE=8 \
 MAX_EPOCHS=20 \
@@ -178,9 +178,9 @@ trainer.params.max_epochs: 100
 启动命令：
 
 ```bash
-DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
-QWEN3_VL_PATH=/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
-CACHE_PATH=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_hs-8_hs-2_20260603_cache \
+DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
+QWEN3_VL_PATH=/D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+CACHE_PATH=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_hs-8_hs-2_20260603_cache \
 GPUS=1 \
 BATCH_SIZE=8 \
 MAX_EPOCHS=100 \
@@ -208,10 +208,10 @@ scripts/training/run_recogdrive_train_multi_node_2b.sh
 该脚本中旧默认路径指向 NAVSIM，应在 Mogo 实验中改为或覆盖为：
 
 ```bash
-export NAVSIM_EXP_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp
-export NAVSIM_DEVKIT_ROOT=/pcpt/project/lijun/.code/qw3/recog_drive_mogo
-export OPENSCENE_DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset
-export NUPLAN_MAPS_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps
+export NAVSIM_EXP_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp
+export NAVSIM_DEVKIT_ROOT=/pcpt/pcpt/project/lijun/.code/qw3/recog_drive_mogo
+export OPENSCENE_DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset
+export NUPLAN_MAPS_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps
 ```
 
 推荐直接使用等价 `torchrun` 命令：
@@ -222,7 +222,7 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
   agent=recogdrive_agent \
   agent.lr=1e-4 \
   agent.grpo=False \
-  agent.vlm_path=/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
+  agent.vlm_path=/D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
   agent.cam_type=single \
   agent.cache_hidden_state=True \
   agent.vlm_type=internvl \
@@ -238,7 +238,7 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
   train_test_split=trainval \
   train_logs=null \
   val_logs=null \
-  cache_path=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/internvl_full_20260603_034735_cache \
+  cache_path=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/internvl_full_20260603_034735_cache \
   use_cache_without_dataset=True \
   force_cache_computation=False
 ```
@@ -266,10 +266,10 @@ scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh
 ### 7.1 Qwen3-VL 最优 IL 评测
 
 ```bash
-DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
-QWEN3_VL_PATH=/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
+QWEN3_VL_PATH=/D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
 CHECKPOINT=/tmp/qwen3vl_mogo_ft_hs-8_hs-2_norm_100ep_20260603_epoch65_step1056.ckpt \
-METRIC_CACHE_PATH=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
+METRIC_CACHE_PATH=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
 GPUS=1 \
 sh scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh \
   agent.normalize_vl_hidden_states=true \
@@ -281,7 +281,7 @@ sh scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh \
 本轮评测 CSV：
 
 ```text
-/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv
+/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv
 ```
 
 ### 7.2 InternVL IL 评测
@@ -294,8 +294,8 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
   train_test_split=trainval \
   agent=recogdrive_agent \
   agent.checkpoint_path=/tmp/internvl_full_20260603_034735_epoch18_step304.ckpt \
-  agent.vlm_path=/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
-  metric_cache_path=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
+  agent.vlm_path=/D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
+  metric_cache_path=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
   agent.cam_type=single \
   agent.grpo=False \
   agent.cache_hidden_state=False \
@@ -310,7 +310,7 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
 本轮评测 CSV：
 
 ```text
-/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_agent_eval/2026.06.03.03.59.59/2026.06.03.04.01.00.csv
+/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_agent_eval/2026.06.03.03.59.59/2026.06.03.04.01.00.csv
 ```
 
 ## 8. RL / GRPO 训练
@@ -333,7 +333,7 @@ RL 关键参数：
 agent.grpo: true
 agent.checkpoint_path: <IL checkpoint>
 agent.reference_policy_checkpoint: <同一个 IL checkpoint>
-agent.metric_cache_path: /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1
+agent.metric_cache_path: /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1
 trainer.params.max_epochs: 10
 dataloader.params.batch_size: 2
 ```
@@ -345,7 +345,7 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
   navsim/planning/script/run_training_recogdrive_rl.py \
   agent=recogdrive_agent \
   agent.lr=1e-4 \
-  agent.vlm_path=/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+  agent.vlm_path=/D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
   agent.cam_type=single \
   agent.grpo=True \
   agent.cache_hidden_state=True \
@@ -359,14 +359,14 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  agent.metric_cache_path=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
+  agent.metric_cache_path=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
   trainer.params.max_epochs=10 \
   trainer.params.num_nodes=1 \
   trainer.params.devices=1 \
   dataloader.params.batch_size=2 \
   experiment_name=training_recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_grpo_10ep \
   train_test_split=trainval \
-  cache_path=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_hs-8_hs-2_20260603_cache \
+  cache_path=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/qwen3vl_mogo_ft_hs-8_hs-2_20260603_cache \
   use_cache_without_dataset=True \
   force_cache_computation=False
 ```
@@ -385,7 +385,7 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
   navsim/planning/script/run_training_recogdrive_rl.py \
   agent=recogdrive_agent \
   agent.lr=1e-4 \
-  agent.vlm_path=/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
+  agent.vlm_path=/D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
   agent.cam_type=single \
   agent.grpo=True \
   agent.cache_hidden_state=True \
@@ -396,14 +396,14 @@ torchrun --nnodes=1 --nproc_per_node=1 --master_port=63669 \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  agent.metric_cache_path=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
+  agent.metric_cache_path=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
   trainer.params.max_epochs=10 \
   trainer.params.num_nodes=1 \
   trainer.params.devices=1 \
   dataloader.params.batch_size=2 \
   experiment_name=training_recogdrive_internvl_grpo_10ep \
   train_test_split=trainval \
-  cache_path=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/internvl_full_20260603_034735_cache \
+  cache_path=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/internvl_full_20260603_034735_cache \
   use_cache_without_dataset=True \
   force_cache_computation=False
 ```
@@ -425,10 +425,10 @@ RL checkpoint 的评测仍使用 `run_pdm_score_recogdrive.py`。区别是：
 Qwen3 RL epoch 9 示例：
 
 ```bash
-DATA_ROOT=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
-QWEN3_VL_PATH=/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+DATA_ROOT=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20 \
+QWEN3_VL_PATH=/D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
 CHECKPOINT=/tmp/qwen3vl_100ep_grpo_10ep_20260603_epoch9_step630.ckpt \
-METRIC_CACHE_PATH=/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
+METRIC_CACHE_PATH=/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/metric_cache_mogo_v1 \
 GPUS=1 \
 sh scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh \
   agent.normalize_vl_hidden_states=true \
@@ -461,11 +461,11 @@ Qwen3 100 epoch IL 示例：
 
 ```bash
 python -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv \
-  --out /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603/qwen3_100ep \
+  --csv /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv \
+  --out /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603/qwen3_100ep \
   --checkpoint /tmp/qwen3vl_mogo_ft_hs-8_hs-2_norm_100ep_20260603_epoch65_step1056.ckpt \
-  --vlm_path /NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
-  --openscene_data_root /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
+  --vlm_path /D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+  --openscene_data_root /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
   --split trainval \
   --scene_filter all_scenes \
   --vlm_type qwen3 \
@@ -475,25 +475,25 @@ python -m navsim.planning.script.plt_vis_from_csv_all \
   --normalize_vl_hidden_states \
   --first_hidden_state_index -8 \
   --last_hidden_state_index -2 \
-  --mogo_map_sqlite_path /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+  --mogo_map_sqlite_path /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
 ```
 
 InternVL IL 示例：
 
 ```bash
 python -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_agent_eval/2026.06.03.03.59.59/2026.06.03.04.01.00.csv \
-  --out /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603/internvl \
+  --csv /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_agent_eval/2026.06.03.03.59.59/2026.06.03.04.01.00.csv \
+  --out /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603/internvl \
   --checkpoint /tmp/internvl_full_20260603_034735_epoch18_step304.ckpt \
-  --vlm_path /NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
-  --openscene_data_root /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
+  --vlm_path /D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B \
+  --openscene_data_root /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
   --split trainval \
   --scene_filter all_scenes \
   --vlm_type internvl \
   --vlm_size small \
   --dit_type small \
   --sampling_method ddim \
-  --mogo_map_sqlite_path /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+  --mogo_map_sqlite_path /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
 ```
 
 ### 10.2 低分样例可视化
@@ -507,11 +507,11 @@ python -m navsim.planning.script.plt_vis_from_csv_all \
 
 ```bash
 python -m navsim.planning.script.plt_vis_low_score \
-  --csv /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv \
-  --out /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_low_score_qwen3_100ep \
+  --csv /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv \
+  --out /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_low_score_qwen3_100ep \
   --checkpoint /tmp/qwen3vl_mogo_ft_hs-8_hs-2_norm_100ep_20260603_epoch65_step1056.ckpt \
-  --vlm_path /NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
-  --openscene_data_root /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
+  --vlm_path /D2/NXT/vlm/miaobinqi/Qwen3-VL/output/qwen3vl_2b_mogo/20260409_1924 \
+  --openscene_data_root /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
   --split trainval \
   --scene_filter all_scenes \
   --vlm_type qwen3 \
@@ -532,14 +532,14 @@ python -m navsim.planning.script.plt_vis_from_csv_all \
   --token <token> \
   --checkpoint <planner checkpoint> \
   --vlm_path <VLM path> \
-  --openscene_data_root /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
+  --openscene_data_root /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset \
   --split trainval \
   --scene_filter all_scenes \
   --vlm_type qwen3 \
   --normalize_vl_hidden_states \
   --first_hidden_state_index -8 \
   --last_hidden_state_index -2 \
-  --mogo_map_sqlite_path /NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+  --mogo_map_sqlite_path /D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
 ```
 
 ### 10.3 Contact sheet 对比图
@@ -547,10 +547,10 @@ python -m navsim.planning.script.plt_vis_from_csv_all \
 本轮已生成的关键对比图：
 
 ```text
-/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603/contact_sheet_qwen3_20ep_vs_100ep_vs_internvl.png
-/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_centerline_qwen3_ft_20260603_0736/contact_sheet_centerline_worst_ft_vs_raw_vs_internvl.png
-/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_rl_qwen3_internvl_compare_20260603/contact_sheet_qwen3_il_vs_rl.png
-/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_rl_qwen3_internvl_compare_20260603/contact_sheet_internvl_il_vs_rl.png
+/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603/contact_sheet_qwen3_20ep_vs_100ep_vs_internvl.png
+/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_centerline_qwen3_ft_20260603_0736/contact_sheet_centerline_worst_ft_vs_raw_vs_internvl.png
+/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_rl_qwen3_internvl_compare_20260603/contact_sheet_qwen3_il_vs_rl.png
+/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_rl_qwen3_internvl_compare_20260603/contact_sheet_internvl_il_vs_rl.png
 ```
 
 如果需要新增 contact sheet，可以基于各可视化目录下的 `index_rank0.csv` 按相同 token 做横向拼图。推荐保留固定 token 集，避免每次对比样例不同导致结论不稳定。
@@ -624,11 +624,11 @@ agent.last_hidden_state_index: -2
 | Qwen3 RL epoch 1 checkpoint | `/tmp/qwen3vl_100ep_grpo_10ep_20260603_epoch1_step126.ckpt` |
 | Qwen3 RL epoch 9 checkpoint | `/tmp/qwen3vl_100ep_grpo_10ep_20260603_epoch9_step630.ckpt` |
 | InternVL RL epoch 9 checkpoint | `/tmp/internvl_grpo_10ep_20260603_epoch9_step630.ckpt` |
-| Qwen3 100 epoch IL CSV | `/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv` |
-| InternVL IL CSV | `/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_agent_eval/2026.06.03.03.59.59/2026.06.03.04.01.00.csv` |
-| Qwen3 RL epoch 1 CSV | `/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_grpo_10ep_epoch1_eval/2026.06.03.12.12.24/2026.06.03.12.13.11.csv` |
-| Qwen3 RL epoch 9 CSV | `/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_grpo_10ep_epoch9_eval/2026.06.03.12.13.38/2026.06.03.12.14.27.csv` |
-| InternVL RL epoch 9 CSV | `/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_grpo_10ep_epoch9_eval/2026.06.03.12.14.56/2026.06.03.12.15.52.csv` |
-| Qwen3 / InternVL IL 可视化 | `/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603` |
-| RL 可视化 | `/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_rl_qwen3_internvl_compare_20260603` |
+| Qwen3 100 epoch IL CSV | `/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_agent_eval/2026.06.03.09.33.31/2026.06.03.09.34.22.csv` |
+| InternVL IL CSV | `/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_agent_eval/2026.06.03.03.59.59/2026.06.03.04.01.00.csv` |
+| Qwen3 RL epoch 1 CSV | `/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_grpo_10ep_epoch1_eval/2026.06.03.12.12.24/2026.06.03.12.13.11.csv` |
+| Qwen3 RL epoch 9 CSV | `/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_qwen3_mogo_ft_hs-8_hs-2_norm_100ep_grpo_10ep_epoch9_eval/2026.06.03.12.13.38/2026.06.03.12.14.27.csv` |
+| InternVL RL epoch 9 CSV | `/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/recogdrive_internvl_grpo_10ep_epoch9_eval/2026.06.03.12.14.56/2026.06.03.12.15.52.csv` |
+| Qwen3 / InternVL IL 可视化 | `/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_qwen3_100ep_compare_20260603` |
+| RL 可视化 | `/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp/vis_rl_qwen3_internvl_compare_20260603` |
 
