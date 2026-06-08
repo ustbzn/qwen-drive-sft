@@ -13,8 +13,8 @@ export NCCL_SHM_DISABLE=0
 
 MASTER_PORT=${MASTER_PORT:-63669}
 PORT=${PORT:-63665}
-GPUS=${GPUS:-8}
-GPUS_PER_NODE=${GPUS_PER_NODE:-8}
+GPUS=${GPUS:-1}
+GPUS_PER_NODE=${GPUS_PER_NODE:-1}
 NODES=$((GPUS / GPUS_PER_NODE))
 export MASTER_PORT=${MASTER_PORT}
 export PORT=${PORT}
@@ -23,7 +23,7 @@ echo "GPUS: ${GPUS}"
 export CUDA_LAUNCH_BLOCKING=0
 
 
-CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/RL/train_rl_hs0_hsL_5.ckpt"
+CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/RL/train_rl_hs0_hsL_6.ckpt"
 
 
 # 1. Set NAVSIM dataset and related environment variables
