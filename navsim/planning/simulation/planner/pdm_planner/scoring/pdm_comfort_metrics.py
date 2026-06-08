@@ -37,13 +37,10 @@ max_abs_centripetal_accel = 2.1246  # [m/s^2]
 max_abs_centripetal_jerk = 2.5578  # [m/s^3]
 
 # (9) start_anchor_comfort_metric
-# Anchor acceleration bounds keep the same values as comfort v2 because acceleration is less sensitive to sampling interval.
-# Anchor jerk bounds use about 0.78x comfort v2 bounds (4.13 -> 3.20, 2.5578 -> 2.00) to compensate for lower-frequency 0.5s sampling without making the first version too strict.
+# Anchor bounds start stricter near the current state and relax to comfort v2 bounds at the end of the anchor horizon.
 start_anchor_min_lon_accel = min_lon_accel
 start_anchor_max_lon_accel = max_lon_accel
-start_anchor_max_abs_lon_jerk = 3.20  # [m/s^3]
-start_anchor_max_abs_centripetal_accel = max_abs_centripetal_accel  # [m/s^2]
-start_anchor_max_abs_centripetal_jerk = 2.00  # [m/s^3]
+start_anchor_max_abs_lon_jerk = max_abs_lon_jerk  # [m/s^3]
 
 
 def _get_centripetal_acceleration_bounds(
@@ -623,6 +620,10 @@ def ego_is_start_anchor_comfortable(
 ) -> npt.NDArray[np.bool_]:
     """
     Checks start-window comfort using historical left context.
+
+    Metrics are computed on the full history + start window, then checked at the
+    right endpoint nodes of the start window. This keeps edge-like metrics aligned
+    with their right endpoint while reusing the same extraction logic as comfort v2.
     """
     n_batch, n_time, n_states = anchor_states.shape
     assert n_time == len(anchor_time_point_s)
@@ -677,9 +678,11 @@ def ego_is_start_anchor_comfortable(
         anchor_reference_signal,
         anchor_time_point_s,
     )[:, check_slice]
+    velocity = anchor_states[:, check_slice, StateIndex.VELOCITY_X]
+    min_bound, max_bound = _get_centripetal_acceleration_bounds(velocity)
     min_bound, max_bound = _interpolate_anchor_bounds(
-        np.array(-start_anchor_max_abs_centripetal_accel, dtype=np.float64),
-        np.array(start_anchor_max_abs_centripetal_accel, dtype=np.float64),
+        min_bound,
+        max_bound,
         num_check_steps,
         strict_ratio,
     )
@@ -690,9 +693,10 @@ def ego_is_start_anchor_comfortable(
         anchor_reference_signal,
         anchor_time_point_s,
     )[:, check_slice]
+    min_bound, max_bound = _get_centripetal_jerk_bounds(velocity)
     min_bound, max_bound = _interpolate_anchor_bounds(
-        np.array(-start_anchor_max_abs_centripetal_jerk, dtype=np.float64),
-        np.array(start_anchor_max_abs_centripetal_jerk, dtype=np.float64),
+        min_bound,
+        max_bound,
         num_check_steps,
         strict_ratio,
     )
