@@ -65,7 +65,7 @@ class PDMScorerConfig:
     centerline_target_distance: float = 0.3  # [m] (centerline convergence)
     centerline_max_distance: float = 1.5  # [m] (centerline convergence)
     centerline_horizon: float = 1.0  # [s] (centerline convergence)
-    start_anchor_comfort_horizon: float = 1.0  # [s] (start anchor comfort)
+    start_anchor_comfort_horizon: float = 0.5  # [s] (start anchor comfort)
     start_anchor_comfort_interval_length: float = 0.5  # [s] (start anchor comfort)
     start_anchor_history_horizon: float = 1.5  # [s] (start anchor comfort)
     start_anchor_comfort_strict_ratio: float = 0.618  # stricter near current state, relaxed over anchor horizon
