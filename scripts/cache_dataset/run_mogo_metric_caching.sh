@@ -1,11 +1,14 @@
-TRAIN_TEST_SPLIT=trainval
-export NUPLAN_MAPS_ROOT="/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset/maps/"
-export NAVSIM_EXP_ROOT="/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/exp"
-export NAVSIM_DEVKIT_ROOT="/D2/NXT/lst/vla/recog_drive"
-export OPENSCENE_DATA_ROOT="/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20/dataset"
-CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache_mogo_v1
+TRAIN_TEST_SPLIT=trainval #navsim/planning/script/config/metric_caching/default_mogo_metric_caching.yaml
+export NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset/maps/"
+export NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp"
+export NAVSIM_DEVKIT_ROOT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive"
+export OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset"
+export PYTHONPATH="${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}"
+CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache_mogo_v2
 #CACHE_PATH=${CACHE_PATH:-$NAVSIM_EXP_ROOT/metric_cache}
 
-python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_mogo_metric_caching.py \
-train_test_split=$TRAIN_TEST_SPLIT \
-cache.cache_path=$CACHE_PATH \
+python "$NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_mogo_metric_caching.py" \
+train_test_split="$TRAIN_TEST_SPLIT" \
+cache.cache_path="$CACHE_PATH" \
+# mogo_map.sqlite_path="$OPENSCENE_DATA_ROOT/maps/hm_shanghai_1.9.1_20260522.sqlite" \
+# mogo_map.utm_zone=51

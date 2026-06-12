@@ -2,9 +2,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
-TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-trainval}"
+TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
 export NUPLAN_MAP_VERSION="${NUPLAN_MAP_VERSION:-nuplan-maps-v1.0}"
 export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${DATA_ROOT}/dataset/maps}"
@@ -16,10 +16,10 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_cache_dir_train_hs0_hsL}"
-GPUS="${GPUS:-1}"
-MASTER_PORT="${MASTER_PORT:-63669}"
-BATCH_SIZE="${BATCH_SIZE:-8}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_cache}"
+GPUS="${GPUS:-8}"
+MASTER_PORT="${MASTER_PORT:-9675}"
+BATCH_SIZE="${BATCH_SIZE:-80}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
 
 torchrun \
@@ -44,11 +44,13 @@ torchrun \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=training_recogdrive_qwen3_agent \
+  experiment_name=training_recogdrive_qwen3_agent_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
-  train_logs=null \
-  val_logs=null \
+  '+log_split@_global_=mogo' \
   cache_path="${CACHE_PATH}" \
   use_cache_without_dataset=True \
   force_cache_computation=False \
   "$@"
+
+
+python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all

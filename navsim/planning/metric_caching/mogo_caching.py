@@ -107,7 +107,19 @@ def cache_mogo_scenarios(args: List[Dict[str, Union[List[str], DictConfig]]]) ->
                 f"Processing Mogo scenario {idx + 1} / {len(scene_loader)} "
                 f"in thread_id={thread_id}, node_id={node_id}"
             )
-            file_cache_metadata = cache_single_scenario(scene_dict, processor)
+            try:
+                file_cache_metadata = cache_single_scenario(scene_dict, processor)
+            except Exception as exc:
+                current_frame_idx = cfg.train_test_split.scene_filter.num_history_frames - 1
+                frame = scene_dict[current_frame_idx]
+                logger.warning(
+                    "Failed to cache Mogo scenario token=%s log=%s error=%s: %s; skipping.",
+                    frame.get("token"),
+                    frame.get("log_name"),
+                    type(exc).__name__,
+                    exc,
+                )
+                file_cache_metadata = None
             gc.collect()
 
             num_failures += 0 if file_cache_metadata else 1

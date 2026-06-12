@@ -732,8 +732,7 @@ def save_vis_for_tokens(
                 index_row[k] = v
             index_rows.append(index_row)
         except Exception as e:
-            print(f"[WARN] token={token} 渲染失败: {e}")
-            traceback.print_exc()
+            print(f"[WARN] token={token} 渲染失败: {type(e).__name__}: {e}")
 
     # 每个 rank 写索引，方便检索
     index_path = out_dir / f"index_rank{rank}.csv"
@@ -804,7 +803,7 @@ def parse_args():
         help="只渲染 score < 该值的样本，例如 0.5 表示低于 0.5 分",
     )
 
-    parser.add_argument("--split", default="test", choices=["mini", "test", "trainval"], help="NAVSIM split")
+    parser.add_argument("--split", default="test", choices=["mini", "test", "trainval", "val"], help="NAVSIM split")
     parser.add_argument("--scene_filter", default="navtest", help="scene_filter 配置名（Hydra）")
     parser.add_argument(
         "--openscene_data_root", default=os.getenv("OPENSCENE_DATA_ROOT", ""), help="OPENSCENE_DATA_ROOT"

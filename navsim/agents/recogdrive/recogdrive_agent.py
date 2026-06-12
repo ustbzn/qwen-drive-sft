@@ -186,9 +186,7 @@ class ReCogDriveAgent(AbstractAgent):
                 image_path_tensor = image_path_tensor.unsqueeze(0)
             image_paths = self._decode_paths_from_tensor(image_path_tensor) # 图片路径解码 tensor → list[str]
             
-            navigation_commands = ['turn left', 'go straight', 'turn right']
-            command_indices = torch.argmax(high_command_one_hot, dim=-1)
-            command_str_list = [navigation_commands[idx.item()] for idx in command_indices] # 将 one-hot 的高层指令转成字符串
+            command_str_list = [command_code_to_text(command) for command in high_command_one_hot]
 
             # 为 batch 内每个样本拼一个 prompt（questions）
             questions = []

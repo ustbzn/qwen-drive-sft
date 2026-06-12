@@ -20,17 +20,20 @@ from navsim.visualization.lidar import filter_lidar_pc, get_lidar_pc_color
 from navsim.visualization.config import BEV_PLOT_CONFIG, MAP_LAYER_CONFIG, AGENT_CONFIG, LIDAR_CONFIG
 
 
-def add_configured_bev_on_ax(ax: plt.Axes, map_api: AbstractMap, frame: Frame) -> plt.Axes:
+def add_configured_bev_on_ax(
+    ax: plt.Axes, map_api: AbstractMap, frame: Frame, radius: float | None = None
+) -> plt.Axes:
     """
     Adds birds-eye-view visualization optionally with map, annotations, or lidar
     :param ax: matplotlib ax object
     :param map_api: nuPlans map interface
     :param frame: navsim frame dataclass
+    :param radius: optional map-query radius in meters; defaults to max(figure_margin)
     :return: ax with plot
     """
 
     if "map" in BEV_PLOT_CONFIG["layers"]:
-        add_map_to_bev_ax(ax, map_api, StateSE2(*frame.ego_status.ego_pose))
+        add_map_to_bev_ax(ax, map_api, StateSE2(*frame.ego_status.ego_pose), radius=radius)
 
     if "annotations" in BEV_PLOT_CONFIG["layers"]:
         add_annotations_to_bev_ax(ax, frame.annotations)
@@ -74,13 +77,16 @@ def add_annotations_to_bev_ax(ax: plt.Axes, annotations: Annotations, add_ego: b
     return ax
 
 
-def add_map_to_bev_ax(ax: plt.Axes, map_api: AbstractMap, origin: StateSE2) -> plt.Axes:
+def add_map_to_bev_ax(
+    ax: plt.Axes, map_api: AbstractMap, origin: StateSE2, radius: float | None = None
+) -> plt.Axes:
     """
     Adds birds-eye-view visualization of map (ie. polygons / lines)
     TODO: add more layers for visualizations (or flags in config)
     :param ax: matplotlib ax object
     :param map_api: nuPlans map interface
     :param origin: (x,y,θ) dataclass of global ego frame
+    :param radius: optional map-query radius in meters; defaults to max(figure_margin)
     :return: ax with plot
     """
 
@@ -103,7 +109,7 @@ def add_map_to_bev_ax(ax: plt.Axes, map_api: AbstractMap, origin: StateSE2) -> p
     # query map api with interesting layers
     map_object_dict = map_api.get_proximal_map_objects(
         point=origin.point,
-        radius=max(BEV_PLOT_CONFIG["figure_margin"]),
+        radius=max(BEV_PLOT_CONFIG["figure_margin"]) if radius is None else radius,
         layers=list(set(polygon_layers + polyline_layers)),
     )
 

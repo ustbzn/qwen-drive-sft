@@ -146,7 +146,7 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
         centerline_discrete_path: List[StateSE2] = []
         for lane in route_plan:
             for state in lane.baseline_path.discrete_path:
-                if centerline_discrete_path and np.allclose(centerline_discrete_path[-1].array, state.array):
+                if centerline_discrete_path and np.allclose(centerline_discrete_path[-1].array, state.array, rtol=0.0, atol=1e-6):
                     continue
                 centerline_discrete_path.append(state)
 
@@ -188,7 +188,7 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
         :param ego_state: state of ego-vehicle
         :return: tuple of lists with lane objects and heading errors [rad].
         """
-        assert self._drivable_area_map, "AbstractPDMPlanner: Drivable area map must be initialized first!"
+        assert self._drivable_area_map is not None, "AbstractPDMPlanner: Drivable area map must be initialized first!"
 
         ego_position_array: npt.NDArray[np.float64] = ego_state.rear_axle.array
         ego_rear_axle_point: Point = Point(*ego_position_array)

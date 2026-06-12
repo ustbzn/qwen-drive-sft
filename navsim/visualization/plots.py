@@ -13,19 +13,25 @@ from navsim.visualization.bev import add_configured_bev_on_ax, add_trajectory_to
 from navsim.visualization.camera import add_annotations_to_camera_ax, add_lidar_to_camera_ax, add_camera_ax,add_trajectory_to_camera_ax
 
 
-def configure_bev_ax(ax: plt.Axes) -> plt.Axes:
+def configure_bev_ax(ax: plt.Axes, half_range: float | None = None) -> plt.Axes:
     """
     Configure the plt ax object for birds-eye-view plots
     :param ax: matplotlib ax object
+    :param half_range: optional half-extent in meters for both axes; defaults to
+        figure_margin/2 (i.e. ±32m for the default (64, 64) margin)
     :return: configured ax object
     """
 
     margin_x, margin_y = BEV_PLOT_CONFIG["figure_margin"]
     ax.set_aspect("equal")
 
-    # NOTE: x forward, y sideways
-    ax.set_xlim(-margin_y / 2, margin_y / 2)
-    ax.set_ylim(-margin_x / 2, margin_x / 2)
+    if half_range is None:
+        # NOTE: x forward, y sideways
+        ax.set_xlim(-margin_y / 2, margin_y / 2)
+        ax.set_ylim(-margin_x / 2, margin_x / 2)
+    else:
+        ax.set_xlim(-half_range, half_range)
+        ax.set_ylim(-half_range, half_range)
 
     # NOTE: left is y positive, right is y negative
     ax.invert_xaxis()
@@ -169,7 +175,7 @@ def plot_bev_and_camera_with_agent(
     agent: AbstractAgent
 ) -> Tuple[plt.Figure, plt.Axes, plt.Axes]:
     """
-    融合函数: 左侧可视化鸟瞰图 (BEV) 和轨迹，右侧可视化前视摄像头 (cam_f0) 和人类轨迹。
+    融合函数: 左侧可视化前视摄像头 (cam_f0) 和轨迹，右侧可视化鸟瞰图 (BEV) 和轨迹。
 
     :param scene: navsim scene dataclass
     :param scene_traj: scene trajectory dataclass
@@ -179,27 +185,32 @@ def plot_bev_and_camera_with_agent(
     """
     frame = scene.frames[frame_idx]
 
+    # BEV 视野半径(米): 默认 ±32m 会截断 4 秒高速轨迹(>40m)，放大到 ±50m
+    bev_half_range = 50.0
+
     # 创建 figure 和 gridspec 布局，左右两列
     fig = plt.figure(figsize=(18, 9)) # 调整figure大小以适应左右布局
     gs = fig.add_gridspec(1, 2, width_ratios=[1, 1], wspace=0.05) # 左右比例 1:1, 调整列间距
 
-    # 左侧 BEV 布局
+    # 右侧 BEV 布局 (gs[1])
     bev_ax = fig.add_subplot(gs[1])
 
-    # 添加 BEV 和轨迹 (人类和智能体)
-    add_configured_bev_on_ax(bev_ax, scene.map_api, frame)
+    # 添加 BEV 和轨迹 (人类和智能体)；地图查询半径与视野半径一致，避免放大后地图缺角
+    add_configured_bev_on_ax(bev_ax, scene.map_api, frame, radius=bev_half_range)
     human_trajectory = scene.get_future_trajectory()
     agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input())
 
     add_trajectory_to_bev_ax(bev_ax, human_trajectory, TRAJECTORY_CONFIG["human"])
-    add_trajectory_to_bev_ax(bev_ax, agent_trajectory, TRAJECTORY_CONFIG["agent"])
+    # 预测(agent)轨迹在 BEV 上改为虚线+半透明，避免与 GT 重合时被完全遮盖
+    bev_agent_config = dict(TRAJECTORY_CONFIG["agent"])
+    bev_agent_config.update({"line_style": "--", "line_color_alpha": 0.6, "zorder": 4})
+    add_trajectory_to_bev_ax(bev_ax, agent_trajectory, bev_agent_config)
 
-    configure_bev_ax(bev_ax) # 配置BEV坐标轴
-    bev_ax.set_aspect("equal") # 确保BEV纵横比为1:1
+    configure_bev_ax(bev_ax, half_range=bev_half_range) # 配置BEV坐标轴(±50m)
     bev_ax.set_xticks([]) # 移除刻度
     bev_ax.set_yticks([])
 
-    # 右侧前视摄像头布局
+    # 左侧前视摄像头布局 (gs[0])
     camera_ax = fig.add_subplot(gs[0])
 
     # 只添加 f0 摄像头
@@ -207,13 +218,13 @@ def plot_bev_and_camera_with_agent(
 
     # 在 f0 图上可视化人类轨迹
     #human_trajectory = scene.get_future_trajectory() # 再次获取人类轨迹，确保使用最新的
-    trajectory_config = {  # 你可以根据需要调整这些参数
+    trajectory_config = {  # 预测(agent)轨迹：红色虚线+半透明，便于与 GT 重合时区分
         "line_color": "red", # 设置线条颜色为红色
-        "line_color_alpha": 0.7,
+        "line_color_alpha": 0.6,
         "line_width": 4,
-        "line_style": "-", # 设置线条样式为实线
+        "line_style": "--", # 虚线，重合时仍可与 GT 实线区分
         "marker": None,     # 不显示 marker
-        "zorder": 3,
+        "zorder": 4,
         "arrow_color": "red", # 设置箭头颜色为红色，与线条颜色一致
         "arrow_edge_color": "red",
         "arrow_alpha": 1.0,
@@ -245,8 +256,8 @@ def plot_bev_and_camera_with_agent(
     camera_ax.set_aspect("auto") # 根据图像内容自动调整纵横比
 
 
-    # 调整整体布局参数
-    fig.tight_layout() # 自动调整子图参数，使之填充整个figure区域
+    # 调整整体布局参数（tight_layout 与下方 subplots_adjust 冲突且会被覆盖，
+    # 同时相机子图的 aspect 设置会触发 tight_layout 警告，故仅保留手动边距设置）
     fig.subplots_adjust(
         wspace=0.05, hspace=0.05, # 调整子图之间的水平和垂直间距
         left=0.03, right=0.97, # 调整左右边界

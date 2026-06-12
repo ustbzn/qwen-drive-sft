@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/vis_output/map}"
 
 mkdir -p "${OUT_DIR}"
@@ -18,7 +18,7 @@ fi
 
 python navsim/planning/script/plt_mogo_map_layers.py \
   --data-root "${DATA_ROOT}" \
-  --pkl "${PKL:-JLBJA20073D_20260313152238.pkl}" \
+  --pkl "${PKL:-JLBJA20073D_0317__2026-03-17-15-35-00__20260317153639.pkl}" \
   --frame-idx "${FRAME_IDX:--1}" \
   --show-baselines \
   --output-dir "${OUT_DIR}"

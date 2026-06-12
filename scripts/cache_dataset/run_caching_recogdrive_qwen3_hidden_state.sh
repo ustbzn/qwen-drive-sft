@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# default_training.yaml
+# + common/default_evaluation.yaml
+# + common/train_test_split/trainval.yaml
+# + common/train_test_split/scene_filter/all_scenes.yaml
+# + common/agent/recogdrive_agent.yaml
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
-TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-trainval}"
+TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
 export NUPLAN_MAP_VERSION="${NUPLAN_MAP_VERSION:-nuplan-maps-v1.0}"
 export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${DATA_ROOT}/dataset/maps}"
@@ -13,9 +18,9 @@ export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_cache_dir_train_hs0_hsL}"
-GPUS="${GPUS:-1}"
-MASTER_PORT="${MASTER_PORT:-63669}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_cache}"
+GPUS="${GPUS:-8}"
+MASTER_PORT="${MASTER_PORT:-9675}"
 
 torchrun \
   --nnodes=1 \

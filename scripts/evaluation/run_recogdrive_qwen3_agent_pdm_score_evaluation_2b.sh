@@ -2,10 +2,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/D2/NXT/lst/vla/mogo_data/2026-03-13-15-22-20}"
-QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/lijun/.code/Qwen3-VL-2B-Instruct}"
-TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-trainval}"
-CHECKPOINT="${CHECKPOINT:?Set CHECKPOINT to a Qwen3 ReCogDrive planner checkpoint}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
+QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
+TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
 export NUPLAN_MAP_VERSION="${NUPLAN_MAP_VERSION:-nuplan-maps-v1.0}"
 export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${DATA_ROOT}/dataset/maps}"
@@ -16,10 +15,12 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_agent_RL/2026.06.12.03.28.29/lightning_logs/version_0/checkpoints/epoch=16-step=4250.ckpt}"
 
-METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
+METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v2}"
 GPUS="${GPUS:-1}"
-MASTER_PORT="${MASTER_PORT:-63669}"
+MASTER_PORT="${MASTER_PORT:-54255}"
+# MASTER_PORT="${MASTER_PORT:-9675}"
 
 torchrun \
   --nnodes=1 \
@@ -27,8 +28,9 @@ torchrun \
   --master_port="${MASTER_PORT}" \
   "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_recogdrive.py" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
+  train_test_split.data_split=val \
   agent=recogdrive_agent \
-  agent.checkpoint_path="${CHECKPOINT}" \
+  agent.checkpoint_path=\"$CHECKPOINT\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
   metric_cache_path="${METRIC_CACHE_PATH}" \
   agent.cam_type=single \
@@ -39,5 +41,5 @@ torchrun \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  experiment_name=recogdrive_qwen3_agent_eval \
+  experiment_name=recogdrive_qwen3_RL_eval \
   "$@"

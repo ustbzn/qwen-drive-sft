@@ -1,18 +1,22 @@
 export NUPLAN_MAP_VERSION="nuplan-maps-v1.0"
-export NUPLAN_MAPS_ROOT="/D2/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0"
-export NAVSIM_EXP_ROOT="/D2/NXT/lst/vla/navsim/exp"
-export NAVSIM_DEVKIT_ROOT="/D2/NXT/lst/vla/recog_drive"
-export OPENSCENE_DATA_ROOT="/D2/NXT/lst/vla/navsim/download"
+export NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset/maps"
+export NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp"
+export NAVSIM_DEVKIT_ROOT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive"
+export OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset"
+export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 
 python -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv "/D2/NXT/lst/vla/navsim/exp/recogdrive_agent_eval_il/2026.04.28.14.35.28/2026.04.28.16.31.22.csv" \
-  --out "vis_output/eval/0428_163122" \
-  --checkpoint "checkpoints/IL/train_il_hs0_hsL_2.ckpt" \
-  --vlm_path "/D2/NXT/lst/vla/recogdrive/ReCogDrive-VLM-2B" \
+  --csv "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/recogdrive_qwen3_RL_eval/2026.06.12.13.10.35/2026.06.12.13.25.43.csv" \
+  --out "vis_output/eval/0612_qwen_RL" \
+  --checkpoint "exp/training_recogdrive_qwen3_agent_RL/2026.06.12.03.28.29/lightning_logs/version_0/checkpoints/epoch=16-step=4250.ckpt" \
+  --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
+  --vlm_type qwen3 \
   --openscene_data_root "$OPENSCENE_DATA_ROOT" \
-  --metric_cache_path "$NAVSIM_EXP_ROOT/metric_cache2" \
-  --split test \
-  --scene_filter navtest \
+  --split val \
+  --scene_filter mogo_10hz \
+  --debug_failures \
+  --metric_cache_path "$NAVSIM_EXP_ROOT/metric_cache_mogo_v2" \
+  --mogo_map_sqlite_path "$OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite" \
   # --token 00016f8b45c25a1d
 
   # --csv "/NXT/lst/vla/navsim/exp/recogdrive_agent_eval/2026.06.03.05.04.20/2026.06.03.07.05.43.csv" \
