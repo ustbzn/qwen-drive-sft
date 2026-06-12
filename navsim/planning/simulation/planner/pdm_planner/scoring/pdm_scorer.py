@@ -46,7 +46,7 @@ class PDMScorerConfig:
     driving_direction_weight: float = 0.0
     obstacle_clearance_weight: float = 2.0
     centerline_weight: float = 1.0
-    start_anchor_comfort_weight: float = 2.0
+    start_anchor_comfort_weight: float = 0.0
     comfort_metric_version: str = "v2"
 
     # thresholds

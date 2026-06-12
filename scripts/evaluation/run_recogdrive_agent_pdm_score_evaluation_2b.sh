@@ -23,7 +23,7 @@ echo "GPUS: ${GPUS}"
 export CUDA_LAUNCH_BLOCKING=0
 
 
-CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/RL/train_rl_hs0_hsL_6.ckpt"
+CHECKPOINT="/NXT/lst/vla/recog_drive/checkpoints/RL/train_rl_hs0_hsL_8.ckpt"
 
 
 # 1. Set NAVSIM dataset and related environment variables
