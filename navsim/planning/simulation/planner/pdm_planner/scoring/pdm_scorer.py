@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from dataclasses import dataclass
 import copy
 
@@ -58,13 +58,15 @@ class PDMScorerConfig:
     progress_distance_threshold: float = 5.0  # [m] (progress)
     drivable_area_soft_margin: float = 0.5  # [m] (drivable area)
     drivable_area_soft_score: float = 0.618  # score when only the safety margin leaves drivable area
+    drivable_area_hard_score: float = 0.05  # score when the ego footprint leaves drivable area
     obstacle_clearance_base_margin: float = 0.3  # [m] (obstacle clearance)
     obstacle_clearance_time_headway: float = 0.3  # [s] (obstacle clearance)
     obstacle_clearance_max_margin: float = 1.0  # [m] (obstacle clearance)
     obstacle_clearance_score_exponent: float = 0.5  # < 1 makes near-obstacle clearance change faster
-    centerline_target_distance: float = 0.3  # [m] (centerline convergence)
+    centerline_target_distance: float = 0.7  # [m] (centerline convergence)
     centerline_max_distance: float = 1.5  # [m] (centerline convergence)
-    centerline_horizon: float = 1.0  # [s] (centerline convergence)
+    centerline_horizon: float = 1.0  # [s] (centerline convergence, kept for config compatibility)
+    centerline_start_weight: float = 0.05  # sigmoid weight at start_anchor_comfort_horizon
     start_anchor_comfort_horizon: float = 1.0  # [s] (start anchor comfort)
     start_anchor_comfort_interval_length: float = 0.5  # [s] (start anchor comfort)
     start_anchor_history_horizon: float = 1.5  # [s] (start anchor comfort)
@@ -432,14 +434,19 @@ class PDMScorer:
     def _calculate_drivable_area_compliance(self) -> None:
         """
         Re-implementation of nuPlan's drivable area compliance metric.
-        The hard check keeps off-road proposals at 0, while the soft margin check penalizes near-boundary proposals.
+        The hard check keeps a strong floor score, while the soft margin check is time-weighted.
         """
-        drivable_area_compliance_scores = np.ones(self._num_proposals, dtype=np.float64)
         hard_off_road_mask = self._ego_areas[:, :, EgoAreaIndex.NON_DRIVABLE_AREA].any(axis=-1)
-        soft_off_road_mask = self._calculate_soft_drivable_area_violation().any(axis=-1)
+        soft_off_road_mask = self._calculate_soft_drivable_area_violation()
+        start_idx, time_weights = self._get_sigmoid_time_weights(
+            self.proposal_sampling.num_poses + 1,
+            self._config.centerline_start_weight,
+        )
 
-        drivable_area_compliance_scores[soft_off_road_mask] = self._config.drivable_area_soft_score
-        drivable_area_compliance_scores[hard_off_road_mask] = 0.0
+        soft_penalty = 1.0 - self._config.drivable_area_soft_score
+        weighted_soft_penalties = soft_off_road_mask[:, start_idx:] * time_weights[None, :] * soft_penalty
+        drivable_area_compliance_scores = 1.0 - weighted_soft_penalties.max(axis=-1)
+        drivable_area_compliance_scores[hard_off_road_mask] = self._config.drivable_area_hard_score
         self._multi_metrics[MultiMetricIndex.DRIVABLE_AREA] = drivable_area_compliance_scores
 
     def _calculate_driving_direction_compliance(self) -> None:
@@ -504,15 +511,41 @@ class PDMScorer:
         value = np.clip(value, 0.0, 1.0)
         return value * value * (3.0 - 2.0 * value)
 
+    @staticmethod
+    def _logit(value: float) -> float:
+        """Maps probability from (0, 1) to log-odds."""
+        value = np.clip(value, 1e-6, 1.0 - 1e-6)
+        return float(np.log(value / (1.0 - value)))
+
+    def _get_sigmoid_time_weights(
+        self,
+        n_time: int,
+        start_weight: float,
+    ) -> Tuple[int, npt.NDArray[np.float64]]:
+        """Builds a temporal weight ramp from the start anchor horizon to the proposal end."""
+        time_points_s = np.arange(n_time, dtype=np.float64) * self.proposal_sampling.interval_length
+        anchor_end_time = min(self._config.start_anchor_comfort_horizon, time_points_s[-1])
+        start_idx = int(np.searchsorted(time_points_s, anchor_end_time, side="left"))
+        active_time_points_s = time_points_s[start_idx:]
+
+        if len(active_time_points_s) <= 1:
+            return start_idx, np.ones(len(active_time_points_s), dtype=np.float64)
+
+        t_start = active_time_points_s[0]
+        t_end = active_time_points_s[-1]
+        t0 = 0.5 * (t_start + t_end)
+
+        start_weight = np.clip(start_weight, 1e-6, 0.5 - 1e-6)
+        k = self._logit(start_weight) / (t_start - t0)
+        return start_idx, 1.0 / (1.0 + np.exp(-k * (active_time_points_s - t0)))
+
     def _calculate_centerline_convergence(self) -> None:
         """
-        Scores whether the proposal converges toward the route centerline in the final horizon.
+        Scores whether the proposal converges toward the route centerline after the start anchor horizon.
         """
         center_coordinates = self._ego_coords[:, :, BBCoordsIndex.CENTER]
-        distances = np.zeros(
-            (self._num_proposals, self.proposal_sampling.num_poses + 1),
-            dtype=np.float64,
-        )
+        n_time = self.proposal_sampling.num_poses + 1
+        distances = np.zeros((self._num_proposals, n_time), dtype=np.float64)
 
         for proposal_idx in range(self._num_proposals):
             points = [Point(*xy) for xy in center_coordinates[proposal_idx]]
@@ -521,13 +554,17 @@ class PDMScorer:
             projected_xy = projected_states[:, :2]
             distances[proposal_idx] = np.linalg.norm(center_coordinates[proposal_idx] - projected_xy, axis=-1)
 
-        horizon_steps = max(1, int(self._config.centerline_horizon / self.proposal_sampling.interval_length))
-        horizon_steps = min(horizon_steps, self.proposal_sampling.num_poses + 1)
-        mean_tail_distance = distances[:, -horizon_steps:].mean(axis=-1)
+        start_idx, time_weights = self._get_sigmoid_time_weights(n_time, self._config.centerline_start_weight)
+        centerline_distances = distances[:, start_idx:]
+
+        if len(time_weights) <= 1:
+            weighted_distance = centerline_distances[:, -1]
+        else:
+            weighted_distance = np.average(centerline_distances, axis=-1, weights=time_weights)
 
         target_distance = self._config.centerline_target_distance
         distance_range = max(self._config.centerline_max_distance - target_distance, 1e-6)
-        normalized_distance = (mean_tail_distance - target_distance) / distance_range
+        normalized_distance = (weighted_distance - target_distance) / distance_range
         centerline_scores = 1.0 - self._smoothstep(normalized_distance)
 
         self._weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE] = centerline_scores
