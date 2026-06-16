@@ -196,6 +196,19 @@ class Dataset(torch.utils.data.Dataset):
                         valid_cache_paths[token_path.name] = token_path
 
         return valid_cache_paths
+
+    @staticmethod
+    def _compute_builder_features(
+        builder: AbstractFeatureBuilder,
+        scene: Scene,
+        agent_input: AgentInput,
+    ) -> Dict[str, torch.Tensor]:
+        """Compute features, allowing builders to use full Scene when supported."""
+        scene_feature_fn = getattr(builder, "compute_features_from_scene", None)
+        if callable(scene_feature_fn):
+            return scene_feature_fn(scene)
+        return builder.compute_features(agent_input)
+
     def load_token_cache(self, token: str) -> None:
         scene = self._scene_loader.get_scene_from_token(token)
 
@@ -222,7 +235,7 @@ class Dataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             if data_dict_path.exists():
                 continue
-            data_dict = builder.compute_features(agent_input)
+            data_dict = self._compute_builder_features(builder, scene, agent_input)
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
         for builder in self._target_builders:
@@ -305,7 +318,7 @@ class Dataset(torch.utils.data.Dataset):
             scene = self._scene_loader.get_scene_from_token(self._scene_loader.tokens[idx])
             agent_input = scene.get_agent_input()
             for builder in self._feature_builders:
-                features.update(builder.compute_features(agent_input))
+                features.update(self._compute_builder_features(builder, scene, agent_input))
             for builder in self._target_builders:
                 targets.update(builder.compute_targets(scene))
 

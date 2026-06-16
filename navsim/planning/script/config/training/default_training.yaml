@@ -22,6 +22,16 @@ seed: 0
 train_token_whitelist_path: '/NXT/lst/vla/recog_drive/navsim/local_config/data_selection/rl_grpo_n8000_selected_tokens_v1.txt' # optional train-only token whitelist for RL training; empty disables filtering
 # example: local_config/data_selection/rl_grpo_n2000_selected_tokens_v1.txt
 
+mogo_map:
+  sqlite_path: ""
+  map_name: "mogo"
+  query_radius_m: 150.0
+  max_segment_length_m: 2.0
+  enable_route_edge_filter: true
+  geometry_srid: 4326
+  utm_zone: 50
+  utm_south: false
+
 use_deepspeed: True
 
 deepspeed:

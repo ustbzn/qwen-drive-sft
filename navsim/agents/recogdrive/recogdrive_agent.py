@@ -17,6 +17,12 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 from .utils.lr_scheduler import WarmupCosLR
 from .utils.utils import format_number, build_from_configs
 from .recogdrive_features import ReCogDriveFeatureBuilder, TrajectoryTargetBuilder, select_hidden_state
+from .hdmap_vector_features import (
+    HDMAP_VECTOR_BOOL_KEYS,
+    HDMAP_VECTOR_FLOAT_KEYS,
+    HDMAP_VECTOR_LONG_KEYS,
+    HDMapVectorFeatureBuilder,
+)
 from .recogdrive_backbone import RecogDriveBackbone
 from .recogdrive_view_utils import (
     collect_view_frame_paths,
@@ -59,6 +65,11 @@ class ReCogDriveAgent(AbstractAgent):
         num_frames: int = 1,
         use_video_input: bool = False,
         video_fps: float = 2.0,
+        use_hdmap_vector: bool = False,
+        max_map_tokens: int = 128,
+        map_sample_points: int = 20,
+        hdmap_radius: float = 120.0,
+        strict_hdmap_vector: bool = False,
     ):
         super().__init__()
         self._trajectory_sampling = trajectory_sampling
@@ -86,6 +97,11 @@ class ReCogDriveAgent(AbstractAgent):
         self.num_frames = int(num_frames)
         self.use_video_input = bool(use_video_input)
         self.video_fps = float(video_fps)
+        self.use_hdmap_vector = bool(use_hdmap_vector)
+        self.max_map_tokens = int(max_map_tokens)
+        self.map_sample_points = int(map_sample_points)
+        self.hdmap_radius = float(hdmap_radius)
+        self.strict_hdmap_vector = bool(strict_hdmap_vector)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -126,6 +142,9 @@ class ReCogDriveAgent(AbstractAgent):
                 sampling_method=sampling_method,
                 vl_hidden_dim=self.vl_hidden_dim,
                 normalize_vl_hidden_states=self.normalize_vl_hidden_states,
+                use_hdmap_vector=self.use_hdmap_vector,
+                max_map_tokens=self.max_map_tokens,
+                map_sample_points=self.map_sample_points,
             )
         elif self.dit_type == "small":
             cfg = make_recogdrive_config(
@@ -137,6 +156,9 @@ class ReCogDriveAgent(AbstractAgent):
                 sampling_method=sampling_method,
                 vl_hidden_dim=self.vl_hidden_dim,
                 normalize_vl_hidden_states=self.normalize_vl_hidden_states,
+                use_hdmap_vector=self.use_hdmap_vector,
+                max_map_tokens=self.max_map_tokens,
+                map_sample_points=self.map_sample_points,
             )
 
         cfg.vlm_size = self.vlm_size
@@ -172,7 +194,7 @@ class ReCogDriveAgent(AbstractAgent):
         return [TrajectoryTargetBuilder(trajectory_sampling=self._trajectory_sampling)]  # 声明训练时要算哪些“目标”，这里只做轨迹预测
 
     def get_feature_builders(self) -> List[AbstractFeatureBuilder]:     # 声明怎么从原始数据变成模型输入
-        return [ReCogDriveFeatureBuilder(
+        builders: List[AbstractFeatureBuilder] = [ReCogDriveFeatureBuilder(
             cache_hidden_state=self.cache_hidden_state,
             model_type=self.vlm_type,
             checkpoint_path=self.vlm_path,
@@ -185,6 +207,38 @@ class ReCogDriveAgent(AbstractAgent):
             use_video_input=self.use_video_input,
             video_fps=self.video_fps,
         )]
+        if self.use_hdmap_vector:
+            builders.append(
+                HDMapVectorFeatureBuilder(
+                    max_map_tokens=self.max_map_tokens,
+                    map_sample_points=self.map_sample_points,
+                    radius=self.hdmap_radius,
+                    strict=self.strict_hdmap_vector,
+                )
+            )
+        return builders
+
+    def _build_action_inputs(
+        self,
+        features: Dict[str, torch.Tensor],
+        status_feature: torch.Tensor,
+        model_dtype: torch.dtype,
+        action: Optional[torch.Tensor] = None,
+    ) -> BatchFeature:
+        action_data: Dict[str, torch.Tensor] = {"status_feature": status_feature.to(model_dtype)}
+        if action is not None:
+            action_data["action"] = action.to(model_dtype)
+        if self.use_hdmap_vector:
+            for key in HDMAP_VECTOR_FLOAT_KEYS:
+                if key in features:
+                    action_data[key] = features[key].to(model_dtype)
+            for key in HDMAP_VECTOR_LONG_KEYS:
+                if key in features:
+                    action_data[key] = features[key].long()
+            for key in HDMAP_VECTOR_BOOL_KEYS:
+                if key in features:
+                    action_data[key] = features[key].bool()
+        return BatchFeature(data=action_data)
     # 从 features 拿到或算出 VLM 的 first/last hidden states，拼好 action inputs，交给 Diffusion Planner 做轨迹预测。
     def forward(self, features: Dict[str, torch.Tensor], targets=None, tokens_list=None) -> Dict[str, torch.Tensor]:
         for key, tensor in features.items():
@@ -259,13 +313,13 @@ class ReCogDriveAgent(AbstractAgent):
         last_hidden_state = last_hidden_state.to(model_dtype)
 
         if self.training and not self.grpo:    # Planner.forward 训练
-            action_inputs = BatchFeature(data={"status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
+            action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
             return self.action_head(first_hidden_state, last_hidden_state, action_inputs)
         elif self.training and self.grpo: # GRPO 训练
-            action_inputs = BatchFeature(data={"status_feature": status_feature.to(model_dtype), "action": targets["trajectory"].to(model_dtype)})
+            action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
             return self.action_head.forward_grpo(first_hidden_state, last_hidden_state, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道“这个样本对应哪个场景/片段”的 token，用 token 去加载对应的 metric cache
         else:    # 推理，无 action
-            action_inputs = BatchFeature({"status_feature": status_feature.to(model_dtype)})
+            action_inputs = self._build_action_inputs(features, status_feature, model_dtype)
             return self.action_head.get_action(first_hidden_state, last_hidden_state, action_inputs)
 
     def _is_online_backbone(self) -> bool:
@@ -419,6 +473,9 @@ def make_recogdrive_config(
     model_dtype: str = "float16",
     vl_hidden_dim: int = 1536,
     normalize_vl_hidden_states: bool = False,
+    use_hdmap_vector: bool = False,
+    max_map_tokens: int = 128,
+    map_sample_points: int = 20,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -471,6 +528,9 @@ def make_recogdrive_config(
         model_dtype=model_dtype,
         vl_hidden_dim=vl_hidden_dim,
         normalize_vl_hidden_states=normalize_vl_hidden_states,
+        use_hdmap_vector=use_hdmap_vector,
+        max_map_tokens=max_map_tokens,
+        map_sample_points=map_sample_points,
     )
     
     return config

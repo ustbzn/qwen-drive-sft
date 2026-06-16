@@ -50,6 +50,8 @@ from .blocks.encoder import (
     SwiGLUFFN,
 )
 from .recogdrive_dit import LightningDiT
+from .hdmap_vector_features import HDMAP_VECTOR_BATCH_KEYS
+from .hdmap_vector_encoder import MapEncoder
 
 @dataclass
 class FlowConfig:
@@ -144,6 +146,11 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     vl_hidden_dim: int = 1536
     normalize_vl_hidden_states: bool = False
     vl_hidden_norm_eps: float = 1e-5
+    use_hdmap_vector: bool = False
+    max_map_tokens: int = 128
+    map_sample_points: int = 20
+    num_map_polygon_types: int = 3
+    num_map_tl_states: int = 4
     
     tune_projector: bool = True
     tune_diffusion_model: bool = True
@@ -200,6 +207,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         nn.init.constant_(self.vl_context_gate.bias, 1.0)
             
         self.fusion_projector = nn.Linear(config.input_embedding_dim * 2, config.input_embedding_dim)
+        self.map_encoder = MapEncoder(
+            hidden_size=config.input_embedding_dim,
+            num_polygon_types=config.num_map_polygon_types,
+            num_tl_states=config.num_map_tl_states,
+        ) if config.use_hdmap_vector else None
 
         output_dim = 2 * config.action_dim if (
             config.sampling_method == 'flow' and config.flow_cfg.mean_variance_net
@@ -240,6 +252,43 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             self.vl_context_gate(torch.cat([first_context_tokens, last_context_tokens], dim=-1))
         )
         return context_gate * last_context_tokens + (1.0 - context_gate) * first_context_tokens
+
+    def encode_map_context_tokens(self, action_input: Optional[BatchFeature]) -> Optional[torch.Tensor]:
+        if not self.config.use_hdmap_vector or self.map_encoder is None or action_input is None:
+            return None
+        if any(key not in action_input for key in HDMAP_VECTOR_BATCH_KEYS):
+            return None
+        return self.map_encoder(
+            point_position=action_input.map_point_position,
+            point_vector=action_input.map_point_vector,
+            point_orientation=action_input.map_point_orientation,
+            polygon_type=action_input.map_polygon_type,
+            polygon_on_route=action_input.map_polygon_on_route,
+            polygon_tl_status=action_input.map_polygon_tl_status,
+            polygon_has_speed_limit=action_input.map_polygon_has_speed_limit,
+            polygon_speed_limit=action_input.map_polygon_speed_limit,
+            point_valid_mask=action_input.map_point_valid_mask,
+            map_valid_mask=action_input.map_valid_mask,
+        )
+
+    def build_context_tokens(
+        self,
+        first_hidden_state: torch.Tensor,
+        last_hidden_state: torch.Tensor,
+        action_input: Optional[BatchFeature] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
+        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
+        map_context_tokens = self.encode_map_context_tokens(action_input)
+        if map_context_tokens is not None:
+            vl_context_tokens = torch.cat([vl_context_tokens, map_context_tokens], dim=1)
+        return vl_summary_tokens, vl_context_tokens
+
+    def _repeat_action_input(self, action_input: BatchFeature, repeats: int) -> BatchFeature:
+        repeated = {}
+        for key, value in action_input.items():
+            repeated[key] = value.repeat_interleave(repeats, 0) if isinstance(value, torch.Tensor) else value
+        return BatchFeature(data=repeated)
 
     def _init_flow_sampler(self, cfg: FlowConfig):
         """Initializes components required for Flow Matching."""
@@ -614,8 +663,9 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             BatchFeature: A batch containing the computed loss.
         """
         
-        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
-        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
+        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+            first_hidden_state, last_hidden_state, action_input
+        )
         ego_status_features = self.ego_status_encoder(action_input.status_feature)
         
         gt_actions = self.norm_odo(action_input.action)
@@ -689,8 +739,9 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         Returns:
             BatchFeature: A batch containing the final predicted trajectory.
         """
-        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
-        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
+        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+            first_hidden_state, last_hidden_state, action_input
+        )
 
         ego_embeds = self.ego_status_encoder(
             action_input.status_feature
@@ -806,14 +857,19 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         last_hidden_state: torch.Tensor,
         ego_status_features: torch.Tensor,
         init_actions: Optional[torch.Tensor] = None,
-        deterministic: bool = False
+        deterministic: bool = False,
+        action_input: Optional[BatchFeature] = None,
     ):
         B, D = last_hidden_state.shape[0], self.config.action_dim
         device, dtype = last_hidden_state.device, last_hidden_state.dtype
+        
+        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+            first_hidden_state, last_hidden_state, action_input
+        )
 
-        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
-        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
-        ego_status_features = self.ego_status_encoder(ego_status_features)
+        ego_status_features = self.ego_status_encoder(
+            ego_status_features       
+        )
 
         current_actions = init_actions if init_actions is not None else torch.randn(
             (B, self.config.action_horizon, D), device=device, dtype=dtype
@@ -914,14 +970,16 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         last_hidden_state: torch.Tensor,
         ego_status_features: torch.Tensor,
         chains: torch.Tensor,
-        deterministic: bool = False
+        deterministic: bool = False,
+        action_input: Optional[BatchFeature] = None,
     ) -> torch.Tensor:
         """Calculates the log probability of a full denoising chain."""
         B, K1, H, D = chains.shape
         num_denoising_steps = K1 - 1
         
-        vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
-        vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
+        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+            first_hidden_state, last_hidden_state, action_input
+        )
 
         ego_status_features = self.ego_status_encoder(
             ego_status_features      
@@ -1018,6 +1076,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         first_hidden_state_rep = first_hidden_state.repeat_interleave(G, 0)
         last_hidden_state_rep = last_hidden_state.repeat_interleave(G, 0)
         status_feature_rep = action_input.status_feature.repeat_interleave(G, 0)
+        action_input_rep = self._repeat_action_input(action_input, G)
 
         # Plan C: the rollout only supplies fixed targets (chains) and rewards
         # (trajs); gradients flow solely through get_logprobs further down, which
@@ -1030,6 +1089,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 last_hidden_state_rep,
                 status_feature_rep,
                 deterministic=False,
+                action_input=action_input_rep,
             )
 
         tokens_rep = [tok for tok in tokens_list for _ in range(G)]
@@ -1072,6 +1132,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             status_feature_rep,
             chains,
             deterministic=False,
+            action_input=action_input_rep,
         )
         # Plan D: diagnose the raw (pre-clamp) logprobs. A high clamp hit rate
         # means the [-5, 2] guard is silently zeroing gradients for those steps.
@@ -1097,6 +1158,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     last_hidden_state,
                     action_input.status_feature,
                     deterministic=self.config.grpo_cfg.bc_teacher_deterministic,
+                    action_input=action_input,
                 )
             bc_logp = self.get_logprobs(
                 first_hidden_state,
@@ -1104,6 +1166,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 action_input.status_feature,
                 teacher_chains,
                 deterministic=False,
+                action_input=action_input,
             )
             bc_logp = bc_logp.clamp(min=-5, max=2)
             K_steps = chains.shape[1] - 1

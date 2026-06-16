@@ -14,6 +14,8 @@ from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
 from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
 from navsim.planning.training.agent_lightning_module import AgentLightningModule, AgentLightningDiT
+from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
+from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 import torch
 import torch.nn.utils.rnn as rnn_utils
 from typing import List, Dict
@@ -56,6 +58,8 @@ def custom_collate_fn(
         'first_hidden_state': first_hidden_state,
         'last_hidden_state': last_hidden_state,
     }
+    collate_hdmap_vector_features(features, features_list)
+
     targets = {
         'trajectory': trajectory
     }
@@ -108,12 +112,14 @@ def build_datasets(
 
     data_path = Path(cfg.navsim_log_path)
     sensor_blobs_path = Path(cfg.sensor_blobs_path)
+    map_api_builder = build_mogo_map_api_builder_from_cfg(cfg)
 
     train_scene_loader = SceneLoader(
         sensor_blobs_path=sensor_blobs_path,
         data_path=data_path,
         scene_filter=train_scene_filter,
         sensor_config=agent.get_sensor_config(),
+        map_api_builder=map_api_builder,
     )
 
     val_scene_loader = SceneLoader(
@@ -121,6 +127,7 @@ def build_datasets(
         data_path=data_path,
         scene_filter=val_scene_filter,
         sensor_config=agent.get_sensor_config(),
+        map_api_builder=map_api_builder,
     )
 
     train_data = Dataset(

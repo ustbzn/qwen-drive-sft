@@ -17,6 +17,7 @@ from navsim.planning.training.dataset import Dataset
 from navsim.common.dataloader import SceneLoader
 from navsim.common.dataclasses import SceneFilter, SensorConfig
 from navsim.agents.abstract_agent import AbstractAgent
+from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 
 import os
 import torch.distributed as dist
@@ -42,6 +43,7 @@ def cache_features(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[
     cfg: DictConfig = args[0]["cfg"]
 
     agent: AbstractAgent = instantiate(cfg.agent)
+    map_api_builder = build_mogo_map_api_builder_from_cfg(cfg)
 
     scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
     scene_filter.log_names = log_names
@@ -51,7 +53,8 @@ def cache_features(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[
         data_path=Path(cfg.navsim_log_path),
         scene_filter=scene_filter,
         sensor_config=agent.get_sensor_config(),
-        load_image_path=True
+        load_image_path=True,
+        map_api_builder=map_api_builder,
     )
     logger.info(f"Extracted {len(scene_loader.tokens)} scenarios for thread_id={thread_id}, node_id={node_id}.")
 

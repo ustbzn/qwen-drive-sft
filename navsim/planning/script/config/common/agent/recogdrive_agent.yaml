@@ -38,3 +38,8 @@ grpo: False
 bc_coeff: 0.1
 bc_teacher_deterministic: false
 lr: 1e-4
+use_hdmap_vector: false
+max_map_tokens: 128
+map_sample_points: 20
+hdmap_radius: 120.0
+strict_hdmap_vector: false
