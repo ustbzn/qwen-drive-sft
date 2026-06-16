@@ -40,6 +40,7 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
         self._map_api: Optional[AbstractMap] = None
         self._route_roadblock_dict: Optional[Dict[str, RoadBlockGraphEdgeMapObject]] = None
         self._route_lane_dict: Optional[Dict[str, LaneGraphEdgeMapObject]] = None
+        self._centerline_route_plan: Optional[List[LaneGraphEdgeMapObject]] = None
 
         self._centerline: Optional[PDMPath] = None
         self._drivable_area_map: Optional[PDMDrivableMap] = None
@@ -142,6 +143,7 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
 
         graph_search = Dijkstra(current_lane, list(self._route_lane_dict.keys()))
         route_plan, path_found = graph_search.search(roadblock_window[-1])
+        self._centerline_route_plan = list(route_plan)
 
         centerline_discrete_path: List[StateSE2] = []
         for lane in route_plan:

@@ -210,6 +210,43 @@ def _mogo_junction_id(junction_pkid: Any) -> str:
     return f"intersection_{int(junction_pkid)}"
 
 
+MOGO_BOUNDARY_TYPE_DEFAULT = 0
+MOGO_BOUNDARY_TYPE_CROSSABLE = 1
+MOGO_BOUNDARY_TYPE_NON_CROSSABLE = 2
+
+_MOGO_LANE_MARK_SOLID = 0x1
+_MOGO_LANE_MARK_BROKEN = 0x2
+_MOGO_LANE_MARK_SOLID2 = 0x10
+_MOGO_LANE_MARK_BROKEN2 = 0x20
+_MOGO_LANE_MARK_CURB = 0x100
+_MOGO_LANE_MARK_FENCE = 0x200
+_MOGO_LANE_MARK_ROAD_EDGE = 0x400
+_MOGO_LANE_MARK_SHAPE_MASK = (
+    _MOGO_LANE_MARK_SOLID
+    | _MOGO_LANE_MARK_BROKEN
+    | _MOGO_LANE_MARK_SOLID2
+    | _MOGO_LANE_MARK_BROKEN2
+    | _MOGO_LANE_MARK_CURB
+    | _MOGO_LANE_MARK_FENCE
+    | _MOGO_LANE_MARK_ROAD_EDGE
+)
+_MOGO_CROSSABLE_LANE_MARK_SHAPES = {
+    _MOGO_LANE_MARK_BROKEN,
+    _MOGO_LANE_MARK_BROKEN2,
+    _MOGO_LANE_MARK_BROKEN | _MOGO_LANE_MARK_BROKEN2,
+}
+
+
+def _mogo_boundary_line_type(lane_mark: Any) -> int:
+    """Map raw Mogo lane_mark bit field to compact boundary type used by metric cache."""
+    shape = int(lane_mark or 0) & _MOGO_LANE_MARK_SHAPE_MASK
+    if shape == 0:
+        return MOGO_BOUNDARY_TYPE_DEFAULT
+    if shape in _MOGO_CROSSABLE_LANE_MARK_SHAPES:
+        return MOGO_BOUNDARY_TYPE_CROSSABLE
+    return MOGO_BOUNDARY_TYPE_NON_CROSSABLE
+
+
 def _mogo_parse_roadblock_id(roadblock_id: str) -> Optional[int]:
     """Parse `roadblock_<pkid>` back to an integer road pkid."""
     prefix = "roadblock_"
@@ -975,6 +1012,8 @@ class MogoLaneMapObject:
         polygon: Polygon,
         left_boundary: Optional[MogoPolylineMapObject] = None,
         right_boundary: Optional[MogoPolylineMapObject] = None,
+        left_boundary_type: int = MOGO_BOUNDARY_TYPE_DEFAULT,
+        right_boundary_type: int = MOGO_BOUNDARY_TYPE_DEFAULT,
         speed_limit_mps: Optional[float] = None,
         index: int = 0,
         is_connector: bool = False,
@@ -985,6 +1024,8 @@ class MogoLaneMapObject:
         self._polygon = _clean_polygon(polygon)
         self._left_boundary = left_boundary or baseline_path
         self._right_boundary = right_boundary or baseline_path
+        self._left_boundary_type = int(left_boundary_type)
+        self._right_boundary_type = int(right_boundary_type)
         self._speed_limit_mps = speed_limit_mps
         self._index = int(index)
         self._is_connector = bool(is_connector)
@@ -1020,6 +1061,18 @@ class MogoLaneMapObject:
     @property
     def right_boundary(self) -> MogoPolylineMapObject:
         return self._right_boundary
+
+    @property
+    def left_boundary_type(self) -> int:
+        return self._left_boundary_type
+
+    @property
+    def right_boundary_type(self) -> int:
+        return self._right_boundary_type
+
+    @property
+    def is_connector(self) -> bool:
+        return self._is_connector
 
     @property
     def speed_limit_mps(self) -> Optional[float]:
@@ -1417,6 +1470,16 @@ class MogoSQLiteLayerBuilder:
                 polygon=polygon,
                 left_boundary=left_path,
                 right_boundary=right_path,
+                left_boundary_type=(
+                    _mogo_boundary_line_type(left_boundary.get('lane_mark'))
+                    if left_boundary
+                    else MOGO_BOUNDARY_TYPE_DEFAULT
+                ),
+                right_boundary_type=(
+                    _mogo_boundary_line_type(right_boundary.get('lane_mark'))
+                    if right_boundary
+                    else MOGO_BOUNDARY_TYPE_DEFAULT
+                ),
                 speed_limit_mps=_speed_limit_to_mps(raw_lane.get('speed_limit')),
                 index=abs(int(raw_lane.get('lane_id', 0))),
             )

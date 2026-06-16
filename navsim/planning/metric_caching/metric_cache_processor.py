@@ -1,7 +1,8 @@
 import pathlib
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from shapely.geometry import Point
 
 from nuplan.common.actor_state.agent import Agent
 from nuplan.common.actor_state.static_object import StaticObject
@@ -22,8 +23,18 @@ from navsim.planning.scenario_builder.mogo_vehicle_parameters import MogoDynamic
 from navsim.planning.simulation.planner.pdm_planner.pdm_closed_planner import PDMClosedPlanner
 from navsim.planning.simulation.planner.pdm_planner.proposal.batch_idm_policy import BatchIDMPolicy
 from navsim.planning.simulation.planner.pdm_planner.observation.pdm_observation import PDMObservation
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_path import (
+    PDMPath,
+    PDMPathBoundaryPoint,
+    PDMPathBoundaryProfile,
+)
 from navsim.planning.metric_caching.metric_cache import MetricCache
 from navsim.planning.metric_caching.metric_caching_utils import StateInterpolator, build_history_states_from_scenario
+
+
+MOGO_BOUNDARY_ENDPOINT_EPS = 1e-2  # [m]
+MOGO_LINK_DEFAULT_POINT_MIN_DISTANCE = 0.5  # [m]
+MOGO_BOUNDARY_TYPE_DEFAULT = 0
 
 
 class MetricCacheProcessor:
@@ -259,6 +270,145 @@ class MetricCacheProcessor:
             return self._build_dense_gt_observation(scenario)
         return self._interpolate_gt_observation(scenario)
 
+    @staticmethod
+    def _edge_is_mogo_connector(edge: Any) -> bool:
+        """Return whether a Mogo route-plan edge is a non-empty connector edge."""
+        is_connector = getattr(edge, "is_connector", False)
+        return bool(is_connector() if callable(is_connector) else is_connector)
+
+    @staticmethod
+    def _edge_boundary_xy(edge: Any, side: str) -> npt.NDArray[np.float64]:
+        """Extract raw boundary xy points from a Mogo lane edge."""
+        boundary = getattr(edge, f"{side}_boundary", None)
+        if boundary is None:
+            return np.empty((0, 2), dtype=np.float64)
+
+        discrete_path = getattr(boundary, "discrete_path", [])
+        if not discrete_path:
+            return np.empty((0, 2), dtype=np.float64)
+
+        return np.asarray([state.array[:2] for state in discrete_path], dtype=np.float64)
+
+    @staticmethod
+    def _edge_boundary_type(edge: Any, side: str) -> int:
+        """Extract compact boundary type from a Mogo lane edge."""
+        return int(getattr(edge, f"{side}_boundary_type", MOGO_BOUNDARY_TYPE_DEFAULT))
+
+    @staticmethod
+    def _edge_start_xy(edge: Any) -> Optional[npt.NDArray[np.float64]]:
+        """Extract the start xy of an edge baseline path."""
+        baseline_path = getattr(edge, "baseline_path", None)
+        discrete_path = getattr(baseline_path, "discrete_path", []) if baseline_path is not None else []
+        if not discrete_path:
+            return None
+        return np.asarray(discrete_path[0].array[:2], dtype=np.float64)
+
+    @staticmethod
+    def _project_boundary_xy(
+        centerline: PDMPath,
+        xy: npt.NDArray[np.float64],
+        line_type: int,
+    ) -> PDMPathBoundaryPoint:
+        """Project a raw boundary point into the centerline s-l frame."""
+        progress_s = float(centerline.project(Point(float(xy[0]), float(xy[1]))))
+        pose = centerline.interpolate([progress_s], as_array=True)[0]
+        dx = float(xy[0]) - float(pose[0])
+        dy = float(xy[1]) - float(pose[1])
+        lateral_offset = -np.sin(float(pose[2])) * dx + np.cos(float(pose[2])) * dy
+        return PDMPathBoundaryPoint(progress_s, float(lateral_offset), int(line_type))
+
+    @staticmethod
+    def _append_lane_boundary_points(
+        centerline: PDMPath,
+        boundary_points: List[PDMPathBoundaryPoint],
+        raw_xy: npt.NDArray[np.float64],
+        line_type: int,
+        skip_first: bool,
+    ) -> None:
+        """Append lane boundary points while keeping progress monotonic."""
+        start_idx = 1 if skip_first and len(raw_xy) > 1 else 0
+        for xy in raw_xy[start_idx:]:
+            boundary_point = MetricCacheProcessor._project_boundary_xy(centerline, xy, line_type)
+            if boundary_points and boundary_point.s <= boundary_points[-1].s + 1e-6:
+                continue
+            boundary_points.append(boundary_point)
+
+    @staticmethod
+    def _append_link_default_boundary_point(
+        centerline: PDMPath,
+        boundary_points: List[PDMPathBoundaryPoint],
+        link_start_xy: npt.NDArray[np.float64],
+    ) -> None:
+        """Insert a default boundary-type point when entering a non-empty connector."""
+        if not boundary_points:
+            return
+
+        link_start_s = float(centerline.project(Point(float(link_start_xy[0]), float(link_start_xy[1]))))
+        previous_point = boundary_points[-1]
+        if link_start_s - previous_point.s >= MOGO_LINK_DEFAULT_POINT_MIN_DISTANCE:
+            insert_s = link_start_s
+        else:
+            insert_s = previous_point.s + MOGO_LINK_DEFAULT_POINT_MIN_DISTANCE
+
+        insert_s = min(insert_s, float(centerline.length))
+        if insert_s <= previous_point.s + 1e-6:
+            return
+
+        boundary_points.append(
+            PDMPathBoundaryPoint(insert_s, float(previous_point.l), MOGO_BOUNDARY_TYPE_DEFAULT)
+        )
+
+    @staticmethod
+    def _build_centerline_boundary_profile(
+        centerline: Optional[PDMPath],
+        route_plan: Optional[List[Any]],
+    ) -> Optional[PDMPathBoundaryProfile]:
+        """Build a Mogo-only s-l boundary profile for metric cache centerline."""
+        if centerline is None or not route_plan:
+            return None
+        if not all(hasattr(edge, "left_boundary_type") and hasattr(edge, "right_boundary_type") for edge in route_plan):
+            return None
+
+        left_boundary: List[PDMPathBoundaryPoint] = []
+        right_boundary: List[PDMPathBoundaryPoint] = []
+        last_raw_xy: Dict[str, Optional[npt.NDArray[np.float64]]] = {"left": None, "right": None}
+        previous_edge_was_lane = False
+
+        for edge in route_plan:
+            if MetricCacheProcessor._edge_is_mogo_connector(edge):
+                link_start_xy = MetricCacheProcessor._edge_start_xy(edge)
+                if link_start_xy is not None:
+                    MetricCacheProcessor._append_link_default_boundary_point(centerline, left_boundary, link_start_xy)
+                    MetricCacheProcessor._append_link_default_boundary_point(centerline, right_boundary, link_start_xy)
+                previous_edge_was_lane = False
+                continue
+
+            for side, profile_points in (("left", left_boundary), ("right", right_boundary)):
+                raw_xy = MetricCacheProcessor._edge_boundary_xy(edge, side)
+                if len(raw_xy) == 0:
+                    continue
+
+                previous_raw_xy = last_raw_xy[side]
+                skip_first = bool(
+                    previous_edge_was_lane
+                    and previous_raw_xy is not None
+                    and np.linalg.norm(raw_xy[0] - previous_raw_xy) < MOGO_BOUNDARY_ENDPOINT_EPS
+                )
+                MetricCacheProcessor._append_lane_boundary_points(
+                    centerline,
+                    profile_points,
+                    raw_xy,
+                    MetricCacheProcessor._edge_boundary_type(edge, side),
+                    skip_first,
+                )
+                last_raw_xy[side] = raw_xy[-1]
+
+            previous_edge_was_lane = True
+
+        if not left_boundary or not right_boundary:
+            return None
+        return PDMPathBoundaryProfile(left_boundary=left_boundary, right_boundary=right_boundary)
+
     def compute_metric_cache(self, scenario: AbstractScenario) -> Optional[CacheMetadataEntry]:
 
         file_name = self._cache_path / scenario.log_name / scenario.scenario_type / scenario.token / "metric_cache.pkl"
@@ -277,6 +427,13 @@ class MetricCacheProcessor:
             history_horizon=1.5,
             interval_length=self._history_interval_length or scenario.database_interval,
         )
+
+        boundary_profile = self._build_centerline_boundary_profile(
+            self._pdm_closed._centerline,
+            getattr(self._pdm_closed, "_centerline_route_plan", None),
+        )
+        if boundary_profile is not None:
+            self._pdm_closed._centerline.set_boundary_profile(boundary_profile)
 
         # save and dump features
         MetricCache(
