@@ -23,6 +23,10 @@ def add_camera_ax(ax: plt.Axes, camera: Camera) -> plt.Axes:
     :param camera: navsim camera dataclass
     :return: ax object with image
     """
+    if camera.image is None:
+        ax.axis("off")
+        return ax
+
     ax.imshow(camera.image)
     return ax
 

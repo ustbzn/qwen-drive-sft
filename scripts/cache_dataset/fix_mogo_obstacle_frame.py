@@ -17,16 +17,30 @@
 用法：
   python scripts/cache_dataset/fix_mogo_obstacle_frame.py \
       --logs-dir /.../navsim_logs/train --logs-dir /.../navsim_logs/val
-  # 修完后用 --rebuild-trainval 从 train+val 重新拷出 trainval
+  # 修完后用 --rebuild-trainval 从 train+val 重新生成 trainval
 """
 import argparse
 import math
+import os
 import pickle
 import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
+
+
+def remove_existing_path(path: Path) -> None:
+    """删除已有文件、软链或目录。"""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+
+
+def symlink_target(src: Path, dst: Path) -> Path:
+    """返回从 dst 所在目录指向 src 的相对软链目标。"""
+    return Path(os.path.relpath(src, start=dst.parent))
 
 
 def quat_to_yaw(q):
@@ -103,7 +117,9 @@ def main():
     ap.add_argument("--marker-key", default="_obstacle_frame_fixed",
                     help="写入首帧的幂等标记键名。")
     ap.add_argument("--rebuild-trainval", type=Path, default=None,
-                    help="可选：从已修正的 --logs-dir 重新生成该 trainval 目录（清空后拷入全部 pkl）。")
+                    help="可选：从已修正的 --logs-dir 重新生成该 trainval 目录。")
+    ap.add_argument("--rebuild-trainval-as-symlink", action="store_true",
+                    help="重建 trainval 时创建指向 train/val pkl 的软链，而不是复制文件。")
     ap.add_argument("--dry-run", action="store_true", help="只统计不写盘。")
     args = ap.parse_args()
 
@@ -142,20 +158,27 @@ def main():
     if args.rebuild_trainval and not args.dry_run:
         tv = args.rebuild_trainval
         print(f"\n[INFO] 重建 trainval: {tv}")
-        if tv.exists():
+        if tv.exists() or tv.is_symlink():
             bak = Path(str(tv) + args.backup_suffix)
             if args.backup_suffix and not bak.exists():
                 print(f"[INFO] 备份旧 trainval -> {bak}")
                 shutil.move(str(tv), str(bak))
             else:
-                shutil.rmtree(tv)
+                remove_existing_path(tv)
         tv.mkdir(parents=True, exist_ok=True)
         n = 0
         for d in args.logs_dir:
             for p in sorted(d.glob("*.pkl")):
-                shutil.copy2(p, tv / p.name)
+                dst = tv / p.name
+                if dst.exists() or dst.is_symlink():
+                    dst.unlink()
+                if args.rebuild_trainval_as_symlink:
+                    dst.symlink_to(symlink_target(p, dst))
+                else:
+                    shutil.copy2(p, dst)
                 n += 1
-        print(f"[INFO] trainval 重建完成，拷入 {n} 个 pkl -> {tv}")
+        action = "软链" if args.rebuild_trainval_as_symlink else "拷入"
+        print(f"[INFO] trainval 重建完成，{action} {n} 个 pkl -> {tv}")
 
 
 if __name__ == "__main__":

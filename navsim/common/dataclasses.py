@@ -73,22 +73,31 @@ class Cameras:
         for camera_name in camera_dict.keys():
             camera_identifier = camera_name.lower()
             if camera_identifier in sensor_names:
-                image_path = sensor_blobs_path / camera_dict[camera_name]["data_path"]
+                camera_data = camera_dict[camera_name]
+                data_path = camera_data.get("data_path")
+                if not data_path:
+                    data_dict[camera_identifier] = Camera()
+                    continue
+
+                image_path = sensor_blobs_path / data_path
+                if not image_path.is_file():
+                    raise FileNotFoundError(f"Camera image not found for {camera_name}: {image_path}")
+
                 if not load_image_path:
                     data_dict[camera_identifier] = Camera(
                         image=np.array(Image.open(image_path)),
-                        sensor2lidar_rotation=camera_dict[camera_name]["sensor2lidar_rotation"],
-                        sensor2lidar_translation=camera_dict[camera_name]["sensor2lidar_translation"],
-                        intrinsics=camera_dict[camera_name]["cam_intrinsic"],
-                        distortion=camera_dict[camera_name]["distortion"],
+                        sensor2lidar_rotation=camera_data["sensor2lidar_rotation"],
+                        sensor2lidar_translation=camera_data["sensor2lidar_translation"],
+                        intrinsics=camera_data["cam_intrinsic"],
+                        distortion=camera_data["distortion"],
                     )
                 else:
                     data_dict[camera_identifier] = Camera(
                         image=image_path,
-                        sensor2lidar_rotation=camera_dict[camera_name]["sensor2lidar_rotation"],
-                        sensor2lidar_translation=camera_dict[camera_name]["sensor2lidar_translation"],
-                        intrinsics=camera_dict[camera_name]["cam_intrinsic"],
-                        distortion=camera_dict[camera_name]["distortion"],
+                        sensor2lidar_rotation=camera_data["sensor2lidar_rotation"],
+                        sensor2lidar_translation=camera_data["sensor2lidar_translation"],
+                        intrinsics=camera_data["cam_intrinsic"],
+                        distortion=camera_data["distortion"],
                     )
             else:
                 data_dict[camera_identifier] = Camera()  # empty camera

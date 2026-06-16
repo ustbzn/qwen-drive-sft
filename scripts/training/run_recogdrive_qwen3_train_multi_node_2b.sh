@@ -39,12 +39,12 @@ torchrun \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
-  agent.sampling_method=ddim \
+  agent.sampling_method=flow \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=training_recogdrive_qwen3_agent_IL \
+  experiment_name=training_recogdrive_qwen3_flow_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   '+log_split@_global_=mogo' \
   cache_path="${CACHE_PATH}" \
