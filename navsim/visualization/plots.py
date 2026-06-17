@@ -1,4 +1,4 @@
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 import io
 
 from tqdm import tqdm
@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from navsim.evaluate.pdm_score import pdm_score
 
 from navsim.agents.abstract_agent import AbstractAgent
-from navsim.common.dataclasses import Scene
+from navsim.common.dataclasses import Scene, Trajectory
 from navsim.visualization.config import BEV_PLOT_CONFIG, TRAJECTORY_CONFIG, CAMERAS_PLOT_CONFIG
 from navsim.visualization.bev import add_configured_bev_on_ax, add_trajectory_to_bev_ax
 from navsim.visualization.camera import add_annotations_to_camera_ax, add_lidar_to_camera_ax, add_camera_ax,add_trajectory_to_camera_ax
@@ -172,7 +172,8 @@ def plot_bev_and_camera_with_agent(
     scene: Scene,
     scene_traj: Scene,
     frame_idx: int,
-    agent: AbstractAgent
+    agent: AbstractAgent,
+    agent_trajectory: Optional[Trajectory] = None,
 ) -> Tuple[plt.Figure, plt.Axes, plt.Axes]:
     """
     融合函数: 左侧可视化前视摄像头 (cam_f0) 和轨迹，右侧可视化鸟瞰图 (BEV) 和轨迹。
@@ -186,7 +187,7 @@ def plot_bev_and_camera_with_agent(
     frame = scene.frames[frame_idx]
 
     # BEV 视野半径(米): 默认 ±32m 会截断 4 秒高速轨迹(>40m)，放大到 ±50m
-    bev_half_range = 50.0
+    bev_half_range = 60.0
 
     # 创建 figure 和 gridspec 布局，左右两列
     fig = plt.figure(figsize=(18, 9)) # 调整figure大小以适应左右布局
@@ -198,12 +199,13 @@ def plot_bev_and_camera_with_agent(
     # 添加 BEV 和轨迹 (人类和智能体)；地图查询半径与视野半径一致，避免放大后地图缺角
     add_configured_bev_on_ax(bev_ax, scene.map_api, frame, radius=bev_half_range)
     human_trajectory = scene.get_future_trajectory()
-    agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input())
+    if agent_trajectory is None:
+        agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input())
 
     add_trajectory_to_bev_ax(bev_ax, human_trajectory, TRAJECTORY_CONFIG["human"])
-    # 预测(agent)轨迹在 BEV 上改为虚线+半透明，避免与 GT 重合时被完全遮盖
+    # 预测(agent)轨迹在 BEV 上使用红色实线，和橙色 PDM rollout 虚线区分。
     bev_agent_config = dict(TRAJECTORY_CONFIG["agent"])
-    bev_agent_config.update({"line_style": "--", "line_color_alpha": 0.6, "zorder": 4})
+    bev_agent_config.update({"line_style": "-", "line_color_alpha": 1.0, "zorder": 4})
     add_trajectory_to_bev_ax(bev_ax, agent_trajectory, bev_agent_config)
 
     configure_bev_ax(bev_ax, half_range=bev_half_range) # 配置BEV坐标轴(±50m)

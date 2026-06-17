@@ -5,6 +5,7 @@ import argparse
 import sys
 import math
 import pickle
+from datetime import timedelta
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,10 +72,51 @@ def init_distributed():
         world_size = int(os.environ["WORLD_SIZE"])
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl", init_method="env://")
+        # 渲染耗时长且各 rank 结束时间差大，收尾 barrier 用大超时避免误杀。
+        dist.init_process_group(
+            backend="nccl",
+            init_method="env://",
+            timeout=timedelta(hours=2),
+        )
         print(f"Distributed init: rank {rank}/{world_size}, local_rank {local_rank}")
         return rank, world_size, local_rank
     return 0, 1, 0
+
+
+def merge_rank_indices(out_dir: Path, world_size: int) -> Path | None:
+    """多卡收尾：把各 rank 的 index_rank{rank}.csv 合并成总表 index_all.csv。
+
+    单进程（world_size==1）下各 rank 索引即全量，无需合并，返回 None。
+    """
+    if world_size <= 1:
+        return None
+
+    rank_csvs = sorted(out_dir.glob("index_rank*.csv"))
+    if not rank_csvs:
+        print(f"[WARN] {out_dir} 下未找到 index_rank*.csv，跳过合并")
+        return None
+
+    frames: list[pd.DataFrame] = []
+    for p in rank_csvs:
+        try:
+            frames.append(pd.read_csv(p, dtype={"token": "string"}))
+        except Exception as e:
+            print(f"[WARN] 读取 {p} 失败，跳过: {type(e).__name__}: {e}")
+
+    if not frames:
+        print(f"[WARN] {out_dir} 下 index_rank*.csv 均无法读取，跳过合并")
+        return None
+
+    merged = pd.concat(frames, ignore_index=True)
+    if "token" in merged.columns:
+        merged = merged.drop_duplicates(subset=["token"], keep="first")
+    if "score" in merged.columns:
+        merged = merged.sort_values("score", ascending=True, kind="stable")
+
+    merged_path = out_dir / "index_all.csv"
+    merged.to_csv(merged_path, index=False)
+    print(f"合并 {len(rank_csvs)} 个 rank 索引 -> {merged_path}（共 {len(merged)} 行）")
+    return merged_path
 
 
 def _ensure_dir(path: Path) -> None:
@@ -91,6 +133,39 @@ def _fmt_metric(v: object) -> str:
         return f"{f:.3f}"
     except Exception:
         return str(v)
+
+
+def _metric_as_float(value: object) -> float | None:
+    try:
+        metric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return metric if math.isfinite(metric) else None
+
+
+def load_saved_trajectory(path_value: object) -> Trajectory | None:
+    if path_value is None:
+        return None
+
+    path_text = str(path_value).strip()
+    if not path_text or path_text.lower() in {"nan", "none", "<na>"}:
+        return None
+
+    trajectory_path = Path(path_text)
+    if not trajectory_path.is_file():
+        return None
+
+    with np.load(trajectory_path) as data:
+        poses = np.asarray(data["poses"], dtype=np.float32)
+        interval_length = float(np.asarray(data["interval_length"]).item())
+
+    return Trajectory(
+        poses=poses,
+        trajectory_sampling=TrajectorySampling(
+            num_poses=int(poses.shape[0]),
+            interval_length=interval_length,
+        ),
+    )
 
 
 PRIMARY_METRIC_FIELDS = [
@@ -124,10 +199,10 @@ def _build_overlay_text(token: str, metrics: dict[str, object], debug_notes: lis
     other = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in OTHER_METRIC_FIELDS)
     lines.append(other)
 
-    # 最后一行：NC 或 DAC 为 0 时显示碰撞/越界诊断
+    # 最后一行：NC=0 或 DAC hard off-road 时显示碰撞/越界诊断
     if debug_notes and (
         _metric_is_zero(metrics.get("no_at_fault_collisions"))
-        or _metric_is_zero(metrics.get("drivable_area_compliance"))
+        or _metric_is_hard_offroad(metrics.get("drivable_area_compliance"))
     ):
         lines.append(" | ".join(debug_notes))
 
@@ -194,10 +269,13 @@ def build_pdm_simulator_scorer() -> tuple[PDMSimulator, PDMScorer]:
 
 
 def _metric_is_zero(value: object) -> bool:
-    try:
-        return float(value) == 0.0
-    except (TypeError, ValueError):
-        return False
+    metric = _metric_as_float(value)
+    return metric == 0.0 if metric is not None else False
+
+
+def _metric_is_hard_offroad(value: object) -> bool:
+    metric = _metric_as_float(value)
+    return metric is not None and metric <= 0.05 + 1e-9
 
 
 def _should_debug_failures(metrics: dict[str, object], debug_failures: bool) -> bool:
@@ -205,7 +283,7 @@ def _should_debug_failures(metrics: dict[str, object], debug_failures: bool) -> 
         return False
     nc = metrics.get("no_at_fault_collisions")
     dac = metrics.get("drivable_area_compliance")
-    return _metric_is_zero(nc) or _metric_is_zero(dac)
+    return _metric_is_zero(nc) or _metric_is_hard_offroad(dac)
 
 
 def _global_polygon_to_ego_local(polygon: Polygon, origin: StateSE2) -> np.ndarray:
@@ -234,6 +312,7 @@ def _plot_local_polygon_on_bev(ax: plt.Axes, local_xy: np.ndarray, config: dict[
         linestyle=config["line_style"],
         zorder=config["zorder"],
     )
+
 
 
 def _plot_local_xy_path_on_bev(ax: plt.Axes, local_xy: np.ndarray, config: dict[str, Any]) -> None:
@@ -379,7 +458,7 @@ def run_pdm_failure_diagnostics(
                 f"{collision['object_type']} | obj={collision['object_token'][:8]}"
             )
 
-    if _metric_is_zero(metrics.get("drivable_area_compliance")):
+    if _metric_is_hard_offroad(metrics.get("drivable_area_compliance")):
         offroad = _find_first_hard_offroad(scorer, pred_idx)
         if offroad is not None:
             diagnostics.offroad_time_s = offroad["time_s"]
@@ -620,12 +699,8 @@ def save_vis_for_tokens(
     scorer: PDMScorer | None = None,
 ) -> int:
     _ensure_dir(out_dir)
-    if max_items is not None:
-        tokens = tokens[:max_items]
     df_index = df.set_index("token", drop=False) if "token" in df.columns else None
     local_tokens = tokens[rank::world_size]
-    plot_pdm = metric_cache_loader is not None and trajectory_sampling is not None
-    legend_text = TRAJECTORY_LEGEND_WITH_PDM if plot_pdm else TRAJECTORY_LEGEND_NO_PDM
     saved = 0
     index_rows: list[dict[str, object]] = []
 
@@ -655,8 +730,11 @@ def save_vis_for_tokens(
                     except Exception:
                         comfort = None
 
-            fig, bev_ax, camera_ax = plot_bev_and_camera_with_agent(scene, scene_traj, frame_idx, agent)
+            model_trajectory = load_saved_trajectory(metrics.get("trajectory_path"))
+            if model_trajectory is None:
+                model_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input())
 
+            diagnostics: PDMFailureDiagnostics | None = None
             debug_notes: list[str] = []
             if _should_debug_failures(metrics, debug_failures):
                 if metric_cache_loader is None or simulator is None or scorer is None:
@@ -667,7 +745,6 @@ def save_vis_for_tokens(
                     try:
                         with lzma.open(metric_cache_loader.metric_cache_paths[token], "rb") as f:
                             metric_cache: MetricCache = pickle.load(f)
-                        model_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input())
                         diagnostics = run_pdm_failure_diagnostics(
                             metric_cache=metric_cache,
                             model_trajectory=model_trajectory,
@@ -675,11 +752,20 @@ def save_vis_for_tokens(
                             scorer=scorer,
                             metrics=metrics,
                         )
-                        origin = StateSE2(*scene.frames[frame_idx].ego_status.ego_pose)
-                        add_failure_debug_overlays(bev_ax, origin, diagnostics)
                         debug_notes = diagnostics.debug_notes
                     except Exception as debug_exc:
                         print(f"[WARN] token={token} debug_failures 失败: {debug_exc}")
+
+            fig, bev_ax, camera_ax = plot_bev_and_camera_with_agent(
+                scene,
+                scene_traj,
+                frame_idx,
+                agent,
+                agent_trajectory=model_trajectory,
+            )
+            if diagnostics is not None:
+                origin = StateSE2(*scene.frames[frame_idx].ego_status.ego_pose)
+                add_failure_debug_overlays(bev_ax, origin, diagnostics)
 
             if camera_ax is not None:
                 overlay = _build_overlay_text(token, metrics, debug_notes)
@@ -941,6 +1027,13 @@ def main():
         scorer=scorer,
     )
     print(f"Rank {rank}: 保存 {saved} 张 -> {out_dir}")
+
+    # 多卡收尾：等所有 rank 写完各自 index_rank{rank}.csv，再由 rank0 合并成总表。
+    if world_size > 1 and dist.is_initialized():
+        dist.barrier()
+        if rank == 0:
+            merge_rank_indices(out_dir, world_size)
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

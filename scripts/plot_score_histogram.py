@@ -43,9 +43,9 @@ BUCKET_ORDER = [
 ]
 
 DEFAULT_CSV = Path(
-    "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/recogdrive_qwen3_IL_eval/2026.06.12.09.36.02/2026.06.12.09.50.55.csv"
+    "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/recogdrive_qwen3_IL_eval/2026.06.17.04.46.01/2026.06.17.04.49.13.csv"
 )
-DEFAULT_OUTPUT = Path("vis_result_statistics/eval/0612/score_IL.png")
+DEFAULT_OUTPUT = Path("vis_result_statistics/eval/0616/score_IL.png")
 
 
 def main() -> None:

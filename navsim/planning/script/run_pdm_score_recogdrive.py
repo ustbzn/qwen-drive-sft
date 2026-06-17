@@ -29,7 +29,7 @@ from nuplan.planning.utils.multithreading.worker_utils import worker_map
 
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataloader import SceneLoader, SceneFilter, MetricCacheLoader
-from navsim.common.dataclasses import SensorConfig
+from navsim.common.dataclasses import SensorConfig, Trajectory
 from navsim.evaluate.pdm_score import (
     pdm_score,
     transform_trajectory,
@@ -44,6 +44,18 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = "config/pdm_scoring"
 CONFIG_NAME = "default_run_pdm_score"
+
+
+def save_predicted_trajectory(output_dir: Path, token: str, trajectory: Trajectory) -> Path:
+    trajectory_dir = output_dir / "predicted_trajectories"
+    trajectory_dir.mkdir(parents=True, exist_ok=True)
+    trajectory_path = trajectory_dir / f"{token}.npz"
+    np.savez_compressed(
+        trajectory_path,
+        poses=np.asarray(trajectory.poses, dtype=np.float32),
+        interval_length=np.asarray(float(trajectory.trajectory_sampling.interval_length), dtype=np.float32),
+    )
+    return trajectory_path.resolve()
 
 
 def compute_trajectory_l2_loss(metric_cache: MetricCache, model_trajectory, future_sampling) -> float:
@@ -144,6 +156,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             else:
                 trajectory = agent.compute_trajectory(agent_input)
 
+            trajectory_path = save_predicted_trajectory(Path(cfg.output_dir), token, trajectory)
             l2_loss = compute_trajectory_l2_loss(
                 metric_cache=metric_cache,
                 model_trajectory=trajectory,
@@ -157,12 +170,14 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 scorer=scorer,
             )
             score_row.update(asdict(pdm_result))
+            score_row["trajectory_path"] = str(trajectory_path)
             score_row["l2_loss"] = l2_loss
             score_row['rank'] = dist.get_rank()
         except Exception as e:
             logger.warning(f"----------- Agent failed for token {token}:")
             traceback.print_exc()
             score_row["valid"] = False
+            score_row["trajectory_path"] = ""
             score_row["l2_loss"] = np.nan
 
         pdm_results.append(score_row)
@@ -284,10 +299,15 @@ def main(cfg: DictConfig) -> None:
 
         num_sucessful_scenarios = pdm_score_df["valid"].sum()
         num_failed_scenarios = len(pdm_score_df) - num_sucessful_scenarios
-        average_row = pdm_score_df.drop(columns=["token", "valid",'rank']).mean(skipna=True)
+        average_drop_columns = [
+            column for column in ["token", "valid", "rank", "trajectory_path"] if column in pdm_score_df.columns
+        ]
+        average_row = pdm_score_df.drop(columns=average_drop_columns).mean(skipna=True)
         average_row["token"] = "average"
         average_row["valid"] = pdm_score_df["valid"].all()
         average_row["rank"] = "0"
+        if "trajectory_path" in pdm_score_df.columns:
+            average_row["trajectory_path"] = ""
         pdm_score_df.loc[len(pdm_score_df)] = average_row
 
         save_path = Path(cfg.output_dir)
