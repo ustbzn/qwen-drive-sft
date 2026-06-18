@@ -403,6 +403,8 @@ class Frame:
     ego_status: EgoStatus
     lidar: Lidar
     cameras: Cameras
+    route_centerline: Optional[Any] = None
+    route_centerline_segments: Optional[Any] = None
 
 
 @dataclass
@@ -606,6 +608,8 @@ class Scene:
                 ego_status=global_ego_status,
                 lidar=lidar,
                 cameras=cameras,
+                route_centerline=scene_dict_list[frame_idx].get("route_centerline"),
+                route_centerline_segments=scene_dict_list[frame_idx].get("route_centerline_segments"),
             )
             frames.append(frame)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Tuple, Type
+from typing import Any, Optional, Tuple, Type
 
 from nuplan.common.actor_state.vehicle_parameters import VehicleParameters
 from nuplan.common.maps.abstract_map import AbstractMap
@@ -54,3 +54,15 @@ class MogoNavSimScenario(NavSimScenario):
     def map_api(self) -> AbstractMap:
         """Return the injected Mogo SQLite map adapter."""
         return self._mogo_map_api
+
+    @property
+    def route_centerline(self) -> Optional[Any]:
+        """Return pkl-provided route centerline for the current frame, if available."""
+        current_frame_idx = self._scene.scene_metadata.num_history_frames - 1
+        return getattr(self._scene.frames[current_frame_idx], "route_centerline", None)
+
+    @property
+    def route_centerline_segments(self) -> Optional[Any]:
+        """Return pkl-provided route centerline segments for the current frame, if available."""
+        current_frame_idx = self._scene.scene_metadata.num_history_frames - 1
+        return getattr(self._scene.frames[current_frame_idx], "route_centerline_segments", None)

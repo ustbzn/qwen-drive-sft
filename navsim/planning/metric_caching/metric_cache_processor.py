@@ -1,3 +1,5 @@
+import logging
+import math
 import pathlib
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,9 +34,97 @@ from navsim.planning.metric_caching.metric_cache import MetricCache
 from navsim.planning.metric_caching.metric_caching_utils import StateInterpolator, build_history_states_from_scenario
 
 
+logger = logging.getLogger(__name__)
+
 MOGO_BOUNDARY_ENDPOINT_EPS = 1e-2  # [m]
 MOGO_LINK_DEFAULT_POINT_MIN_DISTANCE = 0.5  # [m]
 MOGO_BOUNDARY_TYPE_DEFAULT = 0
+
+
+def _extract_route_centerline_point(point: Any) -> Optional[Tuple[float, float, Optional[float]]]:
+    """Extract x/y/optional-heading from a serialized route centerline point."""
+    if isinstance(point, dict):
+        x = point.get("x")
+        y = point.get("y")
+        heading = point.get("heading", point.get("yaw"))
+    else:
+        if not isinstance(point, (list, tuple, np.ndarray)) or len(point) < 2:
+            return None
+        x = point[0]
+        y = point[1]
+        heading = point[2] if len(point) >= 3 else None
+
+    if x is None or y is None:
+        return None
+    return float(x), float(y), None if heading is None else float(heading)
+
+
+def _unwrap_route_centerline_points(route_centerline: Any) -> Any:
+    """Unwrap common pkl serialization envelopes for route centerline points."""
+    if isinstance(route_centerline, dict):
+        for key in ("points", "states", "centerline", "route_centerline"):
+            if key in route_centerline:
+                return route_centerline[key]
+    return route_centerline
+
+
+def _route_centerline_to_pdm_path(route_centerline: Any) -> Optional[PDMPath]:
+    """Convert serialized route centerline points to PDMPath."""
+    if route_centerline is None:
+        return None
+    if isinstance(route_centerline, PDMPath):
+        return route_centerline
+
+    route_centerline = _unwrap_route_centerline_points(route_centerline)
+    if not isinstance(route_centerline, (list, tuple, np.ndarray)) or len(route_centerline) < 2:
+        return None
+
+    parsed_points = [_extract_route_centerline_point(point) for point in route_centerline]
+    parsed_points = [point for point in parsed_points if point is not None]
+    deduped_points: List[Tuple[float, float, Optional[float]]] = []
+    for point in parsed_points:
+        if deduped_points and math.hypot(point[0] - deduped_points[-1][0], point[1] - deduped_points[-1][1]) <= 1e-6:
+            continue
+        deduped_points.append(point)
+    parsed_points = deduped_points
+    if len(parsed_points) < 2:
+        return None
+
+    states: List[StateSE2] = []
+    for idx, (x, y, heading) in enumerate(parsed_points):
+        if heading is None:
+            if idx < len(parsed_points) - 1:
+                next_x, next_y, _ = parsed_points[idx + 1]
+                heading = math.atan2(next_y - y, next_x - x)
+            else:
+                prev_x, prev_y, _ = parsed_points[idx - 1]
+                heading = math.atan2(y - prev_y, x - prev_x)
+        states.append(StateSE2(x, y, heading))
+
+    return PDMPath(states)
+
+
+def _route_segment_get(segment: Any, key: str, default: Any = None) -> Any:
+    """Read a route centerline segment field from dict or dataclass-like object."""
+    if isinstance(segment, dict):
+        return segment.get(key, default)
+    return getattr(segment, key, default)
+
+
+def _route_segment_type(segment: Any) -> str:
+    """Return normalized route centerline segment type."""
+    segment_type = _route_segment_get(segment, "segment_type", "")
+    return str(getattr(segment_type, "value", segment_type))
+
+
+def _mogo_route_lane_id(road_pkid: Any, section_id: Any, lane_id: Any) -> str:
+    """Build the Mogo lane id used by MogoSQLiteMapAdapter."""
+    return f"lane_{int(road_pkid)}_{int(section_id)}_{int(lane_id)}"
+
+
+def _mogo_route_link_id(link_pkid: Any) -> str:
+    """Build the Mogo link id used by MogoSQLiteMapAdapter."""
+    return f"link_{int(link_pkid)}"
 
 
 class MetricCacheProcessor:
@@ -83,6 +173,74 @@ class MetricCacheProcessor:
             map_radius=self._map_radius,
             vehicle_parameters=self._ego_vehicle_parameters,
         )
+
+    def _get_metric_cache_centerline(self, scenario: AbstractScenario) -> PDMPath:
+        """Prefer Mogo pkl route centerline when available, otherwise use PDM-Closed centerline."""
+        route_centerline = getattr(scenario, "route_centerline", None)
+        if route_centerline is None:
+            return self._pdm_closed._centerline
+
+        try:
+            centerline = _route_centerline_to_pdm_path(route_centerline)
+        except Exception as error:  # pragma: no cover - defensive fallback for data adaptation.
+            logger.warning("Failed to parse pkl route_centerline, falling back to PDM-Closed centerline: %s", error)
+            return self._pdm_closed._centerline
+
+        if centerline is None:
+            logger.warning("Invalid pkl route_centerline, falling back to PDM-Closed centerline.")
+            return self._pdm_closed._centerline
+
+        return centerline
+
+    @staticmethod
+    def _build_route_plan_from_centerline_segments(
+        route_centerline_segments: Optional[Any],
+        route_lane_dict: Optional[Dict[str, Any]],
+    ) -> Optional[List[Any]]:
+        """Map pkl route centerline segments back to Mogo map edges when possible."""
+        if not route_centerline_segments or not route_lane_dict:
+            return None
+
+        route_plan: List[Any] = []
+        for segment in route_centerline_segments:
+            segment_type = _route_segment_type(segment)
+            edge_id: Optional[str] = None
+            if segment_type == "lane":
+                road_pkid = _route_segment_get(segment, "road_pkid")
+                section_id = _route_segment_get(segment, "section_id")
+                lane_id = _route_segment_get(segment, "lane_id")
+                if road_pkid is not None and section_id is not None and lane_id is not None:
+                    edge_id = _mogo_route_lane_id(road_pkid, section_id, lane_id)
+            elif segment_type == "link":
+                link_pkid = _route_segment_get(segment, "link_pkid")
+                if link_pkid is not None:
+                    edge_id = _mogo_route_link_id(link_pkid)
+
+            if edge_id is None:
+                continue
+
+            edge = route_lane_dict.get(edge_id)
+            if edge is not None:
+                route_plan.append(edge)
+
+        return route_plan or None
+
+    def _get_metric_cache_boundary_route_plan(
+        self,
+        scenario: AbstractScenario,
+        centerline: PDMPath,
+    ) -> Optional[List[Any]]:
+        """Select the route plan that is aligned with the centerline saved in metric cache."""
+        if centerline is self._pdm_closed._centerline:
+            return getattr(self._pdm_closed, "_centerline_route_plan", None)
+
+        route_plan = self._build_route_plan_from_centerline_segments(
+            getattr(scenario, "route_centerline_segments", None),
+            getattr(self._pdm_closed, "_route_lane_dict", None),
+        )
+        if route_plan is None:
+            logger.warning("Missing or invalid pkl route_centerline_segments; skip boundary profile for pkl centerline.")
+        return route_plan
 
     def _get_planner_inputs(self, scenario: AbstractScenario) -> Tuple[PlannerInput, PlannerInitialization]:
         """
@@ -427,6 +585,14 @@ class MetricCacheProcessor:
             history_horizon=1.5,
             interval_length=self._history_interval_length or scenario.database_interval,
         )
+        centerline = self._get_metric_cache_centerline(scenario)
+
+        boundary_profile = self._build_centerline_boundary_profile(
+            centerline,
+            self._get_metric_cache_boundary_route_plan(scenario, centerline),
+        )
+        if boundary_profile is not None:
+            centerline.set_boundary_profile(boundary_profile)
 
         boundary_profile = self._build_centerline_boundary_profile(
             self._pdm_closed._centerline,
@@ -441,7 +607,7 @@ class MetricCacheProcessor:
             pdm_closed_trajectory,
             scenario.initial_ego_state,
             observation,
-            self._pdm_closed._centerline,
+            centerline,
             list(self._pdm_closed._route_lane_dict.keys()),
             self._pdm_closed._drivable_area_map,
             history_states,
