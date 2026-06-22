@@ -58,6 +58,24 @@ class FlowConfig:
     noise_s: float = 0.999
     num_timestep_buckets: int = 1000
     mean_variance_net: bool = False
+    sde_noise_scale: float = 0.1
+    # Plan B: single std floor shared by flow sampling AND logprob re-evaluation.
+    # Replaces the old DDIM-style min_sampling/min_logprob split so that the
+    # Gaussian that produced x_{t+1} is the exact same Gaussian get_logprobs scores
+    # it under.
+    #
+    # flow_std = max(sde_noise_scale*sqrt(dt), sde_min_std). With 5 steps dt=0.2,
+    # sde_noise_scale*sqrt(dt) = 0.1*0.447 = 0.0447 < 0.05, so the sde_min_std floor
+    # dominates -> effective flow_std = 0.05. In normalized space the denorm scales
+    # are x:33.37 y:21.0 (see norm_odo), so 0.05 == +-1.67m / +-1.05m of injected
+    # noise per Euler step, on par with the DDIM rollout std (0.04). The earlier
+    # value 0.1 meant +-3.3m / +-2.1m per step: flow rollouts were far noisier than
+    # the deterministic eval path, which corrupted the policy learned by GRPO.
+    # IMPORTANT: lowering ONLY sde_min_std does not lower flow_std unless
+    # sde_noise_scale*sqrt(dt) is also below the new floor (with scale=0.2 it was
+    # 0.089 and would have pinned flow_std at 0.089). Always watch the flow_std
+    # diagnostic (Plan D) to confirm the value actually in effect.
+    sde_min_std: float = 0.05
 
 @dataclass
 class DDPMConfig:
@@ -90,6 +108,16 @@ class GRPOConfig:
     scorer_config: PDMScorerConfig = field(default_factory=lambda: PDMScorerConfig(
         progress_weight=10.0, ttc_weight=5.0, comfortable_weight=2.0
     ))
+    # --- Step 3 (optional BC-tightening switch; defaults reproduce Step 1+2) ---
+    # bc_coeff weights the behavior-cloning anchor toward the reference policy.
+    # Default 0.1 == Step 1+2. Raise it (e.g. 0.3) via agent.bc_coeff=0.3 to stop
+    # RL from pushing stop / low-speed scenes forward.
+    # bc_teacher_deterministic chooses how old_policy rolls out the BC teacher
+    # chains: False (default) = stochastic SDE rollout (Step 1+2); True = clean ODE
+    # rollout (std=0) so BC anchors to the deterministic reference trajectory
+    # instead of a +-noise rollout. Both are overridable from recogdrive_agent.yaml.
+    bc_coeff: float = 0.1
+    bc_teacher_deterministic: bool = False
 
 
 @dataclass
@@ -409,6 +437,86 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         return self.fusion_projector(torch.cat((vl_summary, action_features), dim=2))
 
 
+    def _predict_flow(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        vl_summary_tokens: torch.Tensor,
+        vl_context_tokens: torch.Tensor,
+        ego_status_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predicts the flow velocity for a normalized action state."""
+        model_dtype = next(self.model.parameters()).dtype
+        x = x.to(model_dtype)
+        action_features = self.action_encoder(x, t)
+        if hasattr(self, "position_embedding"):
+            pos_ids = torch.arange(action_features.shape[1], device=x.device)
+            action_features = action_features + self.position_embedding(pos_ids)
+
+        action_latents = self.build_action_latents(vl_summary_tokens, action_features)
+        model_output = self.model(
+            action_latents=action_latents,
+            context_tokens=vl_context_tokens,
+            condition_features=ego_status_features,
+            timesteps=t,
+        )
+        pred = self.action_decoder(model_output)
+        return pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
+
+    def _flow_step_index(self, step: int, num_steps: int) -> int:
+        return int(step / max(num_steps, 1) * self.config.flow_cfg.num_timestep_buckets)
+
+    def _flow_transition_std(
+        self,
+        x: torch.Tensor,
+        dt: float,
+        *,
+        deterministic: bool,
+        for_logprob: bool = False,
+    ) -> torch.Tensor:
+        # Deterministic *sampling* (eval / get_action) collapses to zero std. The
+        # logprob path (for_logprob=True) must keep a non-degenerate std even under
+        # deterministic=False, otherwise Normal(mean, 0) is undefined.
+        if deterministic and not for_logprob:
+            return torch.zeros_like(x)
+
+        # Plan B: sampling and logprob share ONE floor (sde_min_std), so the
+        # transition that drew x_{t+1} and the Normal that scores it are identical.
+        # Do NOT route the DDIM-only min_sampling/min_logprob floors through here;
+        # those still govern the DDIM/DDPM branches.
+        sde_min_std = self.config.flow_cfg.sde_min_std
+        std_value = max(self.config.flow_cfg.sde_noise_scale * math.sqrt(dt), sde_min_std)
+        return torch.full_like(x, std_value)
+
+    def _flow_transition_mean_std(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        dt: float,
+        vl_summary_tokens: torch.Tensor,
+        vl_context_tokens: torch.Tensor,
+        ego_status_features: torch.Tensor,
+        *,
+        deterministic: bool,
+        for_logprob: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        pred_flow = self._predict_flow(
+            x,
+            t,
+            vl_summary_tokens,
+            vl_context_tokens,
+            ego_status_features,
+        )
+        mean = x + dt * pred_flow.to(dtype=x.dtype)
+        std = self._flow_transition_std(
+            x,
+            dt,
+            deterministic=deterministic,
+            for_logprob=for_logprob,
+        )
+        return mean, std
+
+
     def p_mean_variance(
         self,
         x: torch.Tensor,
@@ -515,20 +623,13 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             velocity_target = gt_actions - noise
             t_discrete = (t_cont * self.num_timestep_buckets).long()
 
-            action_features = self.action_encoder(noisy_actions, t_discrete)
-            if hasattr(self, 'position_embedding'):
-                pos_ids = torch.arange(action_features.shape[1], device=gt_actions.device)
-                action_features += self.position_embedding(pos_ids)
-            
-            action_latents = self.build_action_latents(vl_summary_tokens, action_features)
-
-            model_output = self.model(
-                action_latents=action_latents,
-                context_tokens=vl_context_tokens,
-                condition_features=ego_status_features,
-                timesteps=t_discrete,
+            pred_velocity = self._predict_flow(
+                noisy_actions,
+                t_discrete,
+                vl_summary_tokens,
+                vl_context_tokens,
+                ego_status_features,
             )
-            pred_velocity = self.action_decoder(model_output)
             loss = F.mse_loss(pred_velocity, velocity_target, reduction='mean')
         else: 
             noise = torch.randn_like(gt_actions)
@@ -599,25 +700,21 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if self.config.sampling_method == 'flow':
             dt = 1.0 / self.config.num_inference_steps
             for step in range(self.config.num_inference_steps):
-                idx = int(step / self.config.num_inference_steps * self.config.flow_cfg.num_timestep_buckets)
+                idx = self._flow_step_index(step, self.config.num_inference_steps)
                 t = torch.full((B,), idx, device=device, dtype=torch.long)
-
-                action_features = self.action_encoder(current_actions, t)
-                if hasattr(self, 'position_embedding'):
-                    action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
-                
-                action_latents = self.build_action_latents(vl_summary_tokens, action_features)
-                
-                model_output = self.model(
-                    action_latents=action_latents,
-                    context_tokens=vl_context_tokens,
-                    condition_features=ego_embeds,
-                    timesteps=t,
+                mean, std = self._flow_transition_mean_std(
+                    current_actions,
+                    t,
+                    dt,
+                    vl_summary_tokens,
+                    vl_context_tokens,
+                    ego_embeds,
+                    deterministic=True,
                 )
-                pred = self.action_decoder(model_output)
-                
-                pred_flow = pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
-                current_actions = current_actions + dt * pred_flow
+                noise_sample = torch.randn_like(current_actions)
+                if hasattr(self, 'eval_randn_clip_value') and self.eval_randn_clip_value is not None:
+                    noise_sample.clamp_(-self.eval_randn_clip_value, self.eval_randn_clip_value)
+                current_actions = mean + std * noise_sample
 
         elif self.config.sampling_method == 'ddpm':
             step_size = self.config.ddpm_cfg.num_train_timesteps // self.config.num_inference_steps
@@ -705,32 +802,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         init_actions: Optional[torch.Tensor] = None,
         deterministic: bool = False
     ):
-        """
-        Generates the full denoising chain and the final trajectory.
-        This method reuses the logic from get_action but stores intermediate steps.
-
-        Args:
-            first_hidden_state (torch.Tensor): Early vision-language hidden states from the backbone.
-            last_hidden_state (torch.Tensor): Final vision-language hidden states from the backbone.
-            ego_status_features (torch.Tensor): Raw ego status features.
-            init_actions (Optional[torch.Tensor]): An initial trajectory to start from.
-                If None, starts from pure noise.
-            deterministic (bool): If True, DDIM sampling will be deterministic.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-                - The full denoising chain as a tensor of shape (B, K+1, H, D).
-                - The final, denormalized trajectory of shape (B, H, D).
-        """
         B, D = last_hidden_state.shape[0], self.config.action_dim
         device, dtype = last_hidden_state.device, last_hidden_state.dtype
-        
+
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
-
-        ego_status_features = self.ego_status_encoder(
-            ego_status_features       
-        )
+        ego_status_features = self.ego_status_encoder(ego_status_features)
 
         current_actions = init_actions if init_actions is not None else torch.randn(
             (B, self.config.action_horizon, D), device=device, dtype=dtype
@@ -740,38 +817,48 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if self.config.sampling_method == 'flow':
             dt = 1.0 / self.config.num_inference_steps
             for step in range(self.config.num_inference_steps):
-                idx = int(step / self.config.num_inference_steps * self.config.flow_cfg.num_timestep_buckets)
+                idx = self._flow_step_index(step, self.config.num_inference_steps)
                 t_batch = torch.full((B,), idx, device=device, dtype=torch.long)
-                
-                action_features = self.action_encoder(current_actions, t_batch)
-                if hasattr(self, 'position_embedding'):
-                    action_features += self.position_embedding(torch.arange(self.config.action_horizon, device=device))
-                
-                action_latents = self.build_action_latents(vl_summary_tokens, action_features)
-                
-                model_output = self.model(
-                    action_latents=action_latents,
-                    context_tokens=vl_context_tokens,
-                    condition_features=ego_status_features,
-                    timesteps=t_batch,
+                mean, std = self._flow_transition_mean_std(
+                    current_actions,
+                    t_batch,
+                    dt,
+                    vl_summary_tokens,
+                    vl_context_tokens,
+                    ego_status_features,
+                    deterministic=deterministic,
                 )
-                pred = self.action_decoder(model_output)
-                
-                pred_flow = pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
-                current_actions = current_actions + dt * pred_flow
+                noise_sample = torch.randn_like(current_actions)
+                if hasattr(self, 'randn_clip_value') and self.randn_clip_value is not None:
+                    noise_sample = noise_sample.clamp_(-self.randn_clip_value, self.randn_clip_value)
+                current_actions = mean + std * noise_sample
+                # Align the rollout terminal with eval get_action(): clip ONLY the
+                # last Euler step into [-clip, clip] before recording it, mirroring
+                # the DDIM/DDPM branch below (and the final clamp at the end of
+                # get_action). Clipping before append keeps chains[-1] -- scored by
+                # get_logprobs -- identical to final_actions scored by reward_fn, and
+                # stops accumulated Euler noise from drifting the terminal trajectory
+                # outside the normalized [-1, 1] range that eval always clamps to.
+                if (
+                    step == self.config.num_inference_steps - 1
+                    and hasattr(self, 'final_action_clip_value')
+                    and self.final_action_clip_value is not None
+                ):
+                    current_actions = current_actions.clamp_(
+                        -self.final_action_clip_value, self.final_action_clip_value
+                    )
                 denoising_chain.append(current_actions.clone())
 
         elif self.config.sampling_method in ['ddpm', 'ddim']:
             if self.config.sampling_method == 'ddpm':
                 step_size = self.config.ddpm_cfg.num_train_timesteps // self.config.num_inference_steps
                 timesteps = list(reversed(range(0, self.config.ddpm_cfg.num_train_timesteps, step_size)))
-            else: 
+            else:
                 timesteps = self.ddim_t
-            
+
             for i, t_int in enumerate(timesteps):
                 t_batch = self.make_timesteps(B, t_int, device)
                 index_batch = self.make_timesteps(B, i, device) if self.config.sampling_method == 'ddim' else t_batch
-
                 mean, logvar, _ = self.p_mean_variance(
                     current_actions,
                     t_batch,
@@ -790,29 +877,29 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                         std.zero_()
                     else:
                         std = std.clamp(min=self.min_sampling_denoising_std)
-                else: # ddpm
+                else:
                     if deterministic and t_int == 0:
                         std = torch.zeros_like(std)
                     elif deterministic:
                         std = std.clamp(min=1e-3)
                     else:
                         std = std.clamp(min=self.min_sampling_denoising_std)
-                
+
                 if hasattr(self, 'randn_clip_value') and self.randn_clip_value is not None:
                     noise_sample = noise_sample.clamp_(-self.randn_clip_value, self.randn_clip_value)
 
                 current_actions = mean + std * noise_sample
-                
+
                 if i == len(timesteps) - 1 and hasattr(self, 'final_action_clip_value') and self.final_action_clip_value is not None:
                     current_actions = current_actions.clamp_(-self.final_action_clip_value, self.final_action_clip_value)
-                
+
                 denoising_chain.append(current_actions.clone())
         else:
-            raise ValueError(f"Unsupported sampling method: {self.config.sampling_method}")
+            raise ValueError(f'Unsupported sampling method: {self.config.sampling_method}')
 
         final_actions = self.denorm_odo(current_actions)
         chain_tensor = torch.stack(denoising_chain, dim=1)
-        
+
         return chain_tensor.detach(), final_actions.detach()
 
     def get_logprobs(
@@ -845,6 +932,30 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             batched_conditioning[key] = value.unsqueeze(1).repeat(
                 1, num_denoising_steps, *(1,) * (value.ndim - 1)
             ).flatten(0, 1)
+
+        if self.config.sampling_method == 'flow':
+            dt = 1.0 / num_denoising_steps
+            t_single = torch.tensor(
+                [self._flow_step_index(step, num_denoising_steps) for step in range(num_denoising_steps)],
+                device=chains.device,
+                dtype=torch.long,
+            )
+            t_batch = t_single.repeat(B)
+
+            x_t = chains[:, :-1].reshape(-1, H, D)
+            x_t_next = chains[:, 1:].reshape(-1, H, D)
+            mean, std = self._flow_transition_mean_std(
+                x_t,
+                t_batch,
+                dt,
+                batched_conditioning['vl_summary_tokens'],
+                batched_conditioning['vl_context_tokens'],
+                batched_conditioning['ego_status_features'],
+                deterministic=deterministic,
+                for_logprob=True,
+            )
+            dist = Normal(mean, std)
+            return dist.log_prob(x_t_next)
 
         if self.config.sampling_method == 'ddim':
             t_single = self.ddim_t[-num_denoising_steps:]
@@ -885,24 +996,35 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         tokens_list,
         sample_time: int = 8,
         deterministic=False,
-        bc_coeff: float = 0.1,
         use_bc_loss: bool = True
     ) -> BatchFeature:
         """Computes the Diffusion-GRPO loss."""
         self.set_frozen_modules_to_eval_mode()
+        # Plan A: force the ego-status encoder to eval during GRPO. The attention
+        # variant applies state_dropout=0.75 in train mode, which would draw
+        # different masks in sample_chain vs get_logprobs and break the mean
+        # consistency the logprob math relies on. No-op for the default MLP encoder
+        # (LayerNorm only), so this is always safe to call here.
+        self.ego_status_encoder.eval()
         B = last_hidden_state.shape[0]
-        G = sample_time 
+        G = sample_time
 
         first_hidden_state_rep = first_hidden_state.repeat_interleave(G, 0)
         last_hidden_state_rep = last_hidden_state.repeat_interleave(G, 0)
         status_feature_rep = action_input.status_feature.repeat_interleave(G, 0)
 
-        chains, trajs = self.sample_chain(
-            first_hidden_state_rep,
-            last_hidden_state_rep,
-            status_feature_rep,
-            deterministic=False,
-        )
+        # Plan C: the rollout only supplies fixed targets (chains) and rewards
+        # (trajs); gradients flow solely through get_logprobs further down, which
+        # re-runs the forward with grad. Building the graph here would just waste
+        # memory, so do the rollout under no_grad. The teacher rollout below is
+        # already wrapped the same way.
+        with torch.no_grad():
+            chains, trajs = self.sample_chain(
+                first_hidden_state_rep,
+                last_hidden_state_rep,
+                status_feature_rep,
+                deterministic=False,
+            )
 
         tokens_rep = [tok for tok in tokens_list for _ in range(G)]
         unique_tokens = set(tokens_list)
@@ -922,6 +1044,13 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         adv_max = torch.quantile(advantages, self.clip_advantage_upper_quantile)
         advantages = advantages.clamp(min=adv_min, max=adv_max)
 
+        # Plan D: within-group reward spread is what drives the advantage; if it
+        # collapses to ~0 the group is degenerate and GRPO gets no signal.
+        # advantage_std is taken post-clamp so it reflects what actually weights
+        # the policy loss.
+        reward_std = rewards_matrix.std(dim=1).mean().detach()
+        advantage_std = advantages.std().detach()
+
         num_denoising_steps = chains.shape[1] - 1
         denoising_indices = torch.arange(num_denoising_steps, device=advantages.device)
         discount = (self.gamma_denoising ** (num_denoising_steps - denoising_indices - 1))
@@ -931,26 +1060,37 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         discount = discount.view(1, 1, num_denoising_steps).expand(B, G, num_denoising_steps)  
         adv_weighted_flat = (adv_steps * discount).reshape(-1)             
 
-        log_probs = self.get_logprobs(
+        raw_log_probs = self.get_logprobs(
             first_hidden_state_rep,
             last_hidden_state_rep,
             status_feature_rep,
             chains,
             deterministic=False,
         )
-        log_probs = log_probs.clamp(min=-5, max=2).mean(dim=[1, 2])
-        
+        # Plan D: diagnose the raw (pre-clamp) logprobs. A high clamp hit rate
+        # means the [-5, 2] guard is silently zeroing gradients for those steps.
+        logprob_clamp_lo, logprob_clamp_hi = -5.0, 2.0
+        logprob_clamp_hit_rate = (
+            (raw_log_probs <= logprob_clamp_lo) | (raw_log_probs >= logprob_clamp_hi)
+        ).float().mean().detach()
+        logprob_mean = raw_log_probs.mean().detach()
+        log_probs = raw_log_probs.clamp(min=logprob_clamp_lo, max=logprob_clamp_hi).mean(dim=[1, 2])
+
         policy_loss = -torch.mean(log_probs * adv_weighted_flat)
         total_loss = policy_loss
 
         bc_loss = 0.0
         if use_bc_loss:
             with torch.no_grad():
+                # Step 3 switch: bc_teacher_deterministic=True makes the reference
+                # policy roll out a clean ODE trajectory (std=0), so BC anchors to the
+                # deterministic reference instead of a +-noise SDE rollout. Default
+                # False keeps the Step 1+2 stochastic teacher.
                 teacher_chains, _ = self.old_policy.sample_chain(
                     first_hidden_state,
                     last_hidden_state,
                     action_input.status_feature,
-                    deterministic=False,
+                    deterministic=self.config.grpo_cfg.bc_teacher_deterministic,
                 )
             bc_logp = self.get_logprobs(
                 first_hidden_state,
@@ -963,9 +1103,33 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             K_steps = chains.shape[1] - 1
             bc_logp = bc_logp.view(-1, K_steps, chains.shape[2], chains.shape[3]).mean(dim=[1,2,3])
             bc_loss = -bc_logp.mean()
-            total_loss = total_loss + bc_coeff * bc_loss
+            total_loss = total_loss + self.config.grpo_cfg.bc_coeff * bc_loss
 
-        return BatchFeature(data={"loss": total_loss, "reward": rewards.mean(), "policy_loss": policy_loss, "bc_loss": bc_loss})
+        # Plan D: surface the std that actually governs the flow transition, so a
+        # sweep over sde_noise_scale / sde_min_std is observable. With the defaults
+        # the floor dominates (flow_std == sde_min_std) and sde_noise_scale has no
+        # effect until it is raised above the floor.
+        if self.config.sampling_method == 'flow':
+            flow_dt = 1.0 / max(num_denoising_steps, 1)
+            flow_std = torch.tensor(
+                max(self.config.flow_cfg.sde_noise_scale * math.sqrt(flow_dt), self.config.flow_cfg.sde_min_std),
+                device=total_loss.device,
+                dtype=torch.float32,
+            )
+        else:
+            flow_std = torch.zeros((), device=total_loss.device, dtype=torch.float32)
+
+        return BatchFeature(data={
+            "loss": total_loss,
+            "reward": rewards.mean(),
+            "policy_loss": policy_loss,
+            "bc_loss": bc_loss,
+            "reward_std": reward_std,
+            "advantage_std": advantage_std,
+            "logprob_mean": logprob_mean,
+            "logprob_clamp_hit_rate": logprob_clamp_hit_rate,
+            "flow_std": flow_std,
+        })
 
     def norm_odo(self, trajectory: torch.Tensor) -> torch.Tensor:
         """Normalizes trajectory coordinates and heading to the range [-1, 1]."""

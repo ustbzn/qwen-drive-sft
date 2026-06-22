@@ -46,6 +46,8 @@ class ReCogDriveAgent(AbstractAgent):
         normalize_vl_hidden_states: bool = False,
         first_hidden_state_index: int = 0,
         last_hidden_state_index: int = -1,
+        bc_coeff: float = 0.1,
+        bc_teacher_deterministic: bool = False,
     ):
         super().__init__()
         self._trajectory_sampling = trajectory_sampling
@@ -66,6 +68,8 @@ class ReCogDriveAgent(AbstractAgent):
         self.normalize_vl_hidden_states = normalize_vl_hidden_states
         self.first_hidden_state_index = int(first_hidden_state_index)
         self.last_hidden_state_index = int(last_hidden_state_index)
+        self.bc_coeff = bc_coeff
+        self.bc_teacher_deterministic = bc_teacher_deterministic
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -124,6 +128,8 @@ class ReCogDriveAgent(AbstractAgent):
         if self.grpo:
             cfg.grpo_cfg.metric_cache_path = self.metric_cache_path
             cfg.grpo_cfg.reference_policy_checkpoint = self.reference_policy_checkpoint
+            cfg.grpo_cfg.bc_coeff = self.bc_coeff
+            cfg.grpo_cfg.bc_teacher_deterministic = self.bc_teacher_deterministic
 
         self.action_head = ReCogDriveDiffusionPlanner(cfg).cuda()      # 将整个Diffusion Planner存成agent的action_head，供后续forward等函数使用
         self.num_inference_samples = 1

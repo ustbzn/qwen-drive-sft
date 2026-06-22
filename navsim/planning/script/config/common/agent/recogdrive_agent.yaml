@@ -23,4 +23,9 @@ normalize_vl_hidden_states: false
 first_hidden_state_index: 0
 last_hidden_state_index: -1
 grpo: False
+# Step 3 (optional): tighten the behavior-cloning anchor. Defaults reproduce the
+# Step 1+2 RL run. Override from the RL script, e.g.
+#   agent.bc_coeff=0.3 agent.bc_teacher_deterministic=true
+bc_coeff: 0.1
+bc_teacher_deterministic: false
 lr: 1e-4

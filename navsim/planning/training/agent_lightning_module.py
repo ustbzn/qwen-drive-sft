@@ -97,6 +97,15 @@ class AgentLightningDiT(pl.LightningModule):
             self.log(f"{logging_prefix}/reward", reward, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
             self.log(f"{logging_prefix}/policy_loss", policy_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
             self.log(f"{logging_prefix}/bc_loss", bc_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            # Plan D: GRPO diagnostics. Kept off the progress bar to keep it readable;
+            # they still land in TensorBoard. reward_std ~ 0 -> degenerate groups,
+            # logprob_clamp_hit_rate high -> the [-5, 2] clamp is killing gradients,
+            # flow_std -> the std actually used by the flow transition.
+            self.log(f"{logging_prefix}/reward_std", predictions.reward_std, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f"{logging_prefix}/advantage_std", predictions.advantage_std, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f"{logging_prefix}/logprob_mean", predictions.logprob_mean, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f"{logging_prefix}/logprob_clamp_hit_rate", predictions.logprob_clamp_hit_rate, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log(f"{logging_prefix}/flow_std", predictions.flow_std, on_step=True, on_epoch=True, prog_bar=False, sync_dist=True)
         else:
             prediction = self.agent.forward(features,targets)
             loss = self.agent.compute_loss(features, targets, prediction)
