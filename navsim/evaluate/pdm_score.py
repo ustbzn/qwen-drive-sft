@@ -137,6 +137,7 @@ def pdm_score(
     comfort = scorer._weighted_metrics[WeightedMetricIndex.COMFORTABLE, pred_idx]
     driving_direction_compliance = scorer._weighted_metrics[WeightedMetricIndex.DRIVING_DIRECTION, pred_idx]
     obstacle_clearance = scorer._weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE, pred_idx]
+    following_safety = scorer._weighted_metrics[WeightedMetricIndex.FOLLOWING_SAFETY, pred_idx]
     centerline_convergence = scorer._weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE, pred_idx]
     start_anchor_comfort = scorer._weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT, pred_idx]
 
@@ -150,6 +151,7 @@ def pdm_score(
         comfort,
         driving_direction_compliance,
         obstacle_clearance,
+        following_safety,
         centerline_convergence,
         start_anchor_comfort,
         score,

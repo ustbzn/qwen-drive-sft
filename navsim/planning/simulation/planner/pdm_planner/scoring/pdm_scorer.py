@@ -45,6 +45,7 @@ class PDMScorerConfig:
     comfortable_weight: float = 2.0
     driving_direction_weight: float = 0.0
     obstacle_clearance_weight: float = 2.0
+    following_safety_weight: float = 2.0
     centerline_weight: float = 1.0
     start_anchor_comfort_weight: float = 0.0
     comfort_metric_version: str = "v2"
@@ -54,7 +55,12 @@ class PDMScorerConfig:
     driving_direction_compliance_threshold: float = 2.0  # [m] (driving direction)
     driving_direction_violation_threshold: float = 6.0  # [m] (driving direction)
     stopped_speed_threshold: float = 5e-03  # [m/s] (ttc)
-    ttc_horizon: float = 1.0  # [s] (ttc)
+    at_fault_collision_score_floor: float = 0.05  # (no at-fault collision)
+    ttc_horizon: float = 2.0  # [s] (ttc)
+    ttc_full_weight_time: float = 1.0  # [s] (ttc)
+    ttc_transition_center: float = 1.5  # [s] (ttc)
+    ttc_transition_width: float = 0.35  # [s] (ttc)
+    ttc_min_time_weight: float = 0.0  # (ttc)
     progress_distance_threshold: float = 5.0  # [m] (progress)
     drivable_area_soft_margin: float = 0.5  # [m] (drivable area)
     drivable_area_soft_score: float = 0.618  # score when only the safety margin leaves drivable area
@@ -63,6 +69,16 @@ class PDMScorerConfig:
     obstacle_clearance_time_headway: float = 0.3  # [s] (obstacle clearance)
     obstacle_clearance_max_margin: float = 1.0  # [m] (obstacle clearance)
     obstacle_clearance_score_exponent: float = 0.5  # < 1 makes near-obstacle clearance change faster
+    following_safety_start_time: float = 0.5  # [s] (following safety)
+    following_safety_horizon: float = 4.0  # [s] (following safety)
+    following_safety_transition_center: float = 1.5  # [s] (following safety)
+    following_safety_transition_width: float = 0.5  # [s] (following safety)
+    following_base_gap: float = 1.0  # [m] (following safety)
+    following_time_headway: float = 0.35  # [s] (following safety)
+    following_closing_speed_gain: float = 0.25  # [s] (following safety)
+    following_max_required_gap: float = 7.0  # [m] (following safety)
+    following_lateral_margin: float = 0.8  # [m] (following safety)
+    following_score_scale: float = 1.5  # [m] (following safety)
     centerline_target_distance: float = 0.7  # [m] (centerline convergence)
     centerline_max_distance: float = 1.5  # [m] (centerline convergence)
     centerline_horizon: float = 1.0  # [s] (centerline convergence, kept for config compatibility)
@@ -82,6 +98,7 @@ class PDMScorerConfig:
         weighted_metrics[WeightedMetricIndex.COMFORTABLE] = self.comfortable_weight
         weighted_metrics[WeightedMetricIndex.DRIVING_DIRECTION] = self.driving_direction_weight
         weighted_metrics[WeightedMetricIndex.OBSTACLE_CLEARANCE] = self.obstacle_clearance_weight
+        weighted_metrics[WeightedMetricIndex.FOLLOWING_SAFETY] = self.following_safety_weight
         weighted_metrics[WeightedMetricIndex.CENTERLINE_CONVERGENCE] = self.centerline_weight
         weighted_metrics[WeightedMetricIndex.START_ANCHOR_COMFORT] = self.start_anchor_comfort_weight
         return weighted_metrics
@@ -185,6 +202,7 @@ class PDMScorer:
         self._calculate_progress()
         self._calculate_centerline_convergence()
         self._calculate_ttc()
+        self._calculate_following_safety()
         self._calculate_obstacle_clearance()
         self._calculate_driving_direction_compliance()
         self._calculate_start_anchor_comfort()
@@ -391,7 +409,11 @@ class PDMScorer:
                 if collisions_at_stopped_track_or_active_front or (
                     ego_in_multiple_lanes_or_nondrivable_area and collision_at_lateral
                 ):
-                    no_at_fault_collision_score = 0.0 if tracked_object.tracked_object_type in AGENT_TYPES else 0.5
+                    no_at_fault_collision_score = (
+                        np.clip(self._config.at_fault_collision_score_floor, 0.0, 1.0)
+                        if tracked_object.tracked_object_type in AGENT_TYPES
+                        else 0.5
+                    )
                     no_collision_scores[proposal_idx] = np.minimum(
                         no_collision_scores[proposal_idx], no_at_fault_collision_score
                     )
@@ -539,6 +561,64 @@ class PDMScorer:
         k = self._logit(start_weight) / (t_start - t0)
         return start_idx, 1.0 / (1.0 + np.exp(-k * (active_time_points_s - t0)))
 
+    @staticmethod
+    def _sigmoid(value: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Numerically stable enough sigmoid for metric shaping."""
+        value = np.clip(value, -60.0, 60.0)
+        return 1.0 / (1.0 + np.exp(-value))
+
+    def _get_increasing_time_weights(
+        self,
+        n_time: int,
+        start_time: float,
+        transition_center: float,
+        transition_width: float,
+    ) -> Tuple[int, npt.NDArray[np.float64]]:
+        """Builds an increasing sigmoid time weight after start_time."""
+        time_points_s = np.arange(n_time, dtype=np.float64) * self.proposal_sampling.interval_length
+        start_idx = int(np.searchsorted(time_points_s, max(start_time, 0.0), side="left"))
+        active_time_points_s = time_points_s[start_idx:]
+        if len(active_time_points_s) == 0:
+            return start_idx, np.zeros(0, dtype=np.float64)
+
+        width = max(transition_width, 1e-6)
+        weights = self._sigmoid((active_time_points_s - transition_center) / width)
+        return start_idx, weights.astype(np.float64)
+
+    def _get_ttc_time_weights(self, future_time_idcs: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
+        """Builds a decreasing TTC time weight from full strength to the configured minimum."""
+        future_times_s = future_time_idcs.astype(np.float64) * self.proposal_sampling.interval_length
+        horizon = max(self._config.ttc_horizon, self._config.ttc_full_weight_time)
+        full_weight_time = min(self._config.ttc_full_weight_time, horizon)
+        min_weight = np.clip(self._config.ttc_min_time_weight, 0.0, 1.0)
+
+        if horizon <= full_weight_time + 1e-6:
+            return np.ones_like(future_times_s, dtype=np.float64)
+
+        width = max(self._config.ttc_transition_width, 1e-6)
+        raw_weights = 1.0 / (1.0 + np.exp((future_times_s - self._config.ttc_transition_center) / width))
+        raw_full = 1.0 / (1.0 + np.exp((full_weight_time - self._config.ttc_transition_center) / width))
+        raw_end = 1.0 / (1.0 + np.exp((horizon - self._config.ttc_transition_center) / width))
+        normalized = (raw_weights - raw_end) / max(raw_full - raw_end, 1e-6)
+        normalized[future_times_s <= full_weight_time] = 1.0
+        normalized[future_times_s >= horizon] = 0.0
+        normalized = np.clip(normalized, 0.0, 1.0)
+        return min_weight + (1.0 - min_weight) * normalized
+
+    def _get_ttc_future_time_idcs(self) -> npt.NDArray[np.int64]:
+        """Keeps the original dense near-term TTC samples and adds sparse mid-term samples when needed."""
+        horizon_step = max(0, int(round(self._config.ttc_horizon / self.proposal_sampling.interval_length)))
+        near_steps = np.array([0, 1, 3, 6, 10], dtype=np.int64)
+        if horizon_step <= near_steps[-1]:
+            future_time_idcs = near_steps[near_steps <= horizon_step]
+        else:
+            mid_steps = np.rint(np.linspace(near_steps[-1], horizon_step, 3)).astype(np.int64)
+            future_time_idcs = np.unique(np.concatenate([near_steps, mid_steps]))
+
+        if len(future_time_idcs) == 0 or future_time_idcs[-1] != horizon_step:
+            future_time_idcs = np.unique(np.append(future_time_idcs, horizon_step))
+        return future_time_idcs.astype(np.int64)
+
     def _calculate_centerline_convergence(self) -> None:
         """
         Scores whether the proposal converges toward the route centerline after the start anchor horizon.
@@ -580,9 +660,10 @@ class PDMScorer:
             for proposal_idx in range(self._num_proposals)
         }
 
-        # calculate TTC for 1s in the future with denser near-term projections.
-        future_time_idcs = np.array([0, 1, 3, 6, 10])
+        # Calculate TTC with dense near-term and sparse mid-term projections.
+        future_time_idcs = self._get_ttc_future_time_idcs()
         future_scores = np.linspace(0.0, 1.0, len(future_time_idcs))
+        future_time_weights = self._get_ttc_time_weights(future_time_idcs)
         n_future_steps = len(future_time_idcs)
 
         # create polygons for each ego position and 1s future projection
@@ -612,9 +693,13 @@ class PDMScorer:
         polygons = creation.polygons(coords_exterior_time_steps)
 
         # check collision for each proposal and projection
+        max_observation_time_idx = len(self._observation._global_to_local_idcs) - 1
         for time_idx in range(self.proposal_sampling.num_poses + 1):
             for step_idx, future_time_idx in enumerate(future_time_idcs):
                 current_time_idx = time_idx + future_time_idx
+                if current_time_idx > max_observation_time_idx:
+                    continue
+
                 polygons_at_time_step = polygons[:, time_idx, step_idx]
                 intersecting = self._observation[current_time_idx].query(polygons_at_time_step, predicate="intersects")
 
@@ -649,7 +734,9 @@ class PDMScorer:
                         )
                         and not is_agent_behind(ego_rear_axle, track_state)
                     ):
-                        ttc_scores[proposal_idx] = np.minimum(ttc_scores[proposal_idx], future_scores[step_idx])
+                        ttc_risk = 1.0 - future_scores[step_idx]
+                        weighted_ttc_score = 1.0 - future_time_weights[step_idx] * ttc_risk
+                        ttc_scores[proposal_idx] = np.minimum(ttc_scores[proposal_idx], weighted_ttc_score)
                         self._ttc_time_idcs[proposal_idx] = min(time_idx, self._ttc_time_idcs[proposal_idx])
                     else:
                         temp_collided_track_ids[proposal_idx].append(token)
@@ -700,6 +787,118 @@ class PDMScorer:
         obstacle_velocity = self._get_obstacle_velocity(tracked_object)
         relative_velocity = ego_velocity - obstacle_velocity
         return max(0.0, float(np.dot(relative_velocity, direction)))
+
+    def _compute_following_gap(
+        self,
+        ego_state: npt.NDArray[np.float64],
+        obstacle_polygon,
+    ) -> Optional[float]:
+        """
+        Computes longitudinal gap from ego front bumper to the rear edge of an ahead obstacle.
+        Returns None when the obstacle is not a longitudinal following candidate.
+        """
+        if not hasattr(obstacle_polygon, "exterior"):
+            return None
+
+        obstacle_coords = np.asarray(obstacle_polygon.exterior.coords, dtype=np.float64)
+        if obstacle_coords.ndim != 2 or obstacle_coords.shape[0] < 2:
+            return None
+
+        heading = ego_state[StateIndex.HEADING]
+        longitudinal_axis = np.array([np.cos(heading), np.sin(heading)], dtype=np.float64)
+        lateral_axis = np.array([-np.sin(heading), np.cos(heading)], dtype=np.float64)
+        ego_xy = ego_state[StateIndex.POINT]
+        relative_coords = obstacle_coords[:, :2] - ego_xy
+
+        obstacle_s = relative_coords @ longitudinal_axis
+        obstacle_l = relative_coords @ lateral_axis
+        ego_front_s = self._vehicle_parameters.front_length
+
+        # Ignore objects fully behind the ego front bumper.
+        if float(np.max(obstacle_s)) <= ego_front_s:
+            return None
+
+        lateral_margin = self._config.following_lateral_margin
+        ego_left_l = self._vehicle_parameters.half_width
+        ego_right_l = -self._vehicle_parameters.half_width
+        if (float(np.max(obstacle_l)) < ego_right_l - lateral_margin) or (
+            float(np.min(obstacle_l)) > ego_left_l + lateral_margin
+        ):
+            return None
+
+        return float(np.min(obstacle_s) - ego_front_s)
+
+    def _calculate_following_safety(self) -> None:
+        """
+        Penalizes insufficient longitudinal following gap in the mid-to-long horizon.
+        """
+        following_scores = np.ones(self._num_proposals, dtype=np.float64)
+        ignored_tokens = set(self._observation.collided_track_ids)
+        n_time = self.proposal_sampling.num_poses + 1
+        start_idx, time_weights = self._get_increasing_time_weights(
+            n_time,
+            self._config.following_safety_start_time,
+            self._config.following_safety_transition_center,
+            self._config.following_safety_transition_width,
+        )
+        end_idx = min(
+            n_time,
+            int(round(self._config.following_safety_horizon / self.proposal_sampling.interval_length)) + 1,
+        )
+        if start_idx >= end_idx or len(time_weights) == 0:
+            self._weighted_metrics[WeightedMetricIndex.FOLLOWING_SAFETY] = following_scores
+            return
+
+        time_weights = time_weights[: end_idx - start_idx]
+        max_query_margin = self._config.following_max_required_gap + self._config.following_lateral_margin
+        score_scale = max(self._config.following_score_scale, 1e-6)
+
+        for relative_time_idx, time_idx in enumerate(range(start_idx, end_idx)):
+            obstacle_map = self._observation[time_idx]
+            time_weight = time_weights[relative_time_idx]
+
+            for proposal_idx in range(self._num_proposals):
+                ego_state = self._states[proposal_idx, time_idx]
+                ego_polygon = self._ego_polygons[proposal_idx, time_idx]
+                candidate_idcs = obstacle_map.query(ego_polygon.buffer(max_query_margin), predicate="intersects")
+
+                heading = ego_state[StateIndex.HEADING]
+                longitudinal_axis = np.array([np.cos(heading), np.sin(heading)], dtype=np.float64)
+                ego_velocity = ego_state[StateIndex.VELOCITY_2D]
+                ego_speed = max(0.0, float(np.dot(ego_velocity, longitudinal_axis)))
+
+                for geometry_idx in candidate_idcs:
+                    token = obstacle_map.tokens[geometry_idx]
+                    if (self._observation.red_light_token in token) or (token in ignored_tokens):
+                        continue
+
+                    tracked_object = self._observation.unique_objects.get(token)
+                    if tracked_object is None:
+                        continue
+
+                    obstacle_polygon = obstacle_map[token]
+                    gap = self._compute_following_gap(ego_state, obstacle_polygon)
+                    if gap is None:
+                        continue
+
+                    obstacle_velocity = self._get_obstacle_velocity(tracked_object)
+                    obstacle_speed = float(np.dot(obstacle_velocity, longitudinal_axis))
+                    closing_speed = max(0.0, ego_speed - obstacle_speed)
+                    required_gap = (
+                        self._config.following_base_gap
+                        + self._config.following_time_headway * ego_speed
+                        + self._config.following_closing_speed_gain * closing_speed
+                    )
+                    required_gap = np.clip(
+                        required_gap,
+                        self._config.following_base_gap,
+                        self._config.following_max_required_gap,
+                    )
+                    raw_score = float(self._sigmoid(np.array([(gap - required_gap) / score_scale]))[0])
+                    weighted_score = 1.0 - time_weight * (1.0 - raw_score)
+                    following_scores[proposal_idx] = np.minimum(following_scores[proposal_idx], weighted_score)
+
+        self._weighted_metrics[WeightedMetricIndex.FOLLOWING_SAFETY] = following_scores
 
     def _calculate_obstacle_clearance(self) -> None:
         """
