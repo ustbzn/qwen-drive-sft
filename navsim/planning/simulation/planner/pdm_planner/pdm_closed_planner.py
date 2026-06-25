@@ -3,6 +3,7 @@ import warnings
 import logging
 import gc
 
+from nuplan.common.actor_state.vehicle_parameters import VehicleParameters
 from nuplan.planning.simulation.observation.observation_type import DetectionsTracks, Observation
 from nuplan.planning.simulation.planner.abstract_planner import PlannerInitialization, PlannerInput
 from nuplan.planning.simulation.trajectory.abstract_trajectory import AbstractTrajectory
@@ -30,6 +31,7 @@ class PDMClosedPlanner(AbstractPDMClosedPlanner):
         idm_policies: BatchIDMPolicy,
         lateral_offsets: Optional[List[float]],
         map_radius: float,
+        vehicle_parameters: VehicleParameters | None = None,
     ):
         """
         Constructor for PDMClosedPlanner
@@ -45,6 +47,7 @@ class PDMClosedPlanner(AbstractPDMClosedPlanner):
             idm_policies,
             lateral_offsets,
             map_radius,
+            vehicle_parameters=vehicle_parameters,
         )
 
     def initialize(self, initialization: PlannerInitialization) -> None:

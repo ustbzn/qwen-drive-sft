@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Tuple, Type
 
-from nuplan.common.actor_state.vehicle_parameters import VehicleParameters, get_pacifica_parameters
+from nuplan.common.actor_state.vehicle_parameters import VehicleParameters
 from nuplan.common.maps.abstract_map import AbstractMap
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 from navsim.common.dataclasses import Scene
 from navsim.planning.scenario_builder.navsim_scenario import NavSimScenario
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
 
 
 class MogoNavSimScenario(NavSimScenario):
@@ -18,10 +19,11 @@ class MogoNavSimScenario(NavSimScenario):
         scene: Scene,
         map_root: str = "",
         map_version: str = "mogo-sqlite",
-        ego_vehicle_parameters: VehicleParameters = get_pacifica_parameters(),
+        ego_vehicle_parameters: VehicleParameters | None = None,
         database_interval: float = 0.1,
     ) -> None:
         """Initialize scenario with map api already attached to the Scene."""
+        ego_vehicle_parameters = ego_vehicle_parameters or get_mogo_vehicle_parameters()
         super().__init__(
             scene=scene,
             map_root=map_root,

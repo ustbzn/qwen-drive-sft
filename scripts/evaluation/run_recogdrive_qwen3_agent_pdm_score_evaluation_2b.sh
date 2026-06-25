@@ -15,10 +15,10 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_flow_RL/2026.06.17.11.08.39/lightning_logs/version_0/checkpoints/epoch=15-step=4000.ckpt}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_agent_RL/2026.06.25.02.38.28/lightning_logs/version_0/checkpoints/epoch=19-step=600.ckpt}"
 # CHECKPOINT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_RL/2026.06.12.03.28.29/lightning_logs/version_0/checkpoints/epoch=19-step=5000.ckpt"
 
-METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v2}"
+METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 GPUS="${GPUS:-8}"
 # MASTER_PORT="${MASTER_PORT:-54255}"
 MASTER_PORT="${MASTER_PORT:-9675}"
@@ -41,6 +41,6 @@ torchrun \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
-  agent.sampling_method=flow \
-  experiment_name=recogdrive_qwen3_flow_RL_eval \
+  agent.sampling_method=ddim \
+  experiment_name=recogdrive_qwen3_RL_eval \
   "$@"

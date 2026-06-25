@@ -22,6 +22,10 @@ from navsim.common.dataclasses import Scene, SceneFilter, SensorConfig
 from navsim.common.dataloader import SceneLoader
 from navsim.planning.metric_caching.metric_cache_processor import MetricCacheProcessor
 from navsim.planning.scenario_builder.mogo_navsim_scenario import MogoNavSimScenario
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import (
+    get_mogo_dynamic_parameters,
+    get_mogo_vehicle_parameters,
+)
 from navsim.planning.scenario_builder.mogo_sqlite_map_adapter import (
     MogoRouteContext,
     MogoSQLiteMapAdapter,
@@ -69,6 +73,7 @@ def cache_mogo_scenarios(args: List[Dict[str, Union[List[str], DictConfig]]]) ->
             )
             scenario = MogoNavSimScenario(
                 scene,
+                ego_vehicle_parameters=get_mogo_vehicle_parameters(),
                 database_interval=float(cfg.mogo_observation.annotation_interval_length),
             )
             return processor.compute_metric_cache(scenario)
@@ -96,6 +101,8 @@ def cache_mogo_scenarios(args: List[Dict[str, Union[List[str], DictConfig]]]) ->
             force_feature_computation=cfg.cache.force_feature_computation,
             use_dense_annotations=bool(cfg.mogo_observation.use_dense_annotations),
             history_interval_length=float(cfg.mogo_observation.history_interval_length),
+            ego_vehicle_parameters=get_mogo_vehicle_parameters(),
+            ego_dynamic_parameters=get_mogo_dynamic_parameters(),
         )
 
         logger.info(f"Extracted {len(scene_loader)} Mogo scenarios for thread_id={thread_id}, node_id={node_id}.")

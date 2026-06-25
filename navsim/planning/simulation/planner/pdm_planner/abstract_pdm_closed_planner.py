@@ -3,6 +3,7 @@ from typing import List, Optional
 import numpy as np
 
 from nuplan.common.actor_state.ego_state import EgoState
+from nuplan.common.actor_state.vehicle_parameters import VehicleParameters
 from nuplan.common.maps.abstract_map_objects import LaneGraphEdgeMapObject
 from nuplan.planning.simulation.planner.abstract_planner import PlannerInput
 from nuplan.planning.simulation.trajectory.interpolated_trajectory import InterpolatedTrajectory
@@ -31,6 +32,7 @@ class AbstractPDMClosedPlanner(AbstractPDMPlanner):
         idm_policies: BatchIDMPolicy,
         lateral_offsets: Optional[List[float]],
         map_radius: float,
+        vehicle_parameters: VehicleParameters | None = None,
     ):
         """
         Constructor for AbstractPDMClosedPlanner
@@ -59,7 +61,7 @@ class AbstractPDMClosedPlanner(AbstractPDMPlanner):
         # proposal/trajectory related classes
         self._generator = PDMGenerator(trajectory_sampling, proposal_sampling)
         self._simulator = PDMSimulator(proposal_sampling)
-        self._scorer = PDMScorer(proposal_sampling)
+        self._scorer = PDMScorer(proposal_sampling, vehicle_parameters=vehicle_parameters)
 
         # lazy loaded
         self._proposal_manager: Optional[PDMProposalManager] = None

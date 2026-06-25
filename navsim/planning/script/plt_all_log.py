@@ -17,6 +17,7 @@ from navsim.common.dataloader import SceneLoader, MetricCacheLoader # SceneLoade
 from navsim.common.dataclasses import SceneFilter, SensorConfig, Trajectory
 from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer, PDMScorerConfig
@@ -89,7 +90,7 @@ METRIC_KEYS = [
 metric_cache_loader = MetricCacheLoader(Path(''))
 
 simulator = PDMSimulator(TrajectorySampling(time_horizon=4, interval_length=0.1))
-scorer = PDMScorer(TrajectorySampling(time_horizon=4, interval_length=0.1), PDMScorerConfig())
+scorer = PDMScorer(TrajectorySampling(time_horizon=4, interval_length=0.1), PDMScorerConfig(), vehicle_parameters=get_mogo_vehicle_parameters())
 
 # --- 核心辅助函数 ---
 

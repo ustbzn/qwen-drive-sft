@@ -22,6 +22,7 @@ from navsim.visualization.plots import (
     plot_bev_with_agent
 )
 from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer, PDMScorerConfig
@@ -129,7 +130,7 @@ proposal_sampling = TrajectorySampling(time_horizon=4, interval_length=0.1)
 
 simulator = PDMSimulator(proposal_sampling)
 
-scorer = PDMScorer(proposal_sampling, PDMScorerConfig())
+scorer = PDMScorer(proposal_sampling, PDMScorerConfig(), vehicle_parameters=get_mogo_vehicle_parameters())
 
 
 def save_perfect_samples(entries, agent, metric_cache_loader, simulator, scorer):

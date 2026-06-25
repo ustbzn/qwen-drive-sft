@@ -60,7 +60,7 @@ from navsim.planning.simulation.planner.pdm_planner.observation.pdm_occupancy_ma
 
 from nuplan.common.actor_state.ego_state import EgoState
 from nuplan.common.actor_state.state_representation import Point2D, StateSE2, StateVector2D, TimePoint
-from nuplan.common.actor_state.vehicle_parameters import get_pacifica_parameters
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 
 logger = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ def _ego_state_from_frame(frame: Dict[str, Any]) -> EgoState:
     return EgoState.build_from_rear_axle(
         StateSE2(float(translation[0]), float(translation[1]), yaw),
         tire_steering_angle=0.0,
-        vehicle_parameters=get_pacifica_parameters(),
+        vehicle_parameters=get_mogo_vehicle_parameters(),
         time_point=TimePoint(timestamp_us),
         rear_axle_velocity_2d=StateVector2D(float(dynamics[0]), float(dynamics[1])),
         rear_axle_acceleration_2d=StateVector2D(float(dynamics[2]), float(dynamics[3])),

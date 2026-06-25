@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from nuplan.common.maps.abstract_map import AbstractMap, SemanticMapLayer
 from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.common.actor_state.oriented_box import OrientedBox
-from nuplan.common.actor_state.vehicle_parameters import get_pacifica_parameters
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
 from nuplan.common.actor_state.car_footprint import CarFootprint
 from nuplan.common.actor_state.tracked_objects_types import TrackedObjectType
 from nuplan.common.geometry.transform import translate_longitudinally
@@ -69,7 +69,7 @@ def add_annotations_to_bev_ax(ax: plt.Axes, annotations: Annotations, add_ego: b
     if add_ego:
         car_footprint = CarFootprint.build_from_rear_axle(
             rear_axle_pose=StateSE2(0, 0, 0),
-            vehicle_parameters=get_pacifica_parameters(),
+            vehicle_parameters=get_mogo_vehicle_parameters(),
         )
         add_oriented_box_to_bev_ax(
             ax, car_footprint.oriented_box, AGENT_CONFIG[TrackedObjectType.EGO], add_heading=False

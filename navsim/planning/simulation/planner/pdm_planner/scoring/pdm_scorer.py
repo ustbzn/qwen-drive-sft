@@ -94,7 +94,7 @@ class PDMScorer:
         self,
         proposal_sampling: TrajectorySampling,
         config: PDMScorerConfig = PDMScorerConfig(),
-        vehicle_parameters: VehicleParameters = get_pacifica_parameters(),
+        vehicle_parameters: VehicleParameters | None = None,
     ):
         """
         Constructor of PDMScorer
@@ -102,7 +102,7 @@ class PDMScorer:
         """
         self.proposal_sampling = proposal_sampling
         self._config = config
-        self._vehicle_parameters = vehicle_parameters
+        self._vehicle_parameters = vehicle_parameters or get_pacifica_parameters()
 
         # lazy loaded
         self._observation: Optional[PDMObservation] = None

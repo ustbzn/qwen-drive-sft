@@ -8,6 +8,7 @@ from nuplan.common.actor_state.state_representation import TimeDuration, TimePoi
 from nuplan.planning.simulation.simulation_time_controller.simulation_iteration import SimulationIteration
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_dynamic_parameters
 from navsim.planning.simulation.planner.pdm_planner.simulation.batch_kinematic_bicycle import BatchKinematicBicycleModel
 from navsim.planning.simulation.planner.pdm_planner.simulation.batch_lqr import BatchLQRTracker
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_array_representation import ego_state_to_state_array
@@ -46,7 +47,10 @@ class PDMSimulator:
 
         # TODO: find cleaner way to load parameters
         # set parameters of motion model and tracker
-        self._motion_model._vehicle = initial_ego_state.car_footprint.vehicle_parameters
+        vehicle_parameters = initial_ego_state.car_footprint.vehicle_parameters
+        self._motion_model._vehicle = vehicle_parameters
+        self._motion_model._max_steering_angle = get_mogo_dynamic_parameters().max_wheel_steering_angle
+        self._tracker._wheel_base = vehicle_parameters.wheel_base
         self._tracker._discretization_time = self.proposal_sampling.interval_length
 
         proposal_states = states[:, : self.proposal_sampling.num_poses + 1]

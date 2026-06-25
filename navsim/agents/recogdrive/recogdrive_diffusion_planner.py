@@ -29,6 +29,7 @@ from transformers import PretrainedConfig
 from transformers.feature_extraction_utils import BatchFeature
 
 from navsim.common.dataclasses import Trajectory
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
 from navsim.common.dataloader import MetricCacheLoader
 from navsim.evaluate.pdm_score import pdm_score
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import (
@@ -108,6 +109,7 @@ class GRPOConfig:
     scorer_config: PDMScorerConfig = field(default_factory=lambda: PDMScorerConfig(
         progress_weight=10.0, ttc_weight=5.0, comfortable_weight=2.0
     ))
+    vehicle_parameters: Any = field(default_factory=get_mogo_vehicle_parameters)
     # --- Step 3 (optional BC-tightening switch; defaults reproduce Step 1+2) ---
     # bc_coeff weights the behavior-cloning anchor toward the reference policy.
     # Default 0.1 == Step 1+2. Raise it (e.g. 0.3) via agent.bc_coeff=0.3 to stop
@@ -327,7 +329,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.metric_cache_loader = MetricCacheLoader(Path(cfg.metric_cache_path))
         proposal_sampling = TrajectorySampling(time_horizon=4, interval_length=0.1)
         self.simulator = PDMSimulator(proposal_sampling)
-        self.train_scorer = PDMScorer(proposal_sampling, cfg.scorer_config)
+        self.train_scorer = PDMScorer(
+            proposal_sampling,
+            cfg.scorer_config,
+            vehicle_parameters=cfg.vehicle_parameters,
+        )
         
         try:
             state_dict = torch.load(

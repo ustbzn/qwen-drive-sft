@@ -13,6 +13,8 @@ scorer:
   _target_: navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer.PDMScorer
   _convert_: 'all'
   proposal_sampling: ${proposal_sampling}
+  vehicle_parameters:
+    _target_: navsim.planning.scenario_builder.mogo_vehicle_parameters.get_mogo_vehicle_parameters
   config: 
     _target_: navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer.PDMScorerConfig
     _convert_: 'all'

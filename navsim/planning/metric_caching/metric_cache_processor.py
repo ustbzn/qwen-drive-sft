@@ -13,10 +13,12 @@ from nuplan.planning.training.experiments.cache_metadata_entry import CacheMetad
 from nuplan.planning.scenario_builder.abstract_scenario import AbstractScenario
 from nuplan.planning.simulation.observation.observation_type import DetectionsTracks
 from nuplan.planning.simulation.planner.abstract_planner import PlannerInitialization, PlannerInput
+from nuplan.common.actor_state.vehicle_parameters import VehicleParameters
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from nuplan.planning.simulation.simulation_time_controller.simulation_iteration import SimulationIteration
 from nuplan.planning.simulation.history.simulation_history_buffer import SimulationHistoryBuffer
 
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import MogoDynamicParameters
 from navsim.planning.simulation.planner.pdm_planner.pdm_closed_planner import PDMClosedPlanner
 from navsim.planning.simulation.planner.pdm_planner.proposal.batch_idm_policy import BatchIDMPolicy
 from navsim.planning.simulation.planner.pdm_planner.observation.pdm_observation import PDMObservation
@@ -33,6 +35,8 @@ class MetricCacheProcessor:
         force_feature_computation: bool,
         use_dense_annotations: bool = False,
         history_interval_length: Optional[float] = None,
+        ego_vehicle_parameters: Optional[VehicleParameters] = None,
+        ego_dynamic_parameters: Optional[MogoDynamicParameters] = None,
     ):
         """
         Initialize class.
@@ -43,12 +47,16 @@ class MetricCacheProcessor:
         self._force_feature_computation = force_feature_computation
         self._use_dense_annotations = use_dense_annotations
         self._history_interval_length = history_interval_length
+        self._ego_vehicle_parameters = ego_vehicle_parameters
+        self._ego_dynamic_parameters = ego_dynamic_parameters
 
         # TODO: Add to some config
         self._future_sampling = TrajectorySampling(num_poses=50, interval_length=0.1)
         self._proposal_sampling = TrajectorySampling(num_poses=40, interval_length=0.1)
         self._map_radius = 100
 
+        accel_max = ego_dynamic_parameters.accel_max if ego_dynamic_parameters else 1.5
+        decel_max = ego_dynamic_parameters.decel_max if ego_dynamic_parameters else 3.0
         self._pdm_closed = PDMClosedPlanner(
             trajectory_sampling=self._future_sampling,
             proposal_sampling=self._proposal_sampling,
@@ -57,11 +65,12 @@ class MetricCacheProcessor:
                 fallback_target_velocity=15.0,
                 min_gap_to_lead_agent=1.0,
                 headway_time=1.5,
-                accel_max=1.5,
-                decel_max=3.0,
+                accel_max=accel_max,
+                decel_max=decel_max,
             ),
             lateral_offsets=[-1.0, 1.0],
             map_radius=self._map_radius,
+            vehicle_parameters=self._ego_vehicle_parameters,
         )
 
     def _get_planner_inputs(self, scenario: AbstractScenario) -> Tuple[PlannerInput, PlannerInitialization]:

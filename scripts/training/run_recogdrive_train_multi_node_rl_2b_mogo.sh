@@ -8,8 +8,8 @@ export NAVSIM_DEVKIT_ROOT=${NAVSIM_DEVKIT_ROOT:-"/pcpt/pcpt/project/jiangjunyuan
 export OPENSCENE_DATA_ROOT=${OPENSCENE_DATA_ROOT:-"$MOGO_ROOT/dataset"}
 VLM_PATH=${VLM_PATH:-"/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"}
 CACHE_PATH=${CACHE_PATH:-"$NAVSIM_EXP_ROOT/recogdrive_qwen3_notrain_cache"}
-METRIC_CACHE_PATH=${METRIC_CACHE_PATH:-"$NAVSIM_EXP_ROOT/metric_cache_mogo_v2"}
-CHECKPOINT=${CHECKPOINT:-"$NAVSIM_EXP_ROOT/training_recogdrive_qwen3_flow_IL/2026.06.15.06.32.16/lightning_logs/version_0/checkpoints/epoch=183-step=9200.ckpt"}
+METRIC_CACHE_PATH=${METRIC_CACHE_PATH:-"$NAVSIM_EXP_ROOT/metric_cache_mogo_v3"}
+CHECKPOINT=${CHECKPOINT:-"$NAVSIM_EXP_ROOT/training_recogdrive_qwen3_agent_IL/2026.06.11.13.28.50/lightning_logs/version_0/checkpoints/epoch=188-step=13986.ckpt"}
 
 export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-0}
 export NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}
@@ -57,20 +57,28 @@ torchrun \
     agent.vl_hidden_dim=2048 \
     agent.dit_type="small" \
     agent.vlm_size="small" \
-    agent.sampling_method="flow" \
+    agent.sampling_method="ddim" \
     agent.metric_cache_path="$METRIC_CACHE_PATH" \
     agent.reference_policy_checkpoint=\"$CHECKPOINT\" \
     trainer.params.max_epochs=20 \
     trainer.params.num_nodes=1 \
     trainer.params.devices=${GPUS} \
     dataloader.params.batch_size=16 \
-    experiment_name=training_recogdrive_qwen3_flow_RL \
+    experiment_name=training_recogdrive_qwen3_agent_RL \
     train_test_split=$TRAIN_TEST_SPLIT \
-    '+log_split@_global_=mogo' \
-    train_token_whitelist_path=\
+    train_logs=null \
+    val_logs=null \
+    train_token_whitelist_path=navsim/local_config/data_selection/rl_grpo_n4000_selected_tokens_v1.txt \
     cache_path="$CACHE_PATH" \
     use_cache_without_dataset=True \
-    force_cache_computation=False > train_recogdrive_qwen3_flow_rl_2b.txt 2>&1
+    force_cache_computation=False > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
 
 
 python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
+
+# agent.neighbor_sigma=0.5 \
+# agent.quasi_norm_p=2.0 \
+# agent.num_anchors=0 \
+# agent.neighbor_adaptive_temp=True \
+# agent.neighbor_leap_temperature=null \
+# '+log_split@_global_=mogo' \

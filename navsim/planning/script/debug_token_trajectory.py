@@ -42,6 +42,7 @@ from navsim.common.dataloader import MetricCacheLoader, SceneLoader
 from navsim.common.dataclasses import Camera, Scene, SceneFilter, SensorConfig, Trajectory
 from navsim.evaluate.pdm_score import pdm_score
 from navsim.planning.metric_caching.metric_cache import MetricCache
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
 from navsim.planning.script.run_pdm_score_recogdrive import compute_trajectory_l2_loss
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer, PDMScorerConfig
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
@@ -82,6 +83,7 @@ def build_pdm_tools() -> Tuple[PDMSimulator, PDMScorer]:
             comfortable_weight=2.0,
             driving_direction_weight=0.0,
         ),
+        vehicle_parameters=get_mogo_vehicle_parameters(),
     )
     return simulator, scorer
 
