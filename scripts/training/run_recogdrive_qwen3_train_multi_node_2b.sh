@@ -16,10 +16,10 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_4frame_cache}"
-GPUS="${GPUS:-8}"
-MASTER_PORT="${MASTER_PORT:-9675}"
-BATCH_SIZE="${BATCH_SIZE:-160}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
+GPUS="${GPUS:-4}"
+MASTER_PORT="${MASTER_PORT:-9696}"
+BATCH_SIZE="${BATCH_SIZE:-80}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
 
 torchrun \
@@ -42,12 +42,13 @@ torchrun \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
-  agent.sampling_method=flow \
+  agent.sampling_method=ddim \
+  agent.use_hdmap_vector=true \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=training_recogdrive_qwen3_agent_IL \
+  experiment_name=training_recogdrive_qwen3_hdmap_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   '+log_split@_global_=mogo' \
   cache_path="${CACHE_PATH}" \

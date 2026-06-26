@@ -120,6 +120,7 @@ class LightningDiTBlock(nn.Module):
         conditioning: torch.Tensor,
         encoder_hidden_states: Optional[torch.Tensor] = None,
         rotary_embedder: Optional[nn.Module] = None,
+        cross_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         mod_params = self.adaLN_modulation(conditioning)
         shift_attn, scale_attn, gate_attn, shift_ffn, scale_ffn, gate_ffn = \
@@ -131,6 +132,7 @@ class LightningDiTBlock(nn.Module):
         attn_output = self.attn(
             modulated_states,
             encoder_hidden_states=encoder_hidden_states,
+            attention_mask=cross_attention_mask if encoder_hidden_states is not None else None,
             rotary_embedder=rotary_embedder
         )
         hidden_states = hidden_states + gate_attn.unsqueeze(1) * attn_output
@@ -212,6 +214,7 @@ class LightningDiT(nn.Module):
         context_tokens: torch.Tensor,
         condition_features: torch.Tensor,
         timesteps: torch.LongTensor,
+        context_key_padding_mask: Optional[torch.Tensor] = None,
         return_hidden_states: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, List[torch.Tensor]]:
         """
@@ -222,15 +225,14 @@ class LightningDiT(nn.Module):
             context_tokens (torch.Tensor): Context token sequence for cross-attention.
             condition_features (torch.Tensor): Additional conditioning features.
             timesteps (torch.LongTensor): Diffusion timesteps.
+            context_key_padding_mask (torch.Tensor, optional): Bool mask [B, N_ctx],
+                True = valid token. Applied only to cross-attention layers.
             return_hidden_states (bool): If True, returns the output and a list of
                 all intermediate hidden states.
 
         Returns:
             The final output tensor, or a tuple of the output and all hidden states.
         """
-        seq_len = action_latents.shape[1]
-        #hidden_states = hidden_states + self.pos_embed[:, :seq_len, :]
-
         action_latents = action_latents.contiguous()
         context_tokens = context_tokens.contiguous()
         condition_features = condition_features.contiguous()
@@ -242,17 +244,18 @@ class LightningDiT(nn.Module):
         for idx, block in enumerate(self.transformer_blocks):
             use_cross_attention = not (idx % 2 == 0 and self.interleave_attention)
             current_context_tokens = context_tokens if use_cross_attention else None
-            
+
             action_latents = block(
                 action_latents,
                 conditioning=conditioning,
                 encoder_hidden_states=current_context_tokens,
                 rotary_embedder=self.rotary_embedder,
+                cross_attention_mask=context_key_padding_mask if use_cross_attention else None,
             )
             all_hidden_states.append(action_latents)
 
         output = self.final_layer(action_latents, conditioning)
-        
+
         return (output, all_hidden_states) if return_hidden_states else output
 
 

@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import logging
 import lzma
 import math
 import pickle
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
@@ -257,6 +260,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if not self.config.use_hdmap_vector or self.map_encoder is None or action_input is None:
             return None
         if any(key not in action_input for key in HDMAP_VECTOR_BATCH_KEYS):
+            logger.warning("use_hdmap_vector=True but HDMap keys missing from action_input; map encoder skipped.")
             return None
         return self.map_encoder(
             point_position=action_input.map_point_position,
@@ -276,13 +280,25 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         first_hidden_state: torch.Tensor,
         last_hidden_state: torch.Tensor,
         action_input: Optional[BatchFeature] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Returns (vl_summary_tokens, vl_context_tokens, context_key_padding_mask).
+
+        context_key_padding_mask is a bool tensor [B, N_ctx] where True = valid token.
+        VLM tokens are always valid; map padding slots are marked False.
+        Returns None for the mask when HDMap is disabled (backward-compat path).
+        """
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
         map_context_tokens = self.encode_map_context_tokens(action_input)
         if map_context_tokens is not None:
+            B, N_vl = vl_context_tokens.shape[0], vl_context_tokens.shape[1]
+            vl_mask = torch.ones(B, N_vl, dtype=torch.bool, device=vl_context_tokens.device)
+            map_mask = action_input.map_valid_mask.bool().to(device=vl_context_tokens.device)
+            context_key_padding_mask = torch.cat([vl_mask, map_mask], dim=1)
             vl_context_tokens = torch.cat([vl_context_tokens, map_context_tokens], dim=1)
-        return vl_summary_tokens, vl_context_tokens
+        else:
+            context_key_padding_mask = None
+        return vl_summary_tokens, vl_context_tokens, context_key_padding_mask
 
     def _repeat_action_input(self, action_input: BatchFeature, repeats: int) -> BatchFeature:
         repeated = {}
@@ -499,6 +515,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         vl_summary_tokens: torch.Tensor,
         vl_context_tokens: torch.Tensor,
         ego_status_features: torch.Tensor,
+        context_key_padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Predicts the flow velocity for a normalized action state."""
         model_dtype = next(self.model.parameters()).dtype
@@ -514,6 +531,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             context_tokens=vl_context_tokens,
             condition_features=ego_status_features,
             timesteps=t,
+            context_key_padding_mask=context_key_padding_mask,
         )
         pred = self.action_decoder(model_output)
         return pred.chunk(2, dim=-1)[0] if self.config.flow_cfg.mean_variance_net else pred
@@ -554,6 +572,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         *,
         deterministic: bool,
         for_logprob: bool = False,
+        context_key_padding_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         pred_flow = self._predict_flow(
             x,
@@ -561,6 +580,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             vl_summary_tokens,
             vl_context_tokens,
             ego_status_features,
+            context_key_padding_mask=context_key_padding_mask,
         )
         mean = x + dt * pred_flow.to(dtype=x.dtype)
         std = self._flow_transition_std(
@@ -580,7 +600,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         vl_summary_tokens: torch.Tensor,
         vl_context_tokens: torch.Tensor,
         ego_status_features: torch.Tensor,
-        deterministic: bool = True
+        deterministic: bool = True,
+        context_key_padding_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Calculates the mean and log variance of the reverse process p(x_{t-1} | x_t).
@@ -600,6 +621,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             context_tokens=vl_context_tokens,
             condition_features=ego_status_features,
             timesteps=t,
+            context_key_padding_mask=context_key_padding_mask,
         )
         pred_noise = self.action_decoder(model_output)
 
@@ -663,18 +685,18 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             BatchFeature: A batch containing the computed loss.
         """
         
-        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+        vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
         ego_status_features = self.ego_status_encoder(action_input.status_feature)
-        
+
         gt_actions = self.norm_odo(action_input.action)
 
         if self.config.sampling_method == 'flow':
             noise = torch.randn_like(gt_actions)
             t_cont = self.sample_time(gt_actions.shape[0], device=gt_actions.device, dtype=gt_actions.dtype)
             t_cont_reshaped = t_cont[:, None, None]
-            
+
             noisy_actions = (1 - t_cont_reshaped) * noise + t_cont_reshaped * gt_actions
             velocity_target = gt_actions - noise
             t_discrete = (t_cont * self.num_timestep_buckets).long()
@@ -685,6 +707,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 vl_summary_tokens,
                 vl_context_tokens,
                 ego_status_features,
+                context_key_padding_mask=ctx_mask,
             )
             loss = F.mse_loss(pred_velocity, velocity_target, reduction='mean')
         else: 
@@ -708,6 +731,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 context_tokens=vl_context_tokens,
                 condition_features=ego_status_features,
                 timesteps=t_discrete,
+                context_key_padding_mask=ctx_mask,
             )
             pred_noise = self.action_decoder(model_output)
             loss = F.mse_loss(pred_noise, noise, reduction='mean')
@@ -739,7 +763,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         Returns:
             BatchFeature: A batch containing the final predicted trajectory.
         """
-        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+        vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
 
@@ -749,7 +773,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         B, D = vl_summary_tokens.shape[0], self.config.action_dim
         device, dtype = vl_summary_tokens.device, vl_summary_tokens.dtype
-        
+
         current_actions = init_actions if init_actions is not None else torch.randn(
             (B, self.config.action_horizon, D), device=device, dtype=dtype
         )
@@ -767,6 +791,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     vl_context_tokens,
                     ego_embeds,
                     deterministic=True,
+                    context_key_padding_mask=ctx_mask,
                 )
                 noise_sample = torch.randn_like(current_actions)
                 if hasattr(self, 'eval_randn_clip_value') and self.eval_randn_clip_value is not None:
@@ -789,6 +814,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     vl_context_tokens,
                     ego_embeds,
                     deterministic,
+                    context_key_padding_mask=ctx_mask,
                 )
 
                 noise_sample = torch.randn_like(current_actions)
@@ -805,7 +831,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     noise_sample.clamp_(-self.eval_randn_clip_value, self.eval_randn_clip_value)
 
                 current_actions = mean + std * noise_sample
-                
+
                 if hasattr(self, 'final_action_clip_value') and self.final_action_clip_value is not None and i == len(timesteps_to_iterate) - 1:
                     current_actions.clamp_(-self.final_action_clip_value, self.final_action_clip_value)
 
@@ -824,6 +850,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     vl_context_tokens,
                     ego_embeds,
                     deterministic,
+                    context_key_padding_mask=ctx_mask,
                 )
 
                 std = torch.exp(0.5 * logvar)
@@ -863,12 +890,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         B, D = last_hidden_state.shape[0], self.config.action_dim
         device, dtype = last_hidden_state.device, last_hidden_state.dtype
         
-        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+        vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
 
         ego_status_features = self.ego_status_encoder(
-            ego_status_features       
+            ego_status_features
         )
 
         current_actions = init_actions if init_actions is not None else torch.randn(
@@ -889,6 +916,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     vl_context_tokens,
                     ego_status_features,
                     deterministic=deterministic,
+                    context_key_padding_mask=ctx_mask,
                 )
                 noise_sample = torch.randn_like(current_actions)
                 if hasattr(self, 'randn_clip_value') and self.randn_clip_value is not None:
@@ -929,6 +957,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     vl_context_tokens,
                     ego_status_features,
                     deterministic,
+                    context_key_padding_mask=ctx_mask,
                 )
 
                 std = torch.exp(0.5 * logvar).to(dtype)
@@ -977,25 +1006,31 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         B, K1, H, D = chains.shape
         num_denoising_steps = K1 - 1
         
-        vl_summary_tokens, vl_context_tokens = self.build_context_tokens(
+        vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
 
         ego_status_features = self.ego_status_encoder(
-            ego_status_features      
+            ego_status_features
         )
 
         conditioning_embeds = {
             'vl_summary_tokens': vl_summary_tokens,
             'vl_context_tokens': vl_context_tokens,
-            'ego_status_features': ego_status_features
+            'ego_status_features': ego_status_features,
         }
-        
+
         batched_conditioning = {}
         for key, value in conditioning_embeds.items():
             batched_conditioning[key] = value.unsqueeze(1).repeat(
                 1, num_denoising_steps, *(1,) * (value.ndim - 1)
             ).flatten(0, 1)
+
+        # Repeat mask to match (B * num_denoising_steps) batch dimension.
+        if ctx_mask is not None:
+            batched_ctx_mask = ctx_mask.unsqueeze(1).repeat(1, num_denoising_steps, 1).flatten(0, 1)
+        else:
+            batched_ctx_mask = None
 
         if self.config.sampling_method == 'flow':
             dt = 1.0 / num_denoising_steps
@@ -1017,6 +1052,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 batched_conditioning['ego_status_features'],
                 deterministic=deterministic,
                 for_logprob=True,
+                context_key_padding_mask=batched_ctx_mask,
             )
             dist = Normal(mean, std)
             return dist.log_prob(x_t_next)
@@ -1031,8 +1067,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             indices_batch = indices_single.repeat(B)
         else:
             t_single = torch.arange(start=K1 - 2, end=-1, step=-1, device=chains.device)
-            indices_batch = None 
-            
+            indices_batch = None
+
         t_batch = t_single.repeat(B)
 
         x_t = chains[:, :-1].reshape(-1, H, D)
@@ -1043,7 +1079,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             batched_conditioning['vl_summary_tokens'],
             batched_conditioning['vl_context_tokens'],
             batched_conditioning['ego_status_features'],
-            deterministic=deterministic
+            deterministic=deterministic,
+            context_key_padding_mask=batched_ctx_mask,
         )
 
         std = torch.exp(0.5 * logvar).clamp(min=self.min_logprob_denoising_std)

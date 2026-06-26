@@ -12,7 +12,7 @@ from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils imp
     convert_absolute_to_relative_se2_array,
 )
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder
-from nuplan.common.actor_state.state_representation import Point2D, StateSE2
+from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 
 
@@ -42,9 +42,8 @@ def collate_hdmap_vector_features(features: Dict[str, torch.Tensor], features_li
     """Append optional HDMap vector tensors to a collated feature batch."""
     if not features_list:
         return
-    first_features = features_list[0]
     for key in HDMAP_VECTOR_BATCH_KEYS:
-        if key in first_features:
+        if all(key in sample for sample in features_list):
             features[key] = torch.stack([sample[key] for sample in features_list], dim=0).cpu()
 
 
@@ -81,8 +80,9 @@ class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
     def get_unique_name(self) -> str:
         return HDMAP_VECTOR_FEATURE_NAME
 
-    def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
+    def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:  # noqa: ARG002
         """Return no-map fallback when only AgentInput is available."""
+        del agent_input  # intentionally unused: this path has no map API access
         if self.strict:
             raise RuntimeError("HDMapVectorFeatureBuilder requires Scene.map_api; got AgentInput-only path.")
         return self._empty_feature_dict()

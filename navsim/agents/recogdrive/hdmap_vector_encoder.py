@@ -22,7 +22,7 @@ class PointsEncoder(nn.Module):
         point_tokens = self.point_mlp(point_features)
         mask = point_mask.unsqueeze(-1).to(dtype=point_tokens.dtype)
         point_tokens = point_tokens.masked_fill(mask <= 0, -1e4)
-        pooled = point_tokens.max(dim=2).values
+        pooled = point_tokens.max(dim=1).values
         has_points = (point_mask.sum(dim=1, keepdim=True) > 0).to(dtype=pooled.dtype)
         return pooled * has_points
 

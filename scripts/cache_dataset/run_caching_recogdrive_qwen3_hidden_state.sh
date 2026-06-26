@@ -18,9 +18,11 @@ export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_4frame_cache}"
-GPUS="${GPUS:-8}"
-MASTER_PORT="${MASTER_PORT:-9675}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
+SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
+MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
+GPUS="${GPUS:-4}"
+MASTER_PORT="${MASTER_PORT:-9696}"
 
 torchrun \
   --nnodes=1 \
@@ -40,6 +42,9 @@ torchrun \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
+  agent.use_hdmap_vector=true \
+  mogo_map.sqlite_path="${SQLITE_PATH}" \
+  mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   cache_path="${CACHE_PATH}" \
   force_cache_computation="${FORCE_CACHE_COMPUTATION:-False}" \

@@ -20,3 +20,13 @@ defaults:
   - override train_test_split: navtest
 
 metric_cache_path: ${oc.env:NAVSIM_EXP_ROOT}/metric_cache # path to metric cache
+
+mogo_map:
+  sqlite_path: ""
+  map_name: "mogo"
+  query_radius_m: 150.0
+  max_segment_length_m: 2.0
+  enable_route_edge_filter: true
+  geometry_srid: 4326
+  utm_zone: 50
+  utm_south: false

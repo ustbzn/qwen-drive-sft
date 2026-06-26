@@ -9,7 +9,7 @@ from transformers.feature_extraction_utils import BatchFeature
 import math
 
 from navsim.agents.abstract_agent import AbstractAgent
-from navsim.common.dataclasses import AgentInput, SensorConfig, Trajectory
+from navsim.common.dataclasses import AgentInput, Scene, SensorConfig, Trajectory
 from navsim.common.command_utils import command_code_to_text
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
@@ -369,13 +369,15 @@ class ReCogDriveAgent(AbstractAgent):
         last_hs = select_hidden_state(outputs.hidden_states, self.last_hidden_state_index)
         return first_hs.squeeze(0).float().cpu(), last_hs.squeeze(0).float().cpu()
 
-    def compute_trajectory(self, agent_input: AgentInput) -> Trajectory:
+    def compute_trajectory(self, agent_input: AgentInput, scene: Optional[Scene] = None) -> Trajectory:
         self.eval()
-
         features: Dict[str, torch.Tensor] = {}
-        # build features
         for builder in self.get_feature_builders():
-            features.update(builder.compute_features(agent_input))
+            if self.use_hdmap_vector and scene is not None and hasattr(builder, "compute_features_from_scene"):
+                features.update(builder.compute_features_from_scene(scene))
+            else:
+                features.update(builder.compute_features(agent_input))
+        
         # 多视角 / 多帧在线 eval：用 _encode_views 算 hidden_state 注入，绕开单路径 image_path_tensor
         if self._needs_view_encoding():
             first_hs, last_hs = self._encode_views(agent_input)
@@ -384,11 +386,11 @@ class ReCogDriveAgent(AbstractAgent):
             features.pop("image_path_tensor", None)
         # add batch dimension
         features = {k: v.unsqueeze(0) for k, v in features.items()}
-
+        
         with torch.no_grad():
             predictions = self.forward(features)
             poses = predictions["pred_traj"].float().cpu().squeeze(0)
-
+            
         return Trajectory(poses)
 
     def compute_trajectory_vis(self, agent_input: AgentInput) -> Trajectory:

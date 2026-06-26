@@ -12,16 +12,14 @@ export NAVSIM_EXP_ROOT="${NAVSIM_EXP_ROOT:-${DATA_ROOT}/exp}"
 export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
-export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
-export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_agent_RL/2026.06.25.02.38.28/lightning_logs/version_0/checkpoints/epoch=19-step=600.ckpt}"
-# CHECKPOINT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_RL/2026.06.12.03.28.29/lightning_logs/version_0/checkpoints/epoch=19-step=5000.ckpt"
 
-METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
-GPUS="${GPUS:-8}"
-# MASTER_PORT="${MASTER_PORT:-54255}"
-MASTER_PORT="${MASTER_PORT:-9675}"
+# Update CHECKPOINT to the HDMap RL run after training completes.
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_hdmap_RL/2026.06.24.08.21.53/lightning_logs/version_0/checkpoints/epoch=19-step=10680.ckpt}"
+METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v2}"
+SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
+MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
+GPUS="${GPUS:-4}"
+MASTER_PORT="${MASTER_PORT:-9696}"
 
 torchrun \
   --nnodes=1 \
@@ -31,7 +29,7 @@ torchrun \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_test_split.data_split=val \
   agent=recogdrive_agent \
-  agent.checkpoint_path=\"$CHECKPOINT\" \
+  agent.checkpoint_path=\"${CHECKPOINT}\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
   metric_cache_path="${METRIC_CACHE_PATH}" \
   agent.cam_type=single \
@@ -42,5 +40,8 @@ torchrun \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  experiment_name=recogdrive_qwen3_RL_eval \
+  agent.use_hdmap_vector=true \
+  mogo_map.sqlite_path="${SQLITE_PATH}" \
+  mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
+  experiment_name=recogdrive_qwen3_hdmap_ddim_IL_eval \
   "$@"

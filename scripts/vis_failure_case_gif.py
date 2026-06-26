@@ -46,14 +46,14 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_IL/2026.06.11.13.28.50/lightning_logs/version_0/checkpoints/epoch=188-step=13986.ckpt",
-    "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_RL/2026.06.25.02.38.28/lightning_logs/version_0/checkpoints/epoch=19-step=600.ckpt",
+    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive_hdmap/exp/training_recogdrive_qwen3_hdmap_IL/2026.06.23.13.32.10/lightning_logs/version_0/checkpoints/epoch=151-step=16264.ckpt",
+    "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive_hdmap/exp/training_recogdrive_qwen3_hdmap_RL/2026.06.24.08.21.53/lightning_logs/version_0/checkpoints/epoch=19-step=10680.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"
 HYDRA_CONFIG_PATH = "../navsim/planning/script/config/common/train_test_split"
 DEFAULT_TOKEN_REPORT = Path(
-    "vis_output/eval/2026.06.25.05.51.43_low_score_from_RL_new/failure_case_token_report.txt"
+    "vis_output/eval/2026.06.25.10.01.35_qwen3_hdmap_RL_low_score/failure_case_token_report.txt"
 )
 TOKEN_RE = re.compile(r"[0-9a-fA-F]{32}")
 DEFAULT_RENDER_DPI = 60

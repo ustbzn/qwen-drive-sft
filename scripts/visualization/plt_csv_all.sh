@@ -1,7 +1,7 @@
 export NUPLAN_MAP_VERSION="nuplan-maps-v1.0"
 export NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset/maps"
 export NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp"
-export NAVSIM_DEVKIT_ROOT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive"
+export NAVSIM_DEVKIT_ROOT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive_hdmap"
 export OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset"
 export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 
@@ -24,12 +24,12 @@ export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 # ===== 多卡版本（用多卡就取消注释这一段，并注释掉上面的单进程版本）=====
 # 各 rank 用 tokens[rank::world_size] 分摊渲染，跑完 rank0 自动把
 # index_rank*.csv 合并成 index_all.csv。GPUS 改成要用的卡数。
-GPUS=8
-torchrun --nproc_per_node=${GPUS} --master_port=9676 \
+GPUS=4
+torchrun --nproc_per_node=${GPUS} --master_port=9696 \
   -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/recogdrive_qwen3_RL_eval/2026.06.25.05.51.43/2026.06.25.05.54.58.csv" \
-  --out "vis_output/eval/2026.06.25.05.51.43_mogo_vehicle" \
-  --checkpoint "exp/training_recogdrive_qwen3_agent_RL/2026.06.25.02.38.28/lightning_logs/version_0/checkpoints/epoch=19-step=600.ckpt" \
+  --csv "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive_hdmap/exp/recogdrive_qwen3_hdmap_ddim_IL_eval/2026.06.25.10.01.35/2026.06.25.10.12.38.csv" \
+  --out "vis_output/eval/2026.06.25.10.01.35_qwen3_hdmap_RL" \
+  --checkpoint "exp/training_recogdrive_qwen3_hdmap_RL/2026.06.24.08.21.53/lightning_logs/version_0/checkpoints/epoch=19-step=10680.ckpt" \
   --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
   --vlm_type qwen3 \
   --openscene_data_root "$OPENSCENE_DATA_ROOT" \

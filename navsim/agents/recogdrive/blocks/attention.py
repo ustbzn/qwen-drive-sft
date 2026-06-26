@@ -71,6 +71,15 @@ class Attention(nn.Module):
             if is_self_attention:
                 k = (k * cos) + (rotate_half(k) * sin)
 
+        # Normalise: bool [B, N_k] → additive float [B, 1, 1, N_k] so both
+        # scaled_dot_product_attention and the manual fallback use the same mask.
+        if attention_mask is not None and attention_mask.dtype == torch.bool:
+            if attention_mask.dim() == 2:
+                attention_mask = attention_mask[:, None, None, :]  # [B,1,1,N_k]
+            additive = torch.zeros_like(attention_mask, dtype=q.dtype)
+            additive.masked_fill_(~attention_mask, float('-inf'))
+            attention_mask = additive
+
         if hasattr(F, 'scaled_dot_product_attention'):
             x = F.scaled_dot_product_attention(
                 q, k, v,

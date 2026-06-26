@@ -39,6 +39,7 @@ from navsim.planning.script.builders.worker_pool_builder import build_worker
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
 from navsim.planning.metric_caching.metric_cache import MetricCache
+from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -125,18 +126,20 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
     scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
     scene_filter.log_names = log_names
     scene_filter.tokens = tokens
+    map_api_builder = build_mogo_map_api_builder_from_cfg(cfg) if getattr(cfg, "mogo_map", None) else None
     scene_loader = SceneLoader(
         sensor_blobs_path=Path(cfg.sensor_blobs_path),
         data_path=Path(cfg.navsim_log_path),
         scene_filter=scene_filter,
         sensor_config=agent.get_sensor_config(),
-        load_image_path=True
+        load_image_path=True,
+        map_api_builder=map_api_builder,
     )
 
-
+    requires_scene = getattr(agent, "use_hdmap_vector", False)
     tokens_to_evaluate = list(set(scene_loader.tokens) & set(metric_cache_loader.tokens))
-    tokens_to_evaluate = sorted(tokens_to_evaluate) 
-    
+    tokens_to_evaluate = sorted(tokens_to_evaluate)
+
     pdm_results: List[Dict[str, Any]] = []
     for idx, (token) in enumerate(tokens_to_evaluate):
         if dist.get_rank() == 0:
@@ -148,7 +151,6 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             with lzma.open(metric_cache_path, "rb") as f:
                 metric_cache: MetricCache = pickle.load(f)
 
-            requires_scene = False
             agent_input = scene_loader.get_agent_input_from_token(token)
             if requires_scene:
                 scene = scene_loader.get_scene_from_token(token)
