@@ -18,6 +18,13 @@ from .utils.lr_scheduler import WarmupCosLR
 from .utils.utils import format_number, build_from_configs
 from .recogdrive_features import ReCogDriveFeatureBuilder, TrajectoryTargetBuilder, select_hidden_state
 from .recogdrive_backbone import RecogDriveBackbone
+from .recogdrive_view_utils import (
+    collect_view_frame_paths,
+    flatten_view_frames,
+    view_labels_for,
+    build_history_str,
+    build_driving_question,
+)
 from .recogdrive_diffusion_planner import (
     ReCogDriveDiffusionPlanner,
     ReCogDriveDiffusionPlannerConfig,
@@ -30,17 +37,17 @@ class ReCogDriveAgent(AbstractAgent):
         trajectory_sampling: TrajectorySampling,
         vlm_path: Optional[str] = None,
         checkpoint_path: Optional[str] = None,
-        cam_type: Optional[str] = 'single', 
-        vlm_type: Optional[str] = 'internvl', 
-        dit_type: Optional[str] = 'small', 
-        sampling_method: Optional[str] = 'ddim', 
-        cache_mode: bool = False, 
-        cache_hidden_state: bool = True, 
+        cam_type: Optional[str] = 'single',
+        vlm_type: Optional[str] = 'internvl',
+        dit_type: Optional[str] = 'small',
+        sampling_method: Optional[str] = 'ddim',
+        cache_mode: bool = False,
+        cache_hidden_state: bool = True,
         lr: float = 1e-4,
         grpo: bool = False,
-        metric_cache_path: Optional[str] = '', 
-        reference_policy_checkpoint: Optional[str] = '', 
-        vlm_size: Optional[str] = 'small', 
+        metric_cache_path: Optional[str] = '',
+        reference_policy_checkpoint: Optional[str] = '',
+        vlm_size: Optional[str] = 'small',
         train_backbone: bool = False,
         vl_hidden_dim: Optional[int] = None,
         normalize_vl_hidden_states: bool = False,
@@ -48,6 +55,10 @@ class ReCogDriveAgent(AbstractAgent):
         last_hidden_state_index: int = -1,
         bc_coeff: float = 0.1,
         bc_teacher_deterministic: bool = False,
+        view_list: Optional[List[str]] = None,
+        num_frames: int = 1,
+        use_video_input: bool = False,
+        video_fps: float = 2.0,
     ):
         super().__init__()
         self._trajectory_sampling = trajectory_sampling
@@ -70,6 +81,11 @@ class ReCogDriveAgent(AbstractAgent):
         self.last_hidden_state_index = int(last_hidden_state_index)
         self.bc_coeff = bc_coeff
         self.bc_teacher_deterministic = bc_teacher_deterministic
+        # 多视角 / 多帧配置（默认单视角单帧，零影响）。视角数 = len(view_list)。
+        self.view_list = list(view_list) if view_list else ["cam_f0"]
+        self.num_frames = int(num_frames)
+        self.use_video_input = bool(use_video_input)
+        self.video_fps = float(video_fps)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -164,6 +180,10 @@ class ReCogDriveAgent(AbstractAgent):
             cache_mode=self.cache_mode,
             first_hidden_state_index=self.first_hidden_state_index,
             last_hidden_state_index=self.last_hidden_state_index,
+            view_list=self.view_list,
+            num_frames=self.num_frames,
+            use_video_input=self.use_video_input,
+            video_fps=self.video_fps,
         )]
     # 从 features 拿到或算出 VLM 的 first/last hidden states，拼好 action inputs，交给 Diffusion Planner 做轨迹预测。
     def forward(self, features: Dict[str, torch.Tensor], targets=None, tokens_list=None) -> Dict[str, torch.Tensor]:
@@ -181,7 +201,9 @@ class ReCogDriveAgent(AbstractAgent):
         if high_command_one_hot.ndim == 1:
             high_command_one_hot = high_command_one_hot.unsqueeze(0)
 
-        if self.cache_hidden_state:
+        # 优先用已算好的 hidden_state：缓存模式从缓存读；在线 eval 多视角 / 多帧时
+        # 由 compute_trajectory 调 _encode_views 预先算好并注入 features（方案 B）。
+        if self.cache_hidden_state or ("first_hidden_state" in features):
             first_hidden_state = features["first_hidden_state"].cuda()
             last_hidden_state = features["last_hidden_state"].cuda()
         else:
@@ -246,6 +268,53 @@ class ReCogDriveAgent(AbstractAgent):
             action_inputs = BatchFeature({"status_feature": status_feature.to(model_dtype)})
             return self.action_head.get_action(first_hidden_state, last_hidden_state, action_inputs)
 
+    def _is_online_backbone(self) -> bool:
+        """在线 backbone 模式：eval / 可视化时每样本现跑 VLM（非缓存读、非 cache_mode 写）。"""
+        return (not self.cache_hidden_state) and (not self.cache_mode)
+
+    def _needs_view_encoding(self) -> bool:
+        """是否需要走 _encode_views（多视角或多帧）。单视角单帧时保持旧 image_path_tensor
+        路径以零影响。"""
+        return self._is_online_backbone() and (
+            len(self.view_list) > 1 or int(self.num_frames) > 1
+        )
+
+    def _encode_views(self, agent_input: AgentInput):
+        """从 agent_input.cameras 取多视角 / 多帧图，现跑 backbone，返回 (first_hs, last_hs)。
+
+        与 features 缓存分支共用 view_utils，prompt 文案一致（方案 B：在线 eval 单样本
+        直接持有 agent_input，无需经 image_path_tensor）。
+        """
+        if self.backbone is None:
+            raise RuntimeError("Agent is in 'no-cache' mode, but backbone is not initialized.")
+
+        cameras = agent_input.cameras
+        ego_statuses = agent_input.ego_statuses
+        history_trajectory = torch.tensor(
+            [[float(e.ego_pose[0]), float(e.ego_pose[1]), float(e.ego_pose[2])] for e in ego_statuses[:4]],
+            dtype=torch.float32,
+        )
+        command = torch.tensor(ego_statuses[-1].driving_command, dtype=torch.float32)
+        command_str = command_code_to_text(command)
+        history_str = build_history_str(history_trajectory)
+
+        view_frame_paths = collect_view_frame_paths(cameras, self.view_list, self.num_frames)
+        flat = flatten_view_frames(view_frame_paths)
+        question = build_driving_question(
+            history_str, command_str, self.view_list, self.num_frames,
+            model_type=self.vlm_type, flat_image_count=len(flat),
+        )
+        outputs = self.backbone.forward_from_paths(
+            [view_frame_paths], [question],
+            view_labels=view_labels_for(self.view_list),
+            num_frames=self.num_frames,
+            use_video_input=self.use_video_input,
+            video_fps=self.video_fps,
+        )
+        first_hs = select_hidden_state(outputs.hidden_states, self.first_hidden_state_index)
+        last_hs = select_hidden_state(outputs.hidden_states, self.last_hidden_state_index)
+        return first_hs.squeeze(0).float().cpu(), last_hs.squeeze(0).float().cpu()
+
     def compute_trajectory(self, agent_input: AgentInput) -> Trajectory:
         self.eval()
 
@@ -253,6 +322,12 @@ class ReCogDriveAgent(AbstractAgent):
         # build features
         for builder in self.get_feature_builders():
             features.update(builder.compute_features(agent_input))
+        # 多视角 / 多帧在线 eval：用 _encode_views 算 hidden_state 注入，绕开单路径 image_path_tensor
+        if self._needs_view_encoding():
+            first_hs, last_hs = self._encode_views(agent_input)
+            features["first_hidden_state"] = first_hs
+            features["last_hidden_state"] = last_hs
+            features.pop("image_path_tensor", None)
         # add batch dimension
         features = {k: v.unsqueeze(0) for k, v in features.items()}
 
@@ -269,6 +344,12 @@ class ReCogDriveAgent(AbstractAgent):
         # build features
         for builder in self.get_feature_builders():
             features.update(builder.compute_features(agent_input))
+
+        if self._needs_view_encoding():
+            first_hs, last_hs = self._encode_views(agent_input)
+            features["first_hidden_state"] = first_hs
+            features["last_hidden_state"] = last_hs
+            features.pop("image_path_tensor", None)
 
         # add batch dimension
         features = {k: v.unsqueeze(0) for k, v in features.items()}

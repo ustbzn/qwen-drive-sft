@@ -9,6 +9,15 @@ trajectory_sampling:
 checkpoint_path: ''
 vlm_path: ''
 cam_type: 'single'
+# --- 多视角 / 多帧时序输入（默认全关，等价当前单视角单帧 Qwen3 流程，零影响）---
+# 视角数 = len(view_list)；多视角 / 多帧需在脚本里显式 override 开启，并保证缓存与
+# 训练 / eval 用相同配置（否则 get_unique_name 对不上、CacheOnlyDataset 静默丢样本）。
+# mogo 多视角推荐用真实有数据的视角 ['cam_f0','cam_l0','cam_r0','cam_l1','cam_r1','cam_b0']，
+# 避免选空的 cam_l2/cam_r2（否则 edge-pad 会用前视图冒充后侧视图）。
+view_list: ['cam_f0']
+num_frames: 1
+use_video_input: false   # 仅 Qwen3 生效；True 且 num_frames>1 时走 videos= 视频路径
+video_fps: 2.0
 vlm_type: 'internvl'
 dit_type: 'small'
 sampling_method: 'ddim'

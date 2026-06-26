@@ -11,6 +11,13 @@ from navsim.common.dataclasses import Scene, Trajectory
 from navsim.common.command_utils import command_code_to_text
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from .recogdrive_backbone import RecogDriveBackbone
+from .recogdrive_view_utils import (
+    collect_view_frame_paths,
+    flatten_view_frames,
+    view_labels_for,
+    build_history_str,
+    build_driving_question,
+)
 from .utils.internvl_preprocess import load_image
 
 def format_number(n, decimal_places=2):
@@ -47,7 +54,11 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
                  device: str = "cuda",
                  cache_mode: bool = False,
                  first_hidden_state_index: int = 0,
-                 last_hidden_state_index: int = -1, ):
+                 last_hidden_state_index: int = -1,
+                 view_list: Optional[list] = None,
+                 num_frames: int = 1,
+                 use_video_input: bool = False,
+                 video_fps: float = 2.0, ):
         """
         Initializes the feature builder.
 
@@ -60,6 +71,10 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             model_type (str, optional): The type of model to load ('internvl' or 'qwen'). Required if cache_hidden_state is True.
             checkpoint_path (str, optional): Path to the model checkpoint. Required if cache_hidden_state is True.
             device (str): The device to load the model onto.
+            view_list (list, optional): Camera field names for multi-view input; defaults to ['cam_f0'].
+            num_frames (int): Frames per view (oldest->newest from the tail of cameras); default 1.
+            use_video_input (bool): Qwen3 only; True with num_frames>1 uses the videos= path.
+            video_fps (float): fps used in VideoMetadata for the Qwen3 video path.
         """
         # cache_hidden_state：True：特征里已经带 hidden state（要么 builder 里算，要么从缓存读），agent 只负责用。
         # False：特征里不包含 hidden state，只给路径；hidden state 由 agent 里的 backbone 每次 forward 时现算。
@@ -70,6 +85,11 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
         self.cache_mode = cache_mode
         self.first_hidden_state_index = int(first_hidden_state_index)
         self.last_hidden_state_index = int(last_hidden_state_index)
+        # 多视角 / 多帧配置（默认单视角单帧，零影响）
+        self.view_list = list(view_list) if view_list else ["cam_f0"]
+        self.num_frames = int(num_frames)
+        self.use_video_input = bool(use_video_input)
+        self.video_fps = float(video_fps)
 
         if self.cache_hidden_state and self.cache_mode:
             if not model_type or not checkpoint_path:
@@ -82,7 +102,13 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
 
     def get_unique_name(self) -> str:
         if self.model_type == "qwen3":
-            return "qwen3_feature"
+            n_v, n_f = len(self.view_list), int(self.num_frames)
+            # 单视角单帧保持历史缓存名，旧 qwen3_feature.gz 继续可用（零影响）。
+            if n_v == 1 and n_f == 1:
+                return "qwen3_feature"
+            # 多视角 / 多帧的 hidden_state 序列长度不同，落到独立目录避免脏读 / 误用旧缓存训练。
+            tag = f"v{n_v}_f{n_f}" + ("_vid" if (self.use_video_input and n_f > 1) else "")
+            return f"qwen3_feature_{tag}"
         return "internvl_feature"
 
     def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
@@ -115,12 +141,16 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
 
 
         if not self.cache_hidden_state:
+            # 离线 / 在线 backbone 模式：只缓存单条前视路径。多视角 / 多帧的在线 eval
+            # 不走这里（见 recogdrive_agent._encode_views 方案 B，从 agent_input 直接取图）。
+            # NOTE: 若将来要做 offline batched 多视角训练，此处单路径编码不够，需扩展为
+            #       视角×帧矩阵的多路径编码，并相应调整 collate。
             image_path = str(cameras[-1].cam_f0.image)
-            
+
             path_as_ordinals = [ord(char) for char in image_path]
-            
+
             path_tensor = torch.tensor(path_as_ordinals, dtype=torch.long)
-            
+
             return {
                 "history_trajectory": history_trajectory.cpu(),
                 "high_command_one_hot": high_command_one_hot.cpu(),
@@ -130,16 +160,27 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
         else:       # 用“当前图像 + 历史轨迹 + 导航指令”的 prompt 跑一遍 VLM，把得到的 last_hidden_state 作为视觉语言特征返回，供后面 Diffusion Planner 做轨迹预测。
             if self.backbone is None:
                 raise RuntimeError("FeatureBuilder is in online mode, but the backbone was not initialized.")
-            
-            command_str = command_code_to_text(high_command_one_hot)
-            history_str = " ".join([f'   - t-{3-i}: ({format_number(history_trajectory[i, 0].item())}, {format_number(history_trajectory[i, 1].item())}, {format_number(history_trajectory[i, 2].item())})' for i in range(4)])
-            
-            prompt = f"<image>\nAs an autonomous driving system, predict the vehicle's trajectory based on:\n1. Visual perception from front camera view\n2. Historical motion context (last 4 timesteps):{history_str}\n3. Active navigation command: [{command_str.upper()}]"
-            output_requirements = "\nOutput requirements:\n- Predict 8 future trajectory points\n- Each point format: (x:float, y:float, heading:float)\n- Use [PT, ...] to encapsulate the trajectory\n- Maintain numerical precision to 2 decimal places"
-            questions = [f"{prompt}{output_requirements}"]
 
-            image_path = str(cameras[-1].cam_f0.image)
-            outputs = self.backbone.forward_from_paths([image_path], questions)
+            command_str = command_code_to_text(high_command_one_hot)
+            history_str = build_history_str(history_trajectory)
+
+            # 多视角 / 多帧取图（含 edge-pad），与在线 eval 共用 view_utils 保证一致。
+            view_frame_paths = collect_view_frame_paths(cameras, self.view_list, self.num_frames)
+            flat = flatten_view_frames(view_frame_paths)
+            question = build_driving_question(
+                history_str, command_str, self.view_list, self.num_frames,
+                model_type=self.model_type, flat_image_count=len(flat),
+            )
+            questions = [question]
+
+            outputs = self.backbone.forward_from_paths(
+                [view_frame_paths],            # batch=1
+                questions,
+                view_labels=view_labels_for(self.view_list),
+                num_frames=self.num_frames,
+                use_video_input=self.use_video_input,
+                video_fps=self.video_fps,
+            )
             first_hidden_state = select_hidden_state(outputs.hidden_states, self.first_hidden_state_index)
             last_hidden_state = select_hidden_state(outputs.hidden_states, self.last_hidden_state_index)
 

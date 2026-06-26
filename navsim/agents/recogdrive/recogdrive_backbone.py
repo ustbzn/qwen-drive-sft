@@ -158,73 +158,251 @@ class RecogDriveBackbone(nn.Module):
         print("InternVL model configured.")
     
     # 把图像 + 文本 prompt喂给 VLM（InternVL/Qwen），输出 transformer 的 hidden states
-    # questions：每个样本一条 prompt，和“一张相机图”一一对应；num_patches_list：每张图对应的 patch 数
-    def forward_from_paths(self, image_paths: List[str], questions: List[str]):
-        """Run the configured VLM from image paths and return hidden states."""
-        if self.model_type == "qwen3":
-            return self._forward_qwen3(image_paths=image_paths, questions=questions)
+    # 输入是 [batch][view][frame] 三层路径矩阵（每样本一段多视角/多帧 clip）。
+    # 单视角单帧时 view_frame_paths = [[[front_path]]]，与改造前行为等价。
+    @staticmethod
+    def _normalize_view_frame_paths(view_frame_paths):
+        """把可能的旧式扁平输入规整为 [batch][view][frame] 三层结构。
 
-        pixel_values_list = [load_image(path) for path in image_paths]
+        兼容历史调用：传 List[str]（一 batch 一图）时包装成
+        [[[p]] for p in paths]；传 [batch][view][frame] 时原样返回。
+        """
+        if not view_frame_paths:
+            return view_frame_paths
+        sample0 = view_frame_paths[0]
+        if isinstance(sample0, str):
+            # List[str]：每个元素是一个样本的单视角单帧路径
+            return [[[p]] for p in view_frame_paths]
+        return view_frame_paths
+
+    def forward_from_paths(
+        self,
+        view_frame_paths,
+        questions: List[str],
+        *,
+        view_labels: Optional[List[str]] = None,
+        num_frames: int = 1,
+        use_video_input: bool = False,
+        video_fps: float = 2.0,
+    ):
+        """Run the configured VLM from image paths and return hidden states.
+
+        :param view_frame_paths: [batch][view][frame] 图像路径矩阵。
+        :param questions: 每样本一条 prompt。
+        :param view_labels: 长度 = n_views 的视角标签（如 ['FRONT VIEW', ...]）。
+        :param num_frames: 每视角帧数；>1 且 use_video_input 时 Qwen3 走视频路径。
+        :param use_video_input: 仅 Qwen3 生效；True 且 num_frames>1 时用 videos= 路径。
+        :param video_fps: VideoMetadata 用。
+        """
+        view_frame_paths = self._normalize_view_frame_paths(view_frame_paths)
+
+        if self.model_type == "qwen3":
+            if use_video_input and int(num_frames) > 1:
+                return self._forward_qwen3_video(
+                    view_frame_paths, questions,
+                    view_labels=view_labels, video_fps=video_fps,
+                )
+            return self._forward_qwen3(
+                view_frame_paths, questions,
+                view_labels=view_labels, num_frames=num_frames,
+            )
+
+        # InternVL：把 [batch][view][frame] 扁平成图像列表，逐图计算 num_patches。
+        if self.model_type == "internvl" and use_video_input:
+            print("[RecogDriveBackbone] InternVL does not support video input; "
+                  "falling back to multi-image frames.")
+        flat_paths, per_sample_counts = [], []
+        for sample_views in view_frame_paths:
+            cnt = 0
+            for frames in sample_views:
+                for p in frames:
+                    flat_paths.append(p)
+                    cnt += 1
+            per_sample_counts.append(cnt)
+        pixel_values_list = [load_image(path) for path in flat_paths]
         num_patches_list = [p.shape[0] for p in pixel_values_list]
         pixel_values_cat = torch.cat(pixel_values_list, dim=0).to(self.device)
-        return self.forward(pixel_values_cat, questions, num_patches_list)
+        return self.forward(
+            pixel_values_cat, questions, num_patches_list,
+            per_sample_image_counts=per_sample_counts,
+        )
 
-    def _forward_qwen3(self, image_paths: List[str], questions: List[str]):
-        """Run Qwen3-VL using its processor/chat template and expose hidden states."""
+    def _forward_qwen3(self, view_frame_paths, questions: List[str], *,
+                       view_labels: Optional[List[str]] = None, num_frames: int = 1):
+        """Run Qwen3-VL via processor and expose hidden states.
+
+        Covers single-view single-frame (现状，零影响) and multi-view single-frame；
+        多帧但未开 video 时把每帧当独立 image（带 Frame-i 标签）。
+        """
+        from PIL import Image
+
         if self.processor is None:
             raise RuntimeError("Qwen3 processor is not initialized.")
 
-        messages_batch = []
-        for image_path, question in zip(image_paths, questions):
+        n_views = len(view_frame_paths[0]) if view_frame_paths else 1
+        multi = (n_views > 1) or (int(num_frames) > 1)
+
+        # 单视角单帧：逐字复刻改造前的调用（message 直接带 image 路径 +
+        # apply_chat_template(tokenize=True)），保证 hidden_state 数值零影响。
+        if not multi:
+            messages_batch = []
+            for sample_views, question in zip(view_frame_paths, questions):
+                image_path = sample_views[0][0]
+                messages_batch.append([
+                    {"role": "system", "content": [{"type": "text", "text": system_message}]},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": image_path},
+                            {"type": "text", "text": question},
+                        ],
+                    },
+                ])
+            inputs = self.processor.apply_chat_template(
+                messages_batch,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+                padding=True,
+            )
+            inputs = inputs.to(next(self.model.parameters()).device)
+            return self.model(**inputs, output_hidden_states=True, return_dict=True)
+
+        # 多视角 / 多帧：tokenize=False 出文本 + processor(images=PIL列表) 统一上图。
+        messages_batch, pil_images = [], []
+        for sample_views, question in zip(view_frame_paths, questions):
+            user_content = []
+            for v_idx, frames in enumerate(sample_views):
+                label = view_labels[v_idx] if view_labels else ""
+                for f_idx, p in enumerate(frames):
+                    suffix = f" Frame-{f_idx + 1}" if int(num_frames) > 1 else ""
+                    user_content.append({"type": "text", "text": f"{label}{suffix}:"})
+                    user_content.append({"type": "image"})
+                    pil_images.append(Image.open(p).convert("RGB"))
+            user_content.append({"type": "text", "text": question})
             messages_batch.append([
                 {"role": "system", "content": [{"type": "text", "text": system_message}]},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image_path},
-                        {"type": "text", "text": question},
-                    ],
-                },
+                {"role": "user", "content": user_content},
             ])
 
-        inputs = self.processor.apply_chat_template(
-            messages_batch,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
+        chat_texts = [
+            self.processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
+            for m in messages_batch
+        ]
+        inputs = self.processor(
+            text=chat_texts,
+            images=pil_images,
             return_tensors="pt",
             padding=True,
         )
-        model_device = next(self.model.parameters()).device
-        inputs = inputs.to(model_device)
-        return self.model(
-            **inputs,
-            output_hidden_states=True,
-            return_dict=True,
-        )
+        inputs = inputs.to(next(self.model.parameters()).device)
+        return self.model(**inputs, output_hidden_states=True, return_dict=True)
 
-    def forward(self, pixel_values: torch.Tensor, questions: List[str], num_patches_list: List[int]):
+    def _forward_qwen3_video(self, view_frame_paths, questions: List[str], *,
+                             view_labels: Optional[List[str]] = None, video_fps: float = 2.0):
+        """Run Qwen3-VL with each camera as one video clip (multi-frame temporal).
+
+        移植 DrivePi_8GPU 的 video 组装：每视角一段 [T,H,W,C] uint8 clip，按
+        (sample, view) flatten 成 videos 列表 + 一一对应的 VideoMetadata，并显式传
+        do_sample_frames=False 禁止 processor 重采样。
+        """
+        import numpy as np
+        from PIL import Image
+        from transformers.video_utils import VideoMetadata
+
+        if self.processor is None:
+            raise RuntimeError("Qwen3 processor is not initialized.")
+
+        videos, video_metadata = [], []
+        for sample_views in view_frame_paths:            # batch
+            for frames in sample_views:                  # 每视角一段 clip（旧→新）
+                arr = np.stack(
+                    [np.array(Image.open(p).convert("RGB"), dtype=np.uint8) for p in frames],
+                    axis=0,
+                )  # [T, H, W, C]
+                t_, h_, w_ = arr.shape[0], arr.shape[1], arr.shape[2]
+                videos.append(arr)
+                video_metadata.append(VideoMetadata(
+                    total_num_frames=t_,
+                    fps=video_fps,
+                    width=w_,
+                    height=h_,
+                    duration=t_ / float(video_fps),
+                    video_backend="decord",
+                    frames_indices=list(range(t_)),
+                ))
+
+        n_views = len(view_frame_paths[0]) if view_frame_paths else 1
+        chat_texts = []
+        for question in questions:
+            content = []
+            for v_idx in range(n_views):
+                label = view_labels[v_idx] if view_labels else ""
+                content.append({"type": "text", "text": f"{label}:"})
+                content.append({"type": "video"})
+            content.append({"type": "text", "text": question})
+            messages = [
+                {"role": "system", "content": [{"type": "text", "text": system_message}]},
+                {"role": "user", "content": content},
+            ]
+            chat_texts.append(self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True))
+
+        inputs = self.processor(
+            text=chat_texts,
+            videos=videos,
+            video_metadata=video_metadata,
+            do_sample_frames=False,  # 已是 pre-sampled 帧，禁止 processor 再按 fps 重采样
+            return_tensors="pt",
+            padding=True,
+        ).to(next(self.model.parameters()).device)
+        return self.model(**inputs, output_hidden_states=True, return_dict=True)
+
+    def forward(self, pixel_values: torch.Tensor, questions: List[str], num_patches_list: List[int],
+                per_sample_image_counts: Optional[List[int]] = None):
         if not self.model:
             raise RuntimeError("Backbone model has not been initialized. Call initialize() on the agent first.")
-        
+
         model_dtype = next(self.model.parameters()).dtype
+
+        # per_sample_image_counts：每个样本（question）含几张图。缺省视作一图一问
+        # （单视角单帧的历史行为）。多视角时一个 question 对应多张图，需按此切分
+        # num_patches_list，并把该样本 prompt 里的每个 <image> 占位逐个替换为对应图的
+        # IMG token（修复原先 replace(..., 1) 只替换第一个占位的 bug）。
+        if per_sample_image_counts is None:
+            per_sample_image_counts = [1] * len(questions)
 
         # 模型文本输入：queries
         queries = []
-        for idx, num_patches in enumerate(num_patches_list):
-            question = questions[idx]
+        img_cursor = 0
+        for s_idx, question in enumerate(questions):
+            n_img = per_sample_image_counts[s_idx]
+            sample_patches = num_patches_list[img_cursor:img_cursor + n_img]
+            img_cursor += n_img
+
             if pixel_values is not None and '<image>' not in question:
                 question = '<image>\n' + question
-            
+
             template = get_conv_template("internvl2_5")
             template.system_message = system_message
             template.append_message(template.roles[0], question)
             template.append_message(template.roles[1], None)
             query = template.get_prompt()
 
-            image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * num_patches + IMG_END_TOKEN
-            query = query.replace('<image>', image_tokens, 1)
-            queries.append(query)
+            # 按出现顺序逐个替换 <image>，每个占位用各自图的 num_patches。
+            parts = query.split('<image>')
+            n_placeholder = len(parts) - 1
+            if n_placeholder != len(sample_patches):
+                raise ValueError(
+                    f"InternVL prompt has {n_placeholder} <image> placeholders but "
+                    f"{len(sample_patches)} images for sample {s_idx}."
+                )
+            rebuilt = parts[0]
+            for k, np_k in enumerate(sample_patches):
+                image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * np_k + IMG_END_TOKEN
+                rebuilt += image_tokens + parts[k + 1]
+            queries.append(rebuilt)
         self.tokenizer.padding_side = 'left'
         model_inputs = self.tokenizer(
             queries,

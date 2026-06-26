@@ -18,7 +18,7 @@ export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_cache}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_4frame_cache}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9675}"
 
@@ -34,6 +34,9 @@ torchrun \
   agent.cache_mode=True \
   agent.vlm_type=qwen3 \
   agent.vlm_path="${QWEN3_VL_PATH}" \
+  "agent.view_list=[cam_f0]" \
+  agent.use_video_input=True \
+  agent.num_frames=4 \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \

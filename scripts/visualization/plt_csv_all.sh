@@ -25,18 +25,18 @@ export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 # 各 rank 用 tokens[rank::world_size] 分摊渲染，跑完 rank0 自动把
 # index_rank*.csv 合并成 index_all.csv。GPUS 改成要用的卡数。
 GPUS=8
-torchrun --nproc_per_node=${GPUS} --master_port=9675 \
+torchrun --nproc_per_node=${GPUS} --master_port=9676 \
   -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/recogdrive_qwen3_IL_eval/2026.06.17.04.46.01/2026.06.17.04.49.13.csv" \
-  --out "vis_output/eval/0612_qwen_IL_0616pdms" \
-  --checkpoint "exp/training_recogdrive_qwen3_agent_IL/2026.06.11.13.28.50/lightning_logs/version_0/checkpoints/epoch=188-step=13986.ckpt" \
+  --csv "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/recogdrive_qwen3_RL_eval/2026.06.25.05.51.43/2026.06.25.05.54.58.csv" \
+  --out "vis_output/eval/2026.06.25.05.51.43_mogo_vehicle" \
+  --checkpoint "exp/training_recogdrive_qwen3_agent_RL/2026.06.25.02.38.28/lightning_logs/version_0/checkpoints/epoch=19-step=600.ckpt" \
   --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
   --vlm_type qwen3 \
   --openscene_data_root "$OPENSCENE_DATA_ROOT" \
   --split val \
   --scene_filter mogo_10hz \
   --debug_failures \
-  --metric_cache_path "$NAVSIM_EXP_ROOT/metric_cache_mogo_v2" \
+  --metric_cache_path "$NAVSIM_EXP_ROOT/metric_cache_mogo_v3" \
   --mogo_map_sqlite_path "$OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite"
 
   # --csv "/NXT/lst/vla/navsim/exp/recogdrive_agent_eval/2026.06.03.05.04.20/2026.06.03.07.05.43.csv" \

@@ -14,11 +14,11 @@ from pathlib import Path
 
 
 DEFAULT_CSV = Path(
-    "exp/recogdrive_qwen3_RL_eval/2026.06.16.10.10.50/2026.06.16.10.14.05.csv"
+    "exp/recogdrive_qwen3_RL_eval/2026.06.25.05.51.43/2026.06.25.05.54.58.csv"
 )
 DEFAULT_TOKEN_REPORT = "failure_case_token_report.txt"
 DEFAULT_OPENSCENE_DATA_ROOT = Path(
-    "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset"
+    "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset"
 )
 DEFAULT_DATA_SPLIT = "trainval"
 TOKEN_IMAGE_RE = re.compile(
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-dir",
         type=Path,
-        default=Path("vis_output/eval/0612_qwen_RL_low_score_from_RL_new"),
+        default=Path("vis_output/eval/2026.06.25.05.51.43_low_score_from_RL_new"),
         help="Directory containing token-named PNG files. Default: current directory.",
     )
     parser.add_argument(
