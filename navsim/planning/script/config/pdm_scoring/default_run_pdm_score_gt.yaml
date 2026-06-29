@@ -1,0 +1,20 @@
+hydra:
+  run:
+    dir: ${output_dir}
+  output_subdir: ${output_dir}/code/hydra
+  searchpath:
+    - pkg://navsim.planning.script.config.common
+  job:
+    chdir: False
+
+defaults:
+  - default_common
+  - default_evaluation
+  - default_scoring_parameters
+  - _self_
+  - override train_test_split: mogo_trainval
+
+metric_cache_path: ${oc.env:NAVSIM_EXP_ROOT}/metric_cache_mogo_v3
+gt_token_path: ${oc.env:NAVSIM_DEVKIT_ROOT}/navsim/local_config/data_selection/rl_grpo_n4000_selected_tokens_v1.txt
+gt_num_future_frames: 8
+experiment_name: gt_pdm_score_rl_grpo_n4000_selected_tokens_v1

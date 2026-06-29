@@ -31,6 +31,7 @@ vl_hidden_dim: 1536
 normalize_vl_hidden_states: false
 first_hidden_state_index: 0
 last_hidden_state_index: -1
+# ego_status_dim: 8
 grpo: False
 # Step 3 (optional): tighten the behavior-cloning anchor. Defaults reproduce the
 # Step 1+2 RL run. Override from the RL script, e.g.

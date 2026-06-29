@@ -31,6 +31,9 @@ torchrun \
   agent=recogdrive_agent \
   agent.checkpoint_path=\"${CHECKPOINT}\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
+  "agent.view_list=[cam_f0]" \
+  agent.use_video_input=True \
+  agent.num_frames=4 \
   metric_cache_path="${METRIC_CACHE_PATH}" \
   agent.cam_type=single \
   agent.grpo=False \
