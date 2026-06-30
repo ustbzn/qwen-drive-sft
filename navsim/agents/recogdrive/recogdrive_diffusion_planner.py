@@ -56,6 +56,56 @@ from .recogdrive_dit import LightningDiT
 from .hdmap_vector_features import HDMAP_VECTOR_BATCH_KEYS
 from .hdmap_vector_encoder import MapEncoder
 
+
+class ObjectEncoder(nn.Module):
+    """把结构化障碍物特征编成 context token，与 VLM context token 拼接进 DiT cross-attention。
+
+    continuous_obj_features -> LayerNorm -> MLP -> D
+    obj_type -> Embedding -> D
+    两者相加 -> LayerNorm -> 按 valid_mask 置零（padding / dropout 的 token 严格为 0，
+    与 VLM hidden state 的 zero-padding 行为一致，cross-attention 无需额外 mask）。
+
+    token_dropout：训练期随机丢弃有效障碍物，让模型在对象缺失 / 误检时能退化到 VLM+ego。
+    注意：GRPO 时必须把本模块切到 eval（见 forward_grpo），否则 rollout 与 logprob 抽到
+    不同的 dropout mask，会破坏 logprob 一致性。
+    """
+
+    def __init__(
+        self,
+        feature_dim: int,
+        embed_dim: int,
+        num_types: int,
+        hidden_dim: int,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.feature_norm = nn.LayerNorm(feature_dim)
+        self.feature_mlp = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, embed_dim),
+        )
+        self.type_embedding = nn.Embedding(num_types, embed_dim)
+        self.output_norm = nn.LayerNorm(embed_dim)
+        self.token_dropout = float(dropout)
+
+    def forward(
+        self,
+        obj_features: torch.Tensor,
+        obj_type: torch.Tensor,
+        obj_valid_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """:return: [B, N_obj, embed_dim]，padding / dropped 行为全 0。"""
+        tokens = self.feature_mlp(self.feature_norm(obj_features)) + self.type_embedding(obj_type.long())
+        tokens = self.output_norm(tokens)
+
+        mask = obj_valid_mask.unsqueeze(-1).to(tokens.dtype)
+        if self.training and self.token_dropout > 0.0:
+            keep = (torch.rand_like(obj_valid_mask.float()) >= self.token_dropout)
+            mask = mask * keep.unsqueeze(-1).to(tokens.dtype)
+        return tokens * mask
+
+
 @dataclass
 class FlowConfig:
     """Configuration specific to Flow Matching."""
@@ -149,12 +199,20 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     vl_hidden_dim: int = 1536
     normalize_vl_hidden_states: bool = False
     vl_hidden_norm_eps: float = 1e-5
+
+    # --- hdmap vector token（默认关闭，零影响）---
     use_hdmap_vector: bool = False
     max_map_tokens: int = 128
     map_sample_points: int = 20
     num_map_polygon_types: int = 3
     num_map_tl_states: int = 4
-    
+
+    # --- 障碍物 obj token（默认关闭，零影响）---
+    use_object_vector: bool = False
+    obj_feature_dim: int = 15
+    obj_num_types: int = 5
+    object_token_dropout: float = 0.1
+
     tune_projector: bool = True
     tune_diffusion_model: bool = True
     
@@ -216,6 +274,19 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             num_tl_states=config.num_map_tl_states,
         ) if config.use_hdmap_vector else None
 
+        # 障碍物编码器：把 obj 特征编成 context token，拼到 vl_context_tokens 后面。
+        # 必须在下方 _init_grpo() 的 deepcopy(self) 之前创建，old_policy 才会带上它。
+        if config.use_object_vector:
+            self.object_encoder = ObjectEncoder(
+                feature_dim=config.obj_feature_dim,
+                embed_dim=config.input_embedding_dim,
+                num_types=config.obj_num_types,
+                hidden_dim=config.hidden_size,
+                dropout=config.object_token_dropout,
+            )
+        else:
+            self.object_encoder = None
+
         output_dim = 2 * config.action_dim if (
             config.sampling_method == 'flow' and config.flow_cfg.mean_variance_net
         ) else config.action_dim
@@ -257,6 +328,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         return context_gate * last_context_tokens + (1.0 - context_gate) * first_context_tokens
 
     def encode_map_context_tokens(self, action_input: Optional[BatchFeature]) -> Optional[torch.Tensor]:
+        """编码 hdmap vector context tokens。"""
         if not self.config.use_hdmap_vector or self.map_encoder is None or action_input is None:
             return None
         if any(key not in action_input for key in HDMAP_VECTOR_BATCH_KEYS):
@@ -275,6 +347,18 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             map_valid_mask=action_input.map_valid_mask,
         )
 
+    def _extract_obj_inputs(self, action_input: BatchFeature) -> Optional[Dict[str, torch.Tensor]]:
+        """从 action_input 取 obj_* 字段；未启用 obj token 或字段缺失时返回 None。"""
+        if self.object_encoder is None:
+            return None
+        if "obj_features" not in action_input.data:
+            return None
+        return {
+            "obj_features": action_input.obj_features,
+            "obj_type": action_input.obj_type,
+            "obj_valid_mask": action_input.obj_valid_mask,
+        }
+
     def build_context_tokens(
         self,
         first_hidden_state: torch.Tensor,
@@ -283,21 +367,50 @@ class ReCogDriveDiffusionPlanner(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Returns (vl_summary_tokens, vl_context_tokens, context_key_padding_mask).
 
+        统一构建 DiT cross-attention 的 context tokens，同时支持 hdmap 和 obj：
+        context = concat([vl_context_tokens, map_context_tokens, obj_context_tokens], dim=1)
+
         context_key_padding_mask is a bool tensor [B, N_ctx] where True = valid token.
-        VLM tokens are always valid; map padding slots are marked False.
-        Returns None for the mask when HDMap is disabled (backward-compat path).
+        VLM tokens are always valid; map/obj padding slots are marked False.
+        Returns None for the mask when both HDMap and Object are disabled (backward-compat path).
         """
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
+
+        # 收集 hdmap context tokens
         map_context_tokens = self.encode_map_context_tokens(action_input)
+
+        # 收集 obj context tokens
+        obj_inputs = self._extract_obj_inputs(action_input) if action_input is not None else None
+        obj_context_tokens = None
+        if self.object_encoder is not None and obj_inputs is not None:
+            obj_context_tokens = self.object_encoder(
+                obj_inputs["obj_features"].to(vl_context_tokens.dtype),
+                obj_inputs["obj_type"],
+                obj_inputs["obj_valid_mask"],
+            )
+
+        # 拼接所有 context tokens 和构建 mask
+        B, N_vl = vl_context_tokens.shape[0], vl_context_tokens.shape[1]
+        context_tokens_list = [vl_context_tokens]
+        mask_list = [torch.ones(B, N_vl, dtype=torch.bool, device=vl_context_tokens.device)]
+
         if map_context_tokens is not None:
-            B, N_vl = vl_context_tokens.shape[0], vl_context_tokens.shape[1]
-            vl_mask = torch.ones(B, N_vl, dtype=torch.bool, device=vl_context_tokens.device)
+            context_tokens_list.append(map_context_tokens)
             map_mask = action_input.map_valid_mask.bool().to(device=vl_context_tokens.device)
-            context_key_padding_mask = torch.cat([vl_mask, map_mask], dim=1)
-            vl_context_tokens = torch.cat([vl_context_tokens, map_context_tokens], dim=1)
+            mask_list.append(map_mask)
+
+        if obj_context_tokens is not None:
+            context_tokens_list.append(obj_context_tokens)
+            obj_mask = obj_inputs["obj_valid_mask"].bool().to(device=vl_context_tokens.device)
+            mask_list.append(obj_mask)
+
+        if len(context_tokens_list) > 1:
+            vl_context_tokens = torch.cat(context_tokens_list, dim=1)
+            context_key_padding_mask = torch.cat(mask_list, dim=1)
         else:
             context_key_padding_mask = None
+
         return vl_summary_tokens, vl_context_tokens, context_key_padding_mask
 
     def _repeat_action_input(self, action_input: BatchFeature, repeats: int) -> BatchFeature:
@@ -480,6 +593,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 self.vl_context_last_projector.eval()
                 self.vl_context_gate.eval()
                 self.fusion_projector.eval()
+                if self.object_encoder is not None:
+                    self.object_encoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
             
@@ -684,7 +799,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         Returns:
             BatchFeature: A batch containing the computed loss.
         """
-        
+
         vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
@@ -889,7 +1004,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
     ):
         B, D = last_hidden_state.shape[0], self.config.action_dim
         device, dtype = last_hidden_state.device, last_hidden_state.dtype
-        
+
         vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
@@ -1005,7 +1120,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         """Calculates the log probability of a full denoising chain."""
         B, K1, H, D = chains.shape
         num_denoising_steps = K1 - 1
-        
+
         vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
@@ -1107,6 +1222,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         # consistency the logprob math relies on. No-op for the default MLP encoder
         # (LayerNorm only), so this is always safe to call here.
         self.ego_status_encoder.eval()
+        # 与 ego_status_encoder 同理：obj encoder 的 token_dropout 在 train 模式下会在
+        # sample_chain / get_logprobs 抽到不同 mask，破坏 logprob 一致性。GRPO 全程切 eval，
+        # 让 rollout 与打分用同一份确定的 obj context。对 IL 无影响（IL 不走这里）。
+        if self.object_encoder is not None:
+            self.object_encoder.eval()
         B = last_hidden_state.shape[0]
         G = sample_time
 
@@ -1114,6 +1234,13 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         last_hidden_state_rep = last_hidden_state.repeat_interleave(G, 0)
         status_feature_rep = action_input.status_feature.repeat_interleave(G, 0)
         action_input_rep = self._repeat_action_input(action_input, G)
+
+        # obj 条件必须和 first/last/status 一样按 G 复制，rollout 与 logprob 才条件一致。
+        obj_inputs = self._extract_obj_inputs(action_input)
+        if obj_inputs is not None:
+            obj_inputs_rep = {k: v.repeat_interleave(G, 0) for k, v in obj_inputs.items()}
+        else:
+            obj_inputs_rep = None
 
         # Plan C: the rollout only supplies fixed targets (chains) and rewards
         # (trajs); gradients flow solely through get_logprobs further down, which

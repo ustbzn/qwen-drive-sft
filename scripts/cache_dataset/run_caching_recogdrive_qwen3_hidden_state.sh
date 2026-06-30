@@ -17,12 +17,25 @@ export NAVSIM_EXP_ROOT="${NAVSIM_EXP_ROOT:-${DATA_ROOT}/exp}"
 export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export USE_OBJECT_VECTOR=true
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
 GPUS="${GPUS:-4}"
 MASTER_PORT="${MASTER_PORT:-9696}"
+
+# --- 障碍物 obj token 开关（默认关闭，零影响）。USE_OBJECT_VECTOR=true 时补出
+# object_vector_feature_v1.gz。指向已有 CACHE_PATH 重跑时，已存在的 qwen3_feature*.gz 会被
+# 跳过（不重算 VLM），只新增 obj 缓存。---
+if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
+  set -- \
+    agent.use_object_vector=true \
+    agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
+    agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
+    agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
+    "$@"
+fi
 
 torchrun \
   --nnodes=1 \
@@ -36,9 +49,6 @@ torchrun \
   agent.cache_mode=True \
   agent.vlm_type=qwen3 \
   agent.vlm_path="${QWEN3_VL_PATH}" \
-  "agent.view_list=[cam_f0]" \
-  agent.use_video_input=True \
-  agent.num_frames=4 \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
@@ -49,3 +59,8 @@ torchrun \
   cache_path="${CACHE_PATH}" \
   force_cache_computation="${FORCE_CACHE_COMPUTATION:-False}" \
   "$@"
+
+# "agent.view_list=[cam_f0]" \
+#   agent.use_video_input=True \
+#   agent.num_frames=4 \
+python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all

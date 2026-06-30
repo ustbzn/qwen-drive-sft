@@ -235,6 +235,8 @@ class Dataset(torch.utils.data.Dataset):
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             if data_dict_path.exists():
                 continue
+            # scene-aware builder（如 HDMapVectorFeatureBuilder, ObjectVectorFeatureBuilder）优先用 scene 提取；
+            # 普通 builder（VLM 特征）仍走 agent_input。向后兼容，无该方法的 builder 行为不变。
             data_dict = self._compute_builder_features(builder, scene, agent_input)
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
@@ -390,7 +392,12 @@ class Dataset_For_Traj(torch.utils.data.Dataset):
 
         for builder in self._feature_builders:
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-            data_dict = builder.compute_features(agent_input)
+            # scene-aware builder（如 ObjectVectorFeatureBuilder）优先用 scene 提取 GT；
+            # 普通 builder（VLM 特征）仍走 agent_input。向后兼容，无该方法的 builder 行为不变。
+            if hasattr(builder, "compute_features_from_scene"):
+                data_dict = builder.compute_features_from_scene(scene)
+            else:
+                data_dict = builder.compute_features(agent_input)
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
         for builder in self._target_builders:
@@ -542,7 +549,12 @@ class Dataset_For_Pipeline(torch.utils.data.Dataset):
 
         for builder in self._feature_builders:
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-            data_dict = builder.compute_features(agent_input)
+            # scene-aware builder（如 ObjectVectorFeatureBuilder）优先用 scene 提取 GT；
+            # 普通 builder（VLM 特征）仍走 agent_input。向后兼容，无该方法的 builder 行为不变。
+            if hasattr(builder, "compute_features_from_scene"):
+                data_dict = builder.compute_features_from_scene(scene)
+            else:
+                data_dict = builder.compute_features(agent_input)
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
         for builder in self._target_builders:

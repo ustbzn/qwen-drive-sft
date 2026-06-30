@@ -23,6 +23,11 @@ from .hdmap_vector_features import (
     HDMAP_VECTOR_LONG_KEYS,
     HDMapVectorFeatureBuilder,
 )
+from .object_vector_features import (
+    ObjectVectorFeatureBuilder,
+    OBJECT_FEATURE_DIM,
+    OBJECT_NUM_TYPES,
+)
 from .recogdrive_backbone import RecogDriveBackbone
 from .recogdrive_view_utils import (
     collect_view_frame_paths,
@@ -70,8 +75,14 @@ class ReCogDriveAgent(AbstractAgent):
         map_sample_points: int = 20,
         hdmap_radius: float = 120.0,
         strict_hdmap_vector: bool = False,
+        use_object_vector: bool = False,
+        max_obj_tokens: int = 64,
+        obj_range_x: Optional[List[float]] = None,
+        obj_range_y: Optional[List[float]] = None,
+        include_static_objects: bool = False,
+        object_token_dropout: float = 0.1,
     ):
-        super().__init__()
+        super().__init__(requires_scene=bool(use_object_vector))
         self._trajectory_sampling = trajectory_sampling
         self.vlm_path = vlm_path
         self.checkpoint_path = checkpoint_path
@@ -102,6 +113,14 @@ class ReCogDriveAgent(AbstractAgent):
         self.map_sample_points = int(map_sample_points)
         self.hdmap_radius = float(hdmap_radius)
         self.strict_hdmap_vector = bool(strict_hdmap_vector)
+        # 障碍物 obj token 配置（默认关闭，零影响）。开启则 requires_scene=True，
+        # eval / 缓存时从 Scene 当前帧 annotations 取障碍物。
+        self.use_object_vector = bool(use_object_vector)
+        self.max_obj_tokens = int(max_obj_tokens)
+        self.obj_range_x = tuple(obj_range_x) if obj_range_x is not None else (-20.0, 100.0)
+        self.obj_range_y = tuple(obj_range_y) if obj_range_y is not None else (-40.0, 40.0)
+        self.include_static_objects = bool(include_static_objects)
+        self.object_token_dropout = float(object_token_dropout)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -145,6 +164,10 @@ class ReCogDriveAgent(AbstractAgent):
                 use_hdmap_vector=self.use_hdmap_vector,
                 max_map_tokens=self.max_map_tokens,
                 map_sample_points=self.map_sample_points,
+                use_object_vector=self.use_object_vector,
+                obj_feature_dim=OBJECT_FEATURE_DIM,
+                obj_num_types=OBJECT_NUM_TYPES,
+                object_token_dropout=self.object_token_dropout,
             )
         elif self.dit_type == "small":
             cfg = make_recogdrive_config(
@@ -159,6 +182,10 @@ class ReCogDriveAgent(AbstractAgent):
                 use_hdmap_vector=self.use_hdmap_vector,
                 max_map_tokens=self.max_map_tokens,
                 map_sample_points=self.map_sample_points,
+                use_object_vector=self.use_object_vector,
+                obj_feature_dim=OBJECT_FEATURE_DIM,
+                obj_num_types=OBJECT_NUM_TYPES,
+                object_token_dropout=self.object_token_dropout,
             )
 
         cfg.vlm_size = self.vlm_size
@@ -191,7 +218,7 @@ class ReCogDriveAgent(AbstractAgent):
         return SensorConfig.build_all_sensors(include=[0, 1, 2, 3])
 
     def get_target_builders(self) -> List[AbstractTargetBuilder]:
-        return [TrajectoryTargetBuilder(trajectory_sampling=self._trajectory_sampling)]  # 声明训练时要算哪些“目标”，这里只做轨迹预测
+        return [TrajectoryTargetBuilder(trajectory_sampling=self._trajectory_sampling)]  # 声明训练时要算哪些"目标"，这里只做轨迹预测
 
     def get_feature_builders(self) -> List[AbstractFeatureBuilder]:     # 声明怎么从原始数据变成模型输入
         builders: List[AbstractFeatureBuilder] = [ReCogDriveFeatureBuilder(
@@ -216,6 +243,14 @@ class ReCogDriveAgent(AbstractAgent):
                     strict=self.strict_hdmap_vector,
                 )
             )
+
+        if self.use_object_vector:
+            builders.append(ObjectVectorFeatureBuilder(
+                max_obj_tokens=self.max_obj_tokens,
+                obj_range_x=self.obj_range_x,
+                obj_range_y=self.obj_range_y,
+                include_static=self.include_static_objects,
+            ))
         return builders
 
     def _build_action_inputs(
@@ -312,14 +347,33 @@ class ReCogDriveAgent(AbstractAgent):
         first_hidden_state = first_hidden_state.to(model_dtype)
         last_hidden_state = last_hidden_state.to(model_dtype)
 
+        # 障碍物 obj 字段（启用 obj token 且 features 里带 obj 时才注入）。obj_features 跟随
+        # model_dtype，obj_type/obj_valid_mask 保持 long/bool。
+        obj_data: Dict[str, torch.Tensor] = {}
+        if self.use_object_vector and "obj_features" in features:
+            obj_data = {
+                "obj_features": features["obj_features"].to(model_dtype),
+                "obj_type": features["obj_type"].long(),
+                "obj_valid_mask": features["obj_valid_mask"].bool(),
+            }
+
         if self.training and not self.grpo:    # Planner.forward 训练
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
+            # 合并 obj_data 到 action_inputs
+            if obj_data:
+                action_inputs.data.update(obj_data)
             return self.action_head(first_hidden_state, last_hidden_state, action_inputs)
         elif self.training and self.grpo: # GRPO 训练
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
-            return self.action_head.forward_grpo(first_hidden_state, last_hidden_state, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道“这个样本对应哪个场景/片段”的 token，用 token 去加载对应的 metric cache
+            # 合并 obj_data 到 action_inputs
+            if obj_data:
+                action_inputs.data.update(obj_data)
+            return self.action_head.forward_grpo(first_hidden_state, last_hidden_state, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道"这个样本对应哪个场景/片段"的 token，用 token 去加载对应的 metric cache
         else:    # 推理，无 action
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype)
+            # 合并 obj_data 到 action_inputs
+            if obj_data:
+                action_inputs.data.update(obj_data)
             return self.action_head.get_action(first_hidden_state, last_hidden_state, action_inputs)
 
     def _is_online_backbone(self) -> bool:
@@ -372,12 +426,14 @@ class ReCogDriveAgent(AbstractAgent):
     def compute_trajectory(self, agent_input: AgentInput, scene: Optional[Scene] = None) -> Trajectory:
         self.eval()
         features: Dict[str, torch.Tensor] = {}
+        # build features。hdmap/obj builder 在 scene 可用时走 compute_features_from_scene；
+        # scene 为 None 时返回空对象，模型退化到 VLM+ego。
         for builder in self.get_feature_builders():
-            if self.use_hdmap_vector and scene is not None and hasattr(builder, "compute_features_from_scene"):
+            if scene is not None and hasattr(builder, "compute_features_from_scene"):
                 features.update(builder.compute_features_from_scene(scene))
             else:
                 features.update(builder.compute_features(agent_input))
-        
+
         # 多视角 / 多帧在线 eval：用 _encode_views 算 hidden_state 注入，绕开单路径 image_path_tensor
         if self._needs_view_encoding():
             first_hs, last_hs = self._encode_views(agent_input)
@@ -386,20 +442,23 @@ class ReCogDriveAgent(AbstractAgent):
             features.pop("image_path_tensor", None)
         # add batch dimension
         features = {k: v.unsqueeze(0) for k, v in features.items()}
-        
+
         with torch.no_grad():
             predictions = self.forward(features)
             poses = predictions["pred_traj"].float().cpu().squeeze(0)
-            
+
         return Trajectory(poses)
 
-    def compute_trajectory_vis(self, agent_input: AgentInput) -> Trajectory:
+    def compute_trajectory_vis(self, agent_input: AgentInput, scene: Optional[Scene] = None) -> Trajectory:
         self.eval()
 
         features: Dict[str, torch.Tensor] = {}
-        # build features
+        # build features（同 compute_trajectory 的 scene-aware 逻辑）
         for builder in self.get_feature_builders():
-            features.update(builder.compute_features(agent_input))
+            if scene is not None and hasattr(builder, "compute_features_from_scene"):
+                features.update(builder.compute_features_from_scene(scene))
+            else:
+                features.update(builder.compute_features(agent_input))
 
         if self._needs_view_encoding():
             first_hs, last_hs = self._encode_views(agent_input)
@@ -478,6 +537,10 @@ def make_recogdrive_config(
     use_hdmap_vector: bool = False,
     max_map_tokens: int = 128,
     map_sample_points: int = 20,
+    use_object_vector: bool = False,
+    obj_feature_dim: int = OBJECT_FEATURE_DIM,
+    obj_num_types: int = OBJECT_NUM_TYPES,
+    object_token_dropout: float = 0.1,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -533,6 +596,10 @@ def make_recogdrive_config(
         use_hdmap_vector=use_hdmap_vector,
         max_map_tokens=max_map_tokens,
         map_sample_points=map_sample_points,
+        use_object_vector=use_object_vector,
+        obj_feature_dim=obj_feature_dim,
+        obj_num_types=obj_num_types,
+        object_token_dropout=object_token_dropout,
     )
-    
+
     return config

@@ -125,6 +125,12 @@ def custom_collate_fn(
             f"Got keys: {list(f0.keys())}"
         )
 
+    # 障碍物 obj 字段（固定形状，直接 stack，无需 pad_sequence）。仅当缓存里有 obj 时才补。
+    if "obj_features" in f0:
+        features["obj_features"] = torch.stack([f["obj_features"] for f in features_list], dim=0).cpu()
+        features["obj_type"] = torch.stack([f["obj_type"] for f in features_list], dim=0).cpu()
+        features["obj_valid_mask"] = torch.stack([f["obj_valid_mask"] for f in features_list], dim=0).cpu()
+
     # 目标：一如既往
     trajectory = torch.stack(
         [t["trajectory"] for t in targets_list], dim=0

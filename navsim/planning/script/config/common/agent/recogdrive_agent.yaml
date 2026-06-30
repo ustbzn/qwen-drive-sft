@@ -32,6 +32,17 @@ normalize_vl_hidden_states: false
 first_hidden_state_index: 0
 last_hidden_state_index: -1
 # ego_status_dim: 8
+# --- 障碍物 obj token（默认关闭，等价当前流程，零影响）---
+# 开启后 agent.requires_scene=True：缓存 / eval 从 Scene 当前帧 GT annotations 取障碍物，
+# 编码成 context token 拼到 vl_context_tokens 后进 DiT cross-attention。
+# 开启需在全链路（缓存 / IL / RL / eval）一致设 use_object_vector=true，并重跑 hidden-state
+# 缓存补出 object_vector_feature_v1.gz（CacheOnlyDataset 缺该 .gz 会静默丢样本）。
+use_object_vector: false
+max_obj_tokens: 64
+obj_range_x: [-20.0, 100.0]
+obj_range_y: [-40.0, 40.0]
+include_static_objects: false
+object_token_dropout: 0.1
 grpo: False
 # Step 3 (optional): tighten the behavior-cloning anchor. Defaults reproduce the
 # Step 1+2 RL run. Override from the RL script, e.g.

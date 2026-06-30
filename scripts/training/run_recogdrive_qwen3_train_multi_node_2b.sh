@@ -15,12 +15,24 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
+export USE_OBJECT_VECTOR=true
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
 GPUS="${GPUS:-4}"
 MASTER_PORT="${MASTER_PORT:-9696}"
 BATCH_SIZE="${BATCH_SIZE:-80}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
+
+# --- 障碍物 obj token 开关（默认关闭，零影响）。开启需与缓存端用同样的 obj 配置，
+# 且 CACHE_PATH 必须已带 object_vector_feature_v1.gz，否则 CacheOnlyDataset 静默丢样本。---
+if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
+  set -- \
+    agent.use_object_vector=true \
+    agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
+    agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
+    agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
+    "$@"
+fi
 
 torchrun \
   --nnodes=1 \
@@ -33,9 +45,6 @@ torchrun \
   agent.lr=1e-4 \
   agent.grpo=False \
   agent.vlm_path="${QWEN3_VL_PATH}" \
-  "agent.view_list=[cam_f0]" \
-  agent.use_video_input=True \
-  agent.num_frames=4 \
   agent.cam_type=single \
   agent.cache_hidden_state=True \
   agent.vlm_type=qwen3 \
@@ -58,3 +67,7 @@ torchrun \
 
 
 python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
+
+# "agent.view_list=[cam_f0]" \
+#   agent.use_video_input=True \
+#   agent.num_frames=4 \

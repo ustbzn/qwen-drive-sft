@@ -58,7 +58,15 @@ def custom_collate_fn(
         'first_hidden_state': first_hidden_state,
         'last_hidden_state': last_hidden_state,
     }
+
+    # hdmap vector 字段（变长，需要 collate）
     collate_hdmap_vector_features(features, features_list)
+
+    # 障碍物 obj 字段（固定形状，直接 stack）。GRPO 时 forward_grpo 会按 G 复制这些字段。
+    if "obj_features" in features_list[0]:
+        features["obj_features"] = torch.stack([f["obj_features"] for f in features_list], dim=0).cpu()
+        features["obj_type"] = torch.stack([f["obj_type"] for f in features_list], dim=0).cpu()
+        features["obj_valid_mask"] = torch.stack([f["obj_valid_mask"] for f in features_list], dim=0).cpu()
 
     targets = {
         'trajectory': trajectory

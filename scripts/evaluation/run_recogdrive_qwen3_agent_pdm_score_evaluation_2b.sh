@@ -13,6 +13,11 @@ export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
+export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
+export USE_OBJECT_VECTOR=true
+
 # Update CHECKPOINT to the HDMap RL run after training completes.
 CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_hdmap_RL/2026.06.24.08.21.53/lightning_logs/version_0/checkpoints/epoch=19-step=10680.ckpt}"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v2}"
@@ -20,6 +25,18 @@ SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_2026052
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
 GPUS="${GPUS:-4}"
 MASTER_PORT="${MASTER_PORT:-9696}"
+
+# --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
+# eval 从 GT annotations 取障碍物（方案 A privileged 上限）。CHECKPOINT 必须来自带 obj 的
+# IL/RL 训练，否则 object_encoder 随机初始化（initialize() strict=False 静默跳过）。---
+if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
+  set -- \
+    agent.use_object_vector=true \
+    agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
+    agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
+    agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
+    "$@"
+fi
 
 torchrun \
   --nnodes=1 \
@@ -31,9 +48,6 @@ torchrun \
   agent=recogdrive_agent \
   agent.checkpoint_path=\"${CHECKPOINT}\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
-  "agent.view_list=[cam_f0]" \
-  agent.use_video_input=True \
-  agent.num_frames=4 \
   metric_cache_path="${METRIC_CACHE_PATH}" \
   agent.cam_type=single \
   agent.grpo=False \
@@ -48,3 +62,7 @@ torchrun \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
   experiment_name=recogdrive_qwen3_hdmap_ddim_IL_eval \
   "$@"
+
+# "agent.view_list=[cam_f0]" \
+#   agent.use_video_input=True \
+#   agent.num_frames=4 \

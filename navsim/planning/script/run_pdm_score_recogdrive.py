@@ -151,6 +151,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             with lzma.open(metric_cache_path, "rb") as f:
                 metric_cache: MetricCache = pickle.load(f)
 
+            requires_scene = bool(getattr(agent, "requires_scene", False))
             agent_input = scene_loader.get_agent_input_from_token(token)
             if requires_scene:
                 scene = scene_loader.get_scene_from_token(token)
