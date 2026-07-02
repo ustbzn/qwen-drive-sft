@@ -6,13 +6,17 @@ project-local `RecogDrive_dataflowAndDataAdaptation.pdf` extracted on
 2026-05-29. Treat code as the source of truth when this guide conflicts with
 older documentation.
 
-This worktree is on branch `recogdrive_qwen3vl_new`. Its defining change is a
-VLM swap: the InternVL backbone was replaced with **Qwen3-VL-2B-Instruct**. The
-reference (pre-swap) tree lives at
+This worktree is on branch `recogdrive_qwen3vl_new_hdmap_all`. The runnable
+Mogo + Qwen3 full-chain entry script names are unchanged and still use
+single-view/single-frame Qwen3 image input by default. The active scripts now
+override the yaml defaults to enable HDMap vector context, object vector context,
+and `vlm_ablation=zero`; the model code also contains optional
+multi-view/multi-frame Qwen3 inputs and GRPO behavior-cloning anchor knobs.
+The reference pre-Qwen3 tree lives at
 `/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive_ori`; diff against it when
-you need to understand what the Qwen3 migration touched. See the dedicated
-section "Qwen3-VL Migration" below before editing any VLM, cache, or planner
-code.
+you need to understand the original VLM migration. See the dedicated sections
+"Qwen3-VL Migration" and "Optional Model Inputs" below before editing any VLM,
+cache, or planner code.
 
 ## Non-Negotiable Behavior
 
@@ -28,8 +32,11 @@ code.
   local absolute paths.
 - Do not invent dataset fields. For new data adapters, map fields explicitly to
   `navsim.common.dataclasses` and document any missing information.
-- Never assume map access during IL training. In this project, maps enter mainly
-  through metric caching, PDM scoring, visualization, and scenario construction.
+- Never assume online map access during IL/RL training. Maps enter mainly
+  through metric caching, hidden-state/feature caching, PDM scoring,
+  visualization, and scenario construction. The active chain reads cached HDMap
+  vectors because `agent.use_hdmap_vector=true`; without a `Scene.map_api`, the
+  non-strict HDMap builder returns all-zero map tokens.
 
 ## Project Shape
 
@@ -38,9 +45,11 @@ main planning path combines:
 
 1. An autoregressive VLM trained on driving QA and trajectory prompts.
 2. Cached VLM hidden states from the current front-camera prompt.
-3. A DiT-style diffusion planner that predicts an 8-step, 4-second ego
+3. Optional structured context tokens from HDMap lane/lane-connector vectors and
+   current-frame object annotations.
+4. A DiT-style diffusion planner that predicts an 8-step, 4-second ego
    trajectory in continuous `(x, y, heading)`.
-4. Optional DiffGRPO/RL, where rewards are PDM scores computed from metric
+5. Optional DiffGRPO/RL, where rewards are PDM scores computed from metric
    cache.
 
 Important directories:
@@ -84,7 +93,17 @@ hidden behind generic docs.
 
 Do not substitute the older InternVL / nuPlan entry scripts unless the user
 explicitly asks for the legacy flow. The current Mogo Qwen3 cache filename is
-`qwen3_feature.gz`, and the planner expects `agent.vl_hidden_dim=2048`.
+`qwen3_feature.gz` for the default single-view/single-frame path, and the
+planner expects `agent.vl_hidden_dim=2048`.
+
+The entry scripts above are still single-view/single-frame for Qwen3 image
+selection: `view_list=['cam_f0']`, `num_frames=1`, and
+`use_video_input=false`. Do not confuse that with the yaml defaults: the active
+full-chain scripts explicitly set `agent.use_hdmap_vector=true`, export
+`USE_OBJECT_VECTOR=true`, and set `agent.vlm_ablation=zero` for IL/RL/eval.
+Keep hidden-state cache, IL, RL, and online evaluation/video rendering aligned
+on view/frame, HDMap, object, and VLM-ablation settings. Otherwise cache
+filenames, required feature files, or checkpoint shapes will diverge.
 
 ### External Mogo PKL Production
 
@@ -120,16 +139,18 @@ bash scripts/cache_dataset/run_mogo_metric_caching.sh
 
 Current script defaults:
 
-- `OPENSCENE_DATA_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset`
-- `NAVSIM_EXP_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp`
-- `CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache_mogo_v2`
+- `OPENSCENE_DATA_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset`
+- `NAVSIM_EXP_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp`
+- `CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache_mogo_v3`
 - `train_test_split=trainval`
-- `mogo_map.sqlite_path=$OPENSCENE_DATA_ROOT/maps/hm_shanghai_1.9.1_20260522.sqlite`
-- `mogo_map.utm_zone=51`
+- The shell script relies on
+  `navsim/planning/script/config/metric_caching/default_mogo_metric_caching.yaml`
+  for `mogo_map.sqlite_path`, currently
+  `$OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite`.
+- `mogo_map.utm_zone=50`
 
-`run_mogo_metric_caching.py` uses
-`navsim/planning/script/config/metric_caching/default_mogo_metric_caching.yaml`,
-which sets a dense 10Hz Mogo metric window (`num_history_frames=16`,
+`run_mogo_metric_caching.py` uses the same default yaml above, which sets a
+dense 10Hz Mogo metric window (`num_history_frames=16`,
 `num_future_frames=50`, `frame_interval=5`) and injects the SQLite map adapter.
 Metric cache is required by RL rewards, PDM evaluation, and visualization.
 
@@ -146,17 +167,30 @@ Current defaults:
 - `DATA_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319`
 - `TRAIN_TEST_SPLIT=mogo_trainval`
 - `QWEN3_VL_PATH=/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct`
-- `CACHE_PATH=$NAVSIM_EXP_ROOT/recogdrive_qwen3_notrain_cache`
-- `GPUS=8`, `MASTER_PORT=9675`
+- `CACHE_PATH=$NAVSIM_EXP_ROOT/recogdrive_qwen3_notrain_hdmap_cache`
+- `SQLITE_PATH=$OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite`
+- `MOGO_UTM_ZONE=50`
+- `GPUS=4`, `MASTER_PORT=9696`
+- `USE_OBJECT_VECTOR=true` by default.
 - Python entry:
   `navsim/planning/script/run_dataset_caching_multi_node.py`
 - Key Hydra overrides: `agent.cache_hidden_state=True`, `agent.cache_mode=True`,
   `agent.vlm_type=qwen3`, `agent.vl_hidden_dim=2048`,
-  `agent.cam_type=single`, `agent.dit_type=small`, `agent.vlm_size=small`.
+  `agent.cam_type=single`, `agent.dit_type=small`, `agent.vlm_size=small`,
+  `agent.use_hdmap_vector=true`, `mogo_map.sqlite_path=$SQLITE_PATH`,
+  `mogo_map.utm_zone=$MOGO_UTM_ZONE`, and object-vector overrides when
+  `USE_OBJECT_VECTOR=true`.
 
 This stage writes `qwen3_feature.gz` and `trajectory_target.gz` under
-`cache_path/log_name/token/`. Re-run it whenever `QWEN3_VL_PATH`, prompt logic,
-selected hidden-state layers, or the Mogo pkl content changes.
+`cache_path/log_name/token/` for the default single-view/single-frame path, and
+also writes `hdmap_vector_feature.gz` plus `object_vector_feature_v1.gz` in the
+active HDMap/object configuration.
+If `view_list`, `num_frames`, or `use_video_input` changes,
+`ReCogDriveFeatureBuilder.get_unique_name()` writes
+`qwen3_feature_v{n_views}_f{num_frames}[_vid].gz` instead; re-cache and keep
+the same overrides in IL/RL/eval. Re-run cache whenever `QWEN3_VL_PATH`, prompt
+logic, selected hidden-state layers, view/frame settings, HDMap/object settings,
+or the Mogo pkl content changes.
 
 ### IL Training
 
@@ -170,13 +204,16 @@ Current defaults:
 
 - Same `DATA_ROOT`, `TRAIN_TEST_SPLIT`, `QWEN3_VL_PATH`, and hidden-state
   `CACHE_PATH` as the Qwen3 cache script.
-- `GPUS=8`, `BATCH_SIZE=80`, `MAX_EPOCHS=200`.
+- `GPUS=4`, `BATCH_SIZE=80`, `MAX_EPOCHS=200`.
+- `USE_OBJECT_VECTOR=true` by default.
 - Python entry: `navsim/planning/script/run_training_recogdrive.py`.
 - Key Hydra overrides: `agent.grpo=False`, `agent.cache_hidden_state=True`,
   `agent.vlm_type=qwen3`, `agent.vl_hidden_dim=2048`,
-  `agent.sampling_method=flow`, `use_cache_without_dataset=True`,
-  `force_cache_computation=False`, `'+log_split@_global_=mogo'`.
-- Experiment name: `training_recogdrive_qwen3_flow_IL`.
+  `agent.sampling_method=ddim`, `agent.use_hdmap_vector=true`,
+  `agent.vlm_ablation=zero`, object-vector overrides when enabled,
+  `use_cache_without_dataset=True`, `force_cache_computation=False`,
+  and `+log_split@_global_=mogo`.
+- Experiment name: `training_recogdrive_qwen3_obj_vlmzero_IL`.
 
 Because `use_cache_without_dataset=True`, IL training reads cached features and
 does not load Qwen3 online. Note the script currently calls
@@ -192,26 +229,31 @@ bash scripts/training/run_recogdrive_train_multi_node_rl_2b_mogo.sh
 
 Current defaults:
 
-- `MOGO_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319`
+- `DATA_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319`
 - `TRAIN_TEST_SPLIT=mogo_trainval`
-- `VLM_PATH=/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct`
-- `CACHE_PATH=$NAVSIM_EXP_ROOT/recogdrive_qwen3_notrain_cache`
-- `METRIC_CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache_mogo_v2`
-- `CHECKPOINT=$NAVSIM_EXP_ROOT/training_recogdrive_qwen3_agent_IL/2026.06.11.13.28.50/lightning_logs/version_0/checkpoints/epoch=188-step=13986.ckpt`
-- `GPUS=8`, `dataloader.params.batch_size=16`,
+- `QWEN3_VL_PATH=/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct`
+- `CACHE_PATH=$NAVSIM_EXP_ROOT/recogdrive_qwen3_notrain_obj_cache`
+- `METRIC_CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache_mogo_v3`
+- `CHECKPOINT=$NAVSIM_EXP_ROOT/training_recogdrive_qwen3_obj_vlmzero_IL/2026.06.30.14.39.02/lightning_logs/version_0/checkpoints/epoch=197-step=5346.ckpt`
+- `GPUS=4`, `dataloader.params.batch_size=16`,
   `trainer.params.max_epochs=20`
+- `USE_OBJECT_VECTOR=true` by default.
 - Python entry: `navsim/planning/script/run_training_recogdrive_rl.py`.
 - Key Hydra overrides: `agent.grpo=True`, `agent.cache_hidden_state=True`,
   `agent.vlm_type=qwen3`, `agent.vl_hidden_dim=2048`,
-  `agent.sampling_method=ddim`, `agent.metric_cache_path=$METRIC_CACHE_PATH`,
+  `agent.sampling_method=ddim`, `agent.use_hdmap_vector=true`,
+  `agent.vlm_ablation=zero`, `agent.metric_cache_path=$METRIC_CACHE_PATH`,
   `agent.reference_policy_checkpoint=$CHECKPOINT`,
-  `use_cache_without_dataset=True`, `'+log_split@_global_=mogo'`.
+  object-vector overrides when enabled, `use_cache_without_dataset=True`,
+  `train_logs=null`, `val_logs=null`, and
+  `train_token_whitelist_path=navsim/local_config/data_selection/rl_grpo_n4000_selected_tokens_v1.txt`.
 - stdout/stderr are redirected to `train_recogdrive_qwen3_agent_rl_2b.txt`.
 
 The RL checkpoint and reference policy checkpoint must come from a Qwen3 IL run
-with 2048-wide VLM projectors. The current default checkpoint path uses the
-`training_recogdrive_qwen3_agent_IL` experiment name; update `CHECKPOINT` if the
-latest IL run is under `training_recogdrive_qwen3_flow_IL`. This script also
+with matching 2048-wide VLM projectors, HDMap/object encoders, and
+`vlm_ablation` setting. The script's `CACHE_PATH` default currently differs
+from the cache/IL script default; align it before long runs unless that
+separate object-cache directory has already been populated. This script also
 calls `simple_gpu_stress.py all` after training.
 
 ### PDM Evaluation
@@ -224,20 +266,28 @@ bash scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh
 
 Current defaults:
 
-- `DATA_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai`
+- `DATA_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319`
 - `TRAIN_TEST_SPLIT=mogo_trainval`, with explicit
-  `train_test_split.data_split=trainval`.
-- `CHECKPOINT=/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_RL/2026.06.12.03.28.29/lightning_logs/version_0/checkpoints/epoch=19-step=5000.ckpt`
+  `train_test_split.data_split=val`.
+- `CHECKPOINT=$NAVSIM_EXP_ROOT/training_recogdrive_qwen3_obj_vlmzero_RL/2026.07.01.03.42.32/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt`
 - `METRIC_CACHE_PATH=$NAVSIM_EXP_ROOT/metric_cache_mogo_v2`
-- `GPUS=1`, `MASTER_PORT=54255`
+- `SQLITE_PATH=$OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite`
+- `MOGO_UTM_ZONE=50`
+- `GPUS=4`, `MASTER_PORT=9696`
+- `USE_OBJECT_VECTOR=true` by default.
 - Python entry: `navsim/planning/script/run_pdm_score_recogdrive.py`.
 - Key Hydra overrides: `agent.cache_hidden_state=False`,
   `agent.vlm_type=qwen3`, `agent.vl_hidden_dim=2048`,
-  `agent.sampling_method=ddim`, `experiment_name=recogdrive_qwen3_RL_eval`.
+  `agent.sampling_method=ddim`, `agent.use_hdmap_vector=true`,
+  `agent.vlm_ablation=zero`, object-vector overrides when enabled,
+  `mogo_map.sqlite_path=$SQLITE_PATH`, `mogo_map.utm_zone=$MOGO_UTM_ZONE`,
+  and `experiment_name=recogdrive_qwen3_hdmap_ddim_IL_eval`.
 
 Evaluation runs the Qwen3 backbone online per sample because
 `agent.cache_hidden_state=False`; it does not read the hidden-state cache, but
-it does read the metric cache.
+it does read the metric cache. The eval script still points at
+`metric_cache_mogo_v2` while metric caching and RL default to
+`metric_cache_mogo_v3`; align this before comparing scores.
 
 ### Visualization and Video
 
@@ -247,12 +297,9 @@ CSV visualization:
 bash scripts/visualization/plt_csv_all.sh
 ```
 
-Current `plt_csv_all.sh` is configured for worldsim Beijing. It sets
-`OPENSCENE_DATA_ROOT=/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/beijing/dataset`,
-reads a hard-coded PDM CSV under the Beijing `exp/recogdrive_qwen3_RL_eval`
-directory, writes to `vis_output/eval/0612_qwen_RL_bj_worldsim`, uses
-`scene_filter=mogo_10hz`, reads `$NAVSIM_EXP_ROOT/metric_cache_mogo_v2`, and
-passes the Beijing SQLite map
+Current `plt_csv_all.sh` is configured for the 0312_0319 Mogo dataset. It reads
+a hard-coded PDM CSV, uses `scene_filter=mogo_10hz`, reads
+`$NAVSIM_EXP_ROOT/metric_cache_mogo_v3`, and passes the Beijing SQLite map
 `hm_beijing_3.4.9_20260521.sqlite`.
 
 Token-centered video rendering:
@@ -345,12 +392,19 @@ entrypoint paths. The active Qwen3 contract is:
 - Hidden-state cache and IL/RL training use `agent.cache_hidden_state=True`,
   `agent.vlm_type=qwen3`, and `agent.vl_hidden_dim=2048`.
 - Hidden-state cache additionally sets `agent.cache_mode=True`, so the feature
-  builder loads Qwen3 and writes `qwen3_feature.gz`.
-- IL/RL training use `use_cache_without_dataset=True` and read the cached
-  `qwen3_feature.gz` through `CacheOnlyDataset`; they do not run Qwen3 online.
+  builder loads Qwen3 and writes the model-aware cache file. Default
+  single-view/single-frame writes `qwen3_feature.gz`; multi-view/multi-frame
+  writes `qwen3_feature_v{n_views}_f{num_frames}[_vid].gz`.
+- IL/RL training use `use_cache_without_dataset=True` and read the cached Qwen3
+  feature through `CacheOnlyDataset`; they do not run Qwen3 online. Cache, IL,
+  RL, and eval/video must share `view_list`, `num_frames`, `use_video_input`,
+  `use_hdmap_vector`, `use_object_vector`, and `vlm_ablation` when those
+  options are enabled.
 - PDM evaluation and video/CSV visualization run with
   `agent.cache_hidden_state=False`, so the agent loads Qwen3 online and calls
-  `forward_from_paths(...)` per sample.
+  `forward_from_paths(...)` per sample. Multi-view/multi-frame online eval uses
+  `ReCogDriveAgent._encode_views(...)` and the same prompt helpers as cache
+  mode.
 - RL is now migrated through
   `scripts/training/run_recogdrive_train_multi_node_rl_2b_mogo.sh`; do not use
   the older `run_recogdrive_train_multi_node_rl_2b.sh` for the active Mogo Qwen3
@@ -364,12 +418,16 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
   `navsim/planning/script/config/common/agent/recogdrive_agent.yaml`
   (`vlm_type`, `vlm_path`, `vl_hidden_dim`, `cam_type`, `cache_hidden_state`,
   `cache_mode`, `dit_type`, `vlm_size`, `sampling_method`, `grpo`,
-  `checkpoint_path`, `lr`). No unknown-key hydra errors expected.
-- Cache-name coupling is correct: `agent.get_feature_builders()` forwards
-  `model_type=self.vlm_type`, and `get_unique_name()` returns `qwen3_feature`
-  for `qwen3`. Cache (step 1) and train (step 2) both pass `vlm_type=qwen3`, so
-  the read/write filenames match. Confirmed by
-  `tests/test_qwen3_recogdrive_integration.py`.
+  `checkpoint_path`, `lr`, `view_list`, `num_frames`, `use_video_input`,
+  `use_hdmap_vector`, `use_object_vector`, `vlm_ablation`, `bc_coeff`,
+  `bc_teacher_deterministic`). No unknown-key hydra errors expected.
+- Cache-name coupling is correct for the default path: `agent.get_feature_builders()`
+  forwards `model_type=self.vlm_type`, and `get_unique_name()` returns
+  `qwen3_feature` for Qwen3 single-view/single-frame. For multi-view/multi-frame
+  Qwen3 it includes the view/frame tag. Cache and train must pass matching
+  `vlm_type`, `view_list`, `num_frames`, and `use_video_input` so the
+  read/write filenames match. Confirmed by
+  `tests/test_qwen3_recogdrive_integration.py` for the base path.
 - Dim plumbing is correct: scripts pass `agent.vl_hidden_dim=2048`, which is the
   real Qwen3-VL-2B `text_config.hidden_size`, and the planner's VLM projectors
   use it. `py_compile` clean on all core files; `transformers==4.57.1` in the
@@ -402,7 +460,25 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
 - `cache_mode` semantics: the feature builder only constructs a backbone when
   `cache_hidden_state and cache_mode` are both true (the caching script). In IL
   training `cache_mode` stays False, so no Qwen3 model is loaded during training
-  — only the cache is read.
+  - only the cache is read.
+- Multi-view/multi-frame Qwen3 is zero-impact only when defaults stay at
+  `view_list=['cam_f0']`, `num_frames=1`, and `use_video_input=false`. The
+  Qwen3 backbone can treat frames as multiple images, or as `videos=` when
+  `use_video_input=true` and `num_frames>1`; keep that choice consistent across
+  cache and online eval.
+- `agent.use_hdmap_vector=true` appends `HDMapVectorFeatureBuilder`. If
+  `scene.map_api` is missing and `strict_hdmap_vector=false`, it returns zero
+  map tokens; with `strict_hdmap_vector=true` it raises. PDM eval only passes a
+  `Scene` when `agent.requires_scene` is true, and the current agent sets that
+  from `use_object_vector`, not `use_hdmap_vector`; HDMap-only eval therefore
+  needs a code/config check before relying on non-zero map tokens.
+- `agent.use_object_vector=true` sets `requires_scene=True`, appends
+  `ObjectVectorFeatureBuilder`, and creates `object_vector_feature_v1.gz` in
+  cache mode. Missing that file makes `CacheOnlyDataset` drop samples, so rerun
+  cache before training with object tokens.
+- `agent.vlm_ablation=zero` zeros only VLM summary/context tokens after
+  projection. Object tokens, HDMap tokens, ego status, action/history inputs,
+  and GRPO reward logic remain active.
 
 ## Core ReCogDrive Files
 
@@ -410,44 +486,82 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
   - Implements `ReCogDriveAgent`.
   - Loads checkpoints in `initialize()` by filtering `agent.` prefixes.
   - Builds `ReCogDriveFeatureBuilder` and `TrajectoryTargetBuilder`, forwarding
-    `model_type=self.vlm_type`, `first_hidden_state_index`, and
-    `last_hidden_state_index` to the feature builder.
+    `model_type=self.vlm_type`, hidden-state layer indices, `view_list`,
+    `num_frames`, `use_video_input`, and `video_fps` to the feature builder. It
+    appends `HDMapVectorFeatureBuilder` and `ObjectVectorFeatureBuilder` only
+    when their switches are enabled.
   - Uses `RecogDriveBackbone` only when hidden states are not already cached
     (`not cache_hidden_state and not cache_mode`), or via the feature builder in
     `cache_mode`.
-  - New constructor args on this branch: `vl_hidden_dim`,
-    `normalize_vl_hidden_states`, `first_hidden_state_index`,
-    `last_hidden_state_index`. `vl_hidden_dim` flows into
-    `make_recogdrive_config(...)` and then the planner.
+  - Constructor args added beyond the original ReCogDrive path include
+    `vl_hidden_dim`, `normalize_vl_hidden_states`, hidden-state layer indices,
+    `vlm_ablation`, multi-view/multi-frame knobs (`view_list`, `num_frames`,
+    `use_video_input`, `video_fps`), HDMap vector knobs, object vector knobs,
+    and GRPO BC knobs (`bc_coeff`, `bc_teacher_deterministic`).
+    `vl_hidden_dim`, structured-token switches, `vlm_ablation`, and BC knobs
+    flow into `make_recogdrive_config(...)` and then the planner.
   - Auto-inference of `vl_hidden_dim` (`qwen3 -> 2048`, `large -> 3584`, else
     1536) only fires when the arg is `None`. The hydra default is the literal
     `1536`, **not** `null`, so that branch is effectively dead unless you pass
     `agent.vl_hidden_dim=null`. The Qwen3 scripts therefore pass
     `agent.vl_hidden_dim=2048` explicitly. Do not rely on auto-inference.
+  - `compute_trajectory(...)` and `compute_trajectory_vis(...)` are scene-aware:
+    if the caller passes `Scene` and a builder implements
+    `compute_features_from_scene`, the agent uses that scene so HDMap/Object
+    features can be built during eval.
   - Owns `action_head = ReCogDriveDiffusionPlanner(...)`.
 
 - `navsim/agents/recogdrive/recogdrive_features.py`
   - Builds `history_trajectory`, `high_command_one_hot`, `status_feature`,
     optional image-path tensor, and optional VLM `first_hidden_state` /
     `last_hidden_state`.
-  - Current source defines 10 status features:
-    `cmd_0..cmd_3`, `vx`, `vy`, `ax`, `ay`, `yaw_rate`, `curvature`.
-  - Do not regress this to the PDF's older 8-dimensional description.
-  - `get_unique_name()` is now model-aware: returns `qwen3_feature` when
-    `model_type == "qwen3"`, otherwise `internvl_feature`. This is the cache
-    filename, so the **same `agent.vlm_type` must be used at cache time and at
-    train/eval time** or the cached `*.gz` will not be found. See "Qwen3-VL
-    Migration".
+  - Current source defines 13 status features:
+    `cmd_0..cmd_3`, `vx`, `vy`, `ax`, `ay`, `yaw_rate`, `curvature`,
+    `curvature_rate`, `steering_wheel_angle`, and `steering_wheel_rate`.
+  - Do not regress this to the PDF's older 8-dimensional description or the
+    previous branch's 10-dimensional state.
+  - `get_unique_name()` is model-aware and view/frame-aware. InternVL returns
+    `internvl_feature`. Qwen3 single-view/single-frame returns `qwen3_feature`;
+    Qwen3 multi-view/multi-frame returns
+    `qwen3_feature_v{n_views}_f{num_frames}[_vid]`. The same `agent.vlm_type`,
+    `view_list`, `num_frames`, and `use_video_input` must be used wherever a
+    cache is read or written. See "Qwen3-VL Migration".
   - `select_hidden_state(hidden_states, layer_index)` indexes the
     `hidden_states` tuple, honoring negative indices. `first_hidden_state_index`
     (default 0) and `last_hidden_state_index` (default -1) are threaded from the
     agent so the chosen layers are configurable.
-  - The online prompt path here maps commands with a hardcoded 3-element list
-    `['turn left', 'go straight', 'turn right']` indexed by the active one-hot
-    bit, rather than `command_code_to_text`. With a 4-dim Mogo command this only
-    covers the first three bits; `command_code_to_text` in
-    `navsim/common/command_utils.py` is the richer mapping (adds `make a u-turn`
-    and `unknown`).
+  - Prompt construction now uses `command_code_to_text(...)` and shared
+    `recogdrive_view_utils` helpers in both cache-mode feature building and
+    online multi-view/multi-frame eval. Do not reintroduce hardcoded
+    3-command prompt mappings.
+
+- `navsim/agents/recogdrive/recogdrive_view_utils.py`
+  - Single source of truth for multi-view/multi-frame image path selection and
+    prompt wording. It turns `AgentInput.cameras` into `[view][frame]` paths
+    with edge-padding and builds perception text that matches the selected
+    view/frame mode.
+  - `cam_f0` is the default. For Mogo multi-view, prefer real views such as
+    `cam_f0`, `cam_l0`, `cam_r0`, `cam_l1`, `cam_r1`, and `cam_b0`; empty
+    views are edge-padded and can silently duplicate a valid view.
+
+- `navsim/agents/recogdrive/hdmap_vector_features.py` and
+  `navsim/agents/recogdrive/hdmap_vector_encoder.py`
+  - Optional `agent.use_hdmap_vector=true` path. The builder samples nearby
+    lanes/lane-connectors from `Scene.map_api`, encodes centerline/left/right
+    boundary points plus route, traffic-light, and speed-limit metadata, and
+    writes `hdmap_vector_feature.gz`.
+  - Non-strict mode returns all-zero map features when `scene.map_api` is
+    missing or map lookup fails; strict mode raises. `MapEncoder` turns valid
+    map polygons into DiT context tokens.
+
+- `navsim/agents/recogdrive/object_vector_features.py`
+  - Optional `agent.use_object_vector=true` path. The agent then sets
+    `requires_scene=True`, extracts current-frame GT annotations from `Scene`,
+    and writes `object_vector_feature_v1.gz`.
+  - Object continuous features are 15-D (`x/y/z`, box size, sin/cos heading,
+    velocity, speed, distance, bearing, TTC proxy), with 5 type ids
+    (`vehicle`, `pedestrian`, `bicycle`, `static`, `unknown`). Object tokens are
+    sorted by a simple risk score and padded/truncated to `max_obj_tokens`.
 
 - `navsim/agents/recogdrive/recogdrive_backbone.py`
   - `RecogDriveBackbone` now supports three `model_type` values: `internvl`,
@@ -460,9 +574,12 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
     `load_qwen3_processor(...)` (falls back to hand-assembling
     `Qwen3VLProcessor` from `Qwen2Tokenizer` + image/video processors +
     `chat_template.json` when `AutoProcessor` raises the local fast-tokenizer
-    `model_type` error). Inference goes through `forward_from_paths(...)` ->
-    `_forward_qwen3(...)`, which builds chat-template messages
-    (`{"type": "image", ...}` + text) and calls the model with
+    `model_type` error). Inference goes through `forward_from_paths(...)`, which
+    accepts `[batch][view][frame]` path matrices. Single-view/single-frame
+    preserves the previous chat-template call; multi-view/multi-frame uses
+    `_forward_qwen3(...)` with multiple image placeholders, or
+    `_forward_qwen3_video(...)` with `videos=` when `use_video_input=true` and
+    `num_frames>1`. All Qwen3 paths call the model with
     `output_hidden_states=True`.
   - All three import their HF classes at the top of the file now; the unused
     `transformers` imports in the `qwen` branch are no longer the gap the PDF
@@ -490,11 +607,20 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
     `vl_context_last_norm`); default is `nn.Identity`. Enabling it adds new
     parameters, so a checkpoint trained with one setting will partially skip
     these layers under the agent's `strict=False` load.
+  - `build_context_tokens(...)` always creates VLM summary/context tokens. When
+    enabled, it appends HDMap tokens and object tokens after VLM context tokens
+    and returns a key-padding mask where VLM tokens are always valid and
+    structured padding slots are invalid.
   - `vl_summary_tokens.mean(1)` pools over the (padded) sequence dimension to
     build the summary token; padded hidden states are zero, so they bias the
-    mean slightly. This is the existing behavior, unchanged by the swap.
+    mean slightly. This remains true for longer multi-view/multi-frame hidden
+    sequences.
+  - `config.vlm_ablation == "zero"` zeros projected VLM summary/context tokens
+    inside `encode_vl_*`; HDMap/Object tokens and non-VLM inputs remain active.
   - `grpo=True` initializes `MetricCacheLoader`, `PDMSimulator`, `PDMScorer`,
-    loads an IL reference checkpoint, and creates frozen `old_policy`.
+    loads an IL reference checkpoint, creates frozen `old_policy`, and uses
+    `bc_coeff` / `bc_teacher_deterministic` from `GRPOConfig` for the optional
+    behavior-cloning anchor.
 
 - `navsim/agents/recogdrive/recogdrive_dit.py`
   - LightningDiT backbone.
@@ -506,6 +632,31 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
   - `AgentLightningDiT` handles GRPO-style logging of `loss`, `reward`,
     `policy_loss`, and `bc_loss`.
 
+## Optional Model Inputs
+
+The yaml defaults keep these capabilities off, but the current single
+full-chain scripts explicitly enable HDMap vectors, object vectors, and
+`vlm_ablation=zero`. The scripts remain single-view/single-frame Qwen3 unless
+view/frame overrides are provided. Relevant knobs:
+
+- `view_list`, `num_frames`, `use_video_input`, `video_fps`: control Qwen3 image
+  selection. Cache mode and online eval share `recogdrive_view_utils`; the
+  single-view/single-frame path keeps the historical prompt and cache name.
+- `use_hdmap_vector`, `max_map_tokens`, `map_sample_points`, `hdmap_radius`,
+  `strict_hdmap_vector`: add structured HDMap context tokens. This path needs a
+  real `Scene.map_api` for non-zero map tokens and writes
+  `hdmap_vector_feature.gz` during cache generation.
+- `use_object_vector`, `max_obj_tokens`, `obj_range_x`, `obj_range_y`,
+  `include_static_objects`, `object_token_dropout`: add current-frame object
+  context tokens from `Scene` annotations. This path writes
+  `object_vector_feature_v1.gz` and requires scene-aware cache/eval.
+- `vlm_ablation=zero`: zeros only VLM projected tokens. Use it for ablation, not
+  as a substitute for disabling object/map inputs.
+
+Enable optional inputs consistently across hidden-state cache, IL, RL, and
+online eval. Do not train from a cache produced with a different view/frame,
+structured-token, or `vlm_ablation` setting.
+
 ## Model Dimensions and Current Gotchas
 
 - Trajectory target is always `(8, 3)` for 4 seconds at 0.5 second intervals.
@@ -514,15 +665,14 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
 - VLM hidden dim is now an explicit knob: `agent.vl_hidden_dim`. InternVL small
   = 1536, InternVL/`vlm_size=large` = 3584, **Qwen3-VL-2B = 2048**. The planner
   reads `config.vl_hidden_dim`; the old `vlm_size`-only branch was removed.
-- Current planner config has `ego_status_dim=10`.
+- Current planner config has `ego_status_dim=13`.
 - The PDF describes older `feature_encoder`, `his_traj_encoder`, and 8-D state
   assembly. Current source uses `vl_summary_projector`,
   `vl_context_first_projector`, `vl_context_last_projector`, gated context
   fusion, `ego_status_encoder`, `action_encoder`, and `fusion_projector`.
-- Some prompt code maps navigation commands to only three strings:
-  `turn left`, `go straight`, `turn right`, while status feature names reserve
-  four command dimensions. Before editing command handling, inspect actual
-  `driving_command` arrays in the target logs.
+- Prompt construction uses `command_code_to_text(...)` for the 4-D Mogo command
+  vector. Before editing command handling, inspect actual `driving_command`
+  arrays in the target logs and keep cache/eval prompt helpers aligned.
 - Variable-length VLM hidden states are batched with
   `torch.nn.utils.rnn.pad_sequence(..., batch_first=True, padding_value=0.0)` in
   every `custom_collate_fn` (`run_training_recogdrive.py`,
