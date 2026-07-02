@@ -29,6 +29,11 @@ vlm_size: 'small'
 train_backbone: false
 vl_hidden_dim: 1536
 normalize_vl_hidden_states: false
+# VLM 消融开关：none=正常使用 VLM；zero=置零 VLM 的 summary/context token，
+# 仅消融 VLM 分支，obj token / ego status / history & action 等非 VLM 输入完整保留。
+# 依赖性测试：加载已训练 ckpt，仅 eval 时 override agent.vlm_ablation=zero。
+# 公平能力测试：IL 与 GRPO 全程同设 agent.vlm_ablation=zero（缓存可复用，无需重生成）。
+vlm_ablation: none
 first_hidden_state_index: 0
 last_hidden_state_index: -1
 # ego_status_dim: 8

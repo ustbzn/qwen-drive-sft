@@ -62,6 +62,7 @@ class ReCogDriveAgent(AbstractAgent):
         train_backbone: bool = False,
         vl_hidden_dim: Optional[int] = None,
         normalize_vl_hidden_states: bool = False,
+        vlm_ablation: str = "none",
         first_hidden_state_index: int = 0,
         last_hidden_state_index: int = -1,
         bc_coeff: float = 0.1,
@@ -99,6 +100,7 @@ class ReCogDriveAgent(AbstractAgent):
         self.train_backbone = train_backbone
         self.vl_hidden_dim = vl_hidden_dim
         self.normalize_vl_hidden_states = normalize_vl_hidden_states
+        self.vlm_ablation = vlm_ablation
         self.first_hidden_state_index = int(first_hidden_state_index)
         self.last_hidden_state_index = int(last_hidden_state_index)
         self.bc_coeff = bc_coeff
@@ -189,6 +191,7 @@ class ReCogDriveAgent(AbstractAgent):
             )
 
         cfg.vlm_size = self.vlm_size
+        cfg.vlm_ablation = self.vlm_ablation
 
         if self.grpo:
             cfg.grpo_cfg.metric_cache_path = self.metric_cache_path

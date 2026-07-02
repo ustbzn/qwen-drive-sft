@@ -207,6 +207,14 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     num_map_polygon_types: int = 3
     num_map_tl_states: int = 4
 
+    # --- VLM 消融开关（默认 none，零影响）---
+    # "none": 正常使用 VLM hidden state。
+    # "zero": 将 VLM 的 summary / context token 在投影后置零，只消融 VLM 分支；
+    #         obj token / ego status / history & action 等非 VLM 输入完整保留。
+    #         置零发生在 encode_vl_context_tokens 内部（拼 obj 之前），故 obj token 不受影响。
+    #         IL / eval / GRPO-rollout / GRPO-logprob 四处入口共用 encode_vl_* 函数，自动一致。
+    vlm_ablation: Literal["none", "zero"] = "none"
+
     # --- 障碍物 obj token（默认关闭，零影响）---
     use_object_vector: bool = False
     obj_feature_dim: int = 15
@@ -313,7 +321,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             self._init_grpo(config.grpo_cfg)
 
     def encode_vl_summary_tokens(self, last_hidden_state: torch.Tensor) -> torch.Tensor:
-        return self.vl_summary_projector(self.vl_summary_norm(last_hidden_state))
+        tokens = self.vl_summary_projector(self.vl_summary_norm(last_hidden_state))
+        if self.config.vlm_ablation == "zero":
+            return torch.zeros_like(tokens)
+        return tokens
 
     def encode_vl_context_tokens(
         self,
@@ -325,7 +336,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         context_gate = torch.sigmoid(
             self.vl_context_gate(torch.cat([first_context_tokens, last_context_tokens], dim=-1))
         )
-        return context_gate * last_context_tokens + (1.0 - context_gate) * first_context_tokens
+        context_tokens = context_gate * last_context_tokens + (1.0 - context_gate) * first_context_tokens
+        # VLM 消融：仅置零 VLM context（在 _build_context_tokens 拼 obj 之前），obj token 保留。
+        if self.config.vlm_ablation == "zero":
+            return torch.zeros_like(context_tokens)
+        return context_tokens
 
     def encode_map_context_tokens(self, action_input: Optional[BatchFeature]) -> Optional[torch.Tensor]:
         """编码 hdmap vector context tokens。"""
