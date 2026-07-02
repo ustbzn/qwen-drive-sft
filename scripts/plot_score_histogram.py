@@ -43,10 +43,9 @@ BUCKET_ORDER = [
 ]
 
 DEFAULT_CSV = Path(
-    "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive_hdmap/exp/recogdrive_qwen3_hdmap_ddim_IL_eval/2026.06.25.10.01.35/2026.06.25.10.12.38.csv"
+    "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/gt_pdm_score_rl_grpo_n4000_selected_tokens_v1/2026.06.29.08.53.16/2026.06.29.08.54.23.csv"
 )
-DEFAULT_OUTPUT = Path("vis_result_statistics/eval/0625_hdmap/score_RL.png")
-
+DEFAULT_OUTPUT = Path("vis_result_statistics/eval/gt/score_4000_0.7.png")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Histogram of score buckets from eval CSV.")

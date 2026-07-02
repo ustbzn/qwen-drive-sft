@@ -4,7 +4,7 @@
 
 用法（在项目根目录）：
   python scripts/vis_scenario_video.py 002e450c6cba5895 0033fc4b187a5f1f
-  python scripts/vis_scenario_video.py --model both --window 30 token1 token2
+  python scripts/vis_scenario_video.py --model both --window 30 --token token1 token2
 
 默认以 anchor token 为中心截取前后各 30 帧；加 --full-log 可渲染整条 log。
 """
@@ -46,7 +46,7 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 
 CHECKPOINTS = {
     "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_IL/2026.06.11.13.28.50/lightning_logs/version_0/checkpoints/epoch=188-step=13986.ckpt",
-    "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_RL/2026.06.12.03.28.29/lightning_logs/version_0/checkpoints/epoch=19-step=5000.ckpt",
+    "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_obj_RL/2026.06.30.06.19.52/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"
@@ -214,12 +214,73 @@ def load_scene_loaders(
     )
     return scene_loader, scene_loader_traj
 
+def generate_videos_for_tokens(
+    anchor_tokens: list[str],
+    models: list[str],
+    scene_filter: SceneFilter,
+    args,
+    output_dir: Path,
+    frames_root: Path,
+    openscene_root: Path,
+    mogo_map_sqlite_path: Path,
+):
+    token_to_log = resolve_log_names(anchor_tokens, scene_filter, openscene_root)
+    log_names = sorted(set(token_to_log.values()))
+    scene_loader, scene_loader_traj = load_scene_loaders(
+        log_names,
+        scene_filter,
+        openscene_root,
+        mogo_map_sqlite_path,
+        args.mogo_map_utm_zone,
+        args.mogo_map_utm_south,
+    )
+    log_to_tokens = build_log_token_sequences(scene_loader)
+
+    for model in models:
+        agent = ReCogDriveAgent(
+            TrajectorySampling(time_horizon=4, interval_length=0.5),
+            checkpoint_path=CHECKPOINTS[model],
+            vlm_path=VLM_PATH,
+            cam_type="single",
+            vlm_type="qwen3",
+            vl_hidden_dim=2048,
+            dit_type="small",
+            sampling_method="ddim",
+            cache_mode=False,
+            cache_hidden_state=False,
+            vlm_size="small",
+            grpo=False,
+            vlm_ablation="none",          # 对齐 RL/eval
+            use_hdmap_vector=False,        # 对齐 RL/eval
+            use_object_vector=True,       # 对齐 RL/eval → requires_scene=True
+            max_obj_tokens=64,
+            include_static_objects=False,
+            object_token_dropout=0.1,
+        )
+        agent.initialize()
+
+        for anchor in anchor_tokens:
+            log_name = token_to_log[anchor]
+            tokens = slice_tokens(log_to_tokens[log_name], anchor, args.window, args.full_log)
+            frame_dir = frames_root / model / anchor
+            if frame_dir.exists() and not args.keep_frames:
+                shutil.rmtree(frame_dir)
+
+            frame_paths = render_frames(tokens, agent, scene_loader, scene_loader_traj, frame_dir)
+            video_path = output_dir / f"{anchor}_{model}.mp4"
+            frames_to_video(frame_paths, video_path, args.fps)
+            print(f"已保存视频: {video_path.resolve()} ({len(frame_paths)} 帧)")
+
+            if not args.keep_frames:
+                shutil.rmtree(frame_dir)
+
 
 def main():
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为视频")
-    parser.add_argument("token", nargs="+", help="anchor scenario token")
-    parser.add_argument("--model", choices=["il", "rl", "both"], default="both", help="IL / RL / 两者")
-    parser.add_argument("--output-dir", default="vis_output/videos/shworldsim", help="视频输出目录")
+    parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
+    parser.add_argument("--token", nargs="+", default=None, help="anchor scenario token（可传多个）")
+    parser.add_argument("--model", choices=["il", "rl", "both"], default="rl", help="IL / RL / 两者")
+    parser.add_argument("--output-dir", default="vis_output/videos/obj_shworldsim", help="视频输出目录")
     parser.add_argument("--frames-dir", default="vis_output/video_frames", help="中间帧目录")
     parser.add_argument("--window", type=int, default=30, help="anchor 前后各取多少帧")
     parser.add_argument("--full-log", action="store_true", help="渲染整条 log（较慢）")
@@ -247,50 +308,71 @@ def main():
     hydra.initialize(config_path=HYDRA_CONFIG_PATH, version_base=None)
     cfg = hydra.compose(config_name="mogo_trainval")
     scene_filter: SceneFilter = instantiate(cfg.scene_filter)
-
-    token_to_log = resolve_log_names(args.token, scene_filter, openscene_root)
-    log_names = sorted(set(token_to_log.values()))
-    scene_loader, scene_loader_traj = load_scene_loaders(
-        log_names,
+    
+    default_token_list = [
+        "6778f89b398dee3ddde0156b2079e356",
+        "8ec9b77adeaa5c6aae500334f321f1c2",
+        "ec6788598cc3fa0b2ea7a667f03f7346",
+    ]
+    anchor_tokens = args.token or args.tokens
+    if not anchor_tokens:
+        print(f"未指定 token，使用默认 token 列表: {default_token_list}")
+        anchor_tokens = default_token_list
+    args.token = anchor_tokens
+    generate_videos_for_tokens(
+        anchor_tokens,
+        models,
         scene_filter,
+        args,
+        output_dir,
+        frames_root,
         openscene_root,
         mogo_map_sqlite_path,
-        args.mogo_map_utm_zone,
-        args.mogo_map_utm_south,
     )
-    log_to_tokens = build_log_token_sequences(scene_loader)
 
-    for model in models:
-        agent = ReCogDriveAgent(
-            TrajectorySampling(time_horizon=4, interval_length=0.5),
-            checkpoint_path=CHECKPOINTS[model],
-            vlm_path=VLM_PATH,
-            cam_type="single",
-            vlm_type="qwen3",
-            vl_hidden_dim=2048,
-            dit_type="small",
-            sampling_method="ddim",
-            cache_mode=False,
-            cache_hidden_state=False,
-            vlm_size="small",
-            grpo=False,
-        )
-        agent.initialize()
+    # token_to_log = resolve_log_names(args.token, scene_filter, openscene_root)
+    # log_names = sorted(set(token_to_log.values()))
+    # scene_loader, scene_loader_traj = load_scene_loaders(
+    #     log_names,
+    #     scene_filter,
+    #     openscene_root,
+    #     mogo_map_sqlite_path,
+    #     args.mogo_map_utm_zone,
+    #     args.mogo_map_utm_south,
+    # )
+    # log_to_tokens = build_log_token_sequences(scene_loader)
 
-        for anchor in args.token:
-            log_name = token_to_log[anchor]
-            tokens = slice_tokens(log_to_tokens[log_name], anchor, args.window, args.full_log)
-            frame_dir = frames_root / model / anchor
-            if frame_dir.exists() and not args.keep_frames:
-                shutil.rmtree(frame_dir)
+    # for model in models:
+    #     agent = ReCogDriveAgent(
+    #         TrajectorySampling(time_horizon=4, interval_length=0.5),
+    #         checkpoint_path=CHECKPOINTS[model],
+    #         vlm_path=VLM_PATH,
+    #         cam_type="single",
+    #         vlm_type="qwen3",
+    #         vl_hidden_dim=2048,
+    #         dit_type="small",
+    #         sampling_method="ddim",
+    #         cache_mode=False,
+    #         cache_hidden_state=False,
+    #         vlm_size="small",
+    #         grpo=False,
+    #     )
+    #     agent.initialize()
 
-            frame_paths = render_frames(tokens, agent, scene_loader, scene_loader_traj, frame_dir)
-            video_path = output_dir / f"{anchor}_{model}.mp4"
-            frames_to_video(frame_paths, video_path, args.fps)
-            print(f"已保存视频: {video_path.resolve()} ({len(frame_paths)} 帧)")
+    #     for anchor in args.token:
+    #         log_name = token_to_log[anchor]
+    #         tokens = slice_tokens(log_to_tokens[log_name], anchor, args.window, args.full_log)
+    #         frame_dir = frames_root / model / anchor
+    #         if frame_dir.exists() and not args.keep_frames:
+    #             shutil.rmtree(frame_dir)
 
-            if not args.keep_frames:
-                shutil.rmtree(frame_dir)
+    #         frame_paths = render_frames(tokens, agent, scene_loader, scene_loader_traj, frame_dir)
+    #         video_path = output_dir / f"{anchor}_{model}.mp4"
+    #         frames_to_video(frame_paths, video_path, args.fps)
+    #         print(f"已保存视频: {video_path.resolve()} ({len(frame_paths)} 帧)")
+
+    #         if not args.keep_frames:
+    #             shutil.rmtree(frame_dir)
 
 
 if __name__ == "__main__":

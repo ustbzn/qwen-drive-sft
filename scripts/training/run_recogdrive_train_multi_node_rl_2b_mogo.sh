@@ -16,10 +16,10 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_cache}"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 # Update CHECKPOINT to the HDMap IL run after training completes.
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_hdmap_IL/2026.06.23.13.32.10/lightning_logs/version_0/checkpoints/epoch=151-step=16264.ckpt}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_obj_vlmzero_IL/2026.06.30.14.39.02/lightning_logs/version_0/checkpoints/epoch=197-step=5346.ckpt}"
 GPUS="${GPUS:-4}"
 MASTER_PORT="${MASTER_PORT:-9696}"
 PORT=${PORT:-63665}
@@ -64,6 +64,7 @@ torchrun \
   agent.cam_type=single \
   agent.grpo=True \
   agent.cache_hidden_state=True \
+  agent.vlm_ablation=zero \
   agent.vlm_type=qwen3 \
   agent.checkpoint_path=\"${CHECKPOINT}\" \
   agent.vl_hidden_dim=2048 \
@@ -77,7 +78,8 @@ torchrun \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size=16 \
-  experiment_name=training_recogdrive_qwen3_hdmap_RL \
+  trainer.params.strategy=ddp_find_unused_parameters_true \
+  experiment_name=training_recogdrive_qwen3_obj_vlmzero_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \
@@ -85,7 +87,7 @@ torchrun \
   cache_path="${CACHE_PATH}" \
   use_cache_without_dataset=True \
   force_cache_computation=False \
-  "${OBJ_ARGS[@]}" > train_recogdrive_qwen3_hdmap_rl_2b.txt 2>&1
+  "${OBJ_ARGS[@]}" > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
 
 python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
 
