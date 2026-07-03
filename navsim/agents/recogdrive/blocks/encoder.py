@@ -107,23 +107,36 @@ class ActionEncoder(nn.Module):
 
 class StateAttentionEncoder(nn.Module):
     """
-    Encodes a flat state vector into a fixed-size embedding using a
-    multi-head attention pooling mechanism.
+    State Dropout Encoder (SDE)，参考 pluto 的自车状态编码：把 13 维 status_feature
+    的每一维单独投影成 token，再用一个可学习 query 做多头注意力池化成单个 embedding。
+
+    关键在于训练时对状态做 dropout 以抑制"捷径学习"：status_feature 的前
+    ``num_command_states`` 维是导航命令(cmd_0..cmd_3)——它是意图不是捷径，永久可见；
+    其余维是自车运动学量(vx/vy/ax/ay/yaw_rate/curvature/curvature_rate/
+    steering_wheel_angle/steering_wheel_rate)——有它们模型能直接外推 4s 轨迹，
+    故按 ``state_dropout`` 概率随机遮蔽，逼模型转向地图/障碍物/VLM 上下文。
+
+    注意与 pluto 的差异：pluto 前 3 维是 ego 系恒为 0 的位置/朝向(永久可见)，此处对应的
+    永久可见维是导航命令。掩码拼接顺序 [command(可见), kinematic(可丢)] 必须与
+    recogdrive_features.EGO_STATUS_FEATURE_NAMES 的 [命令在前, 运动学量在后] 布局一致。
+
+    本编码器与 agent.vlm_ablation 正交：dropout 只作用于 ego status token，
+    vlm_ablation=none / zero 下均生效。
     """
     def __init__(
         self,
         state_dim: int,
         embed_dim: int,
-        num_kinematic_states: int,
+        num_command_states: int,
         state_dropout: float = 0.75,
         num_heads: int = 4
     ):
         super().__init__()
-        assert state_dim > num_kinematic_states, \
-            "state_dim must be greater than num_kinematic_states"
+        assert state_dim > num_command_states, \
+            "state_dim must be greater than num_command_states (need droppable kinematic states)"
 
         self.state_dim = state_dim
-        self.num_kinematic_states = num_kinematic_states
+        self.num_command_states = num_command_states
         self.state_dropout = state_dropout
 
         self.linears = nn.ModuleList([
@@ -158,17 +171,20 @@ class StateAttentionEncoder(nn.Module):
 
         key_padding_mask = None
         if self.training and self.state_dropout > 0:
-            kinematic_mask = torch.rand(
-                (x_embed.shape[0], self.num_kinematic_states), device=x.device
-            ) < self.state_dropout
-
-            num_command_states = self.state_dim - self.num_kinematic_states
+            # 命令维度(前 num_command_states 维)永久可见：False = 不遮蔽。
             command_mask = torch.zeros(
-                (x_embed.shape[0], num_command_states),
+                (x_embed.shape[0], self.num_command_states),
                 device=x.device,
-                dtype=torch.bool
+                dtype=torch.bool,
             )
-            key_padding_mask = torch.cat([kinematic_mask, command_mask], dim=1)
+            # 运动学量(其余维)按 state_dropout 随机遮蔽：True = 遮蔽(query 注意不到)。
+            kinematic_mask = torch.rand(
+                (x_embed.shape[0], self.state_dim - self.num_command_states),
+                device=x.device,
+            ) < self.state_dropout
+            # 命令在前、运动学量在后，与 EGO_STATUS_FEATURE_NAMES 布局一致；命令永久可见
+            # 保证至少 num_command_states 个有效 key，MHA 不会出现整行全遮蔽的 NaN。
+            key_padding_mask = torch.cat([command_mask, kinematic_mask], dim=1)
 
         query = self.query.expand(x_embed.shape[0], -1, -1)
         x_state, _ = self.attn(

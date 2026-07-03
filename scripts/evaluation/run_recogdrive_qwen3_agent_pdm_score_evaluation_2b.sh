@@ -17,6 +17,9 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export USE_OBJECT_VECTOR=true
+# 自车状态编码器：mlp(默认) | attention(SDE)。eval 时不 dropout(self.training=False)，但类型
+# 必须与训练 ckpt 一致，否则 attention 层被 initialize() strict=False 丢成随机初始化。
+export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-mlp}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_obj_RL/2026.06.30.06.19.52/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
@@ -59,6 +62,7 @@ torchrun \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
+  agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
   experiment_name=recogdrive_qwen3_hdmap_ddim_IL_eval \

@@ -86,6 +86,9 @@ class ReCogDriveAgent(AbstractAgent):
         object_token_dropout: float = 0.1,
         object_encoder_type: str = "mlp",
         static_speed_threshold: float = 0.5,
+        ego_status_encoder_type: str = 'mlp',
+        ego_state_dropout: float = 0.75,
+        ego_num_command_states: int = 4,
     ):
         super().__init__(requires_scene=bool(use_object_vector))
         self._trajectory_sampling = trajectory_sampling
@@ -131,6 +134,13 @@ class ReCogDriveAgent(AbstractAgent):
         # obj 编码器类型: "mlp"=单帧几何(ObjectEncoder); "temporal"=差分+时序FPN+静态MLP(TemporalObjectEncoder)
         self.object_encoder_type = str(object_encoder_type)
         self.static_speed_threshold = float(static_speed_threshold)
+        # 自车状态编码器(默认 mlp，零影响)。attention=SDE 状态丢弃编码器：训练时随机遮蔽
+        # 运动学量、导航命令永久可见，抑制"外推当前自车运动学"的捷径；与 vlm_ablation 正交
+        # (none/zero 均生效)。切换类型会改变 ego_status_encoder 权重结构，须重训 IL 并让
+        # RL/eval 用同一类型(否则 attention 层被 initialize() 的 strict=False 丢成随机初始化)。
+        self.ego_status_encoder_type = str(ego_status_encoder_type)
+        self.ego_state_dropout = float(ego_state_dropout)
+        self.ego_num_command_states = int(ego_num_command_states)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -181,6 +191,9 @@ class ReCogDriveAgent(AbstractAgent):
                 object_token_dropout=self.object_token_dropout,
                 object_encoder_type=self.object_encoder_type,
                 static_speed_threshold=self.static_speed_threshold,
+                ego_status_encoder_type=self.ego_status_encoder_type,
+                ego_state_dropout=self.ego_state_dropout,
+                ego_num_command_states=self.ego_num_command_states,
             )
         elif self.dit_type == "small":
             cfg = make_recogdrive_config(
@@ -202,6 +215,9 @@ class ReCogDriveAgent(AbstractAgent):
                 object_token_dropout=self.object_token_dropout,
                 object_encoder_type=self.object_encoder_type,
                 static_speed_threshold=self.static_speed_threshold,
+                ego_status_encoder_type=self.ego_status_encoder_type,
+                ego_state_dropout=self.ego_state_dropout,
+                ego_num_command_states=self.ego_num_command_states,
             )
 
         cfg.vlm_size = self.vlm_size
@@ -575,6 +591,9 @@ def make_recogdrive_config(
     object_encoder_type: str = "mlp",
     obj_temporal_dim: int = 128,
     static_speed_threshold: float = 0.5,
+    ego_status_encoder_type: str = 'mlp',
+    ego_state_dropout: float = 0.75,
+    ego_num_command_states: int = 4,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -638,6 +657,9 @@ def make_recogdrive_config(
         object_encoder_type=object_encoder_type,
         obj_temporal_dim=obj_temporal_dim,
         static_speed_threshold=static_speed_threshold,
+        ego_status_encoder_type=ego_status_encoder_type,
+        ego_state_dropout=ego_state_dropout,
+        ego_num_command_states=ego_num_command_states,
     )
 
     return config

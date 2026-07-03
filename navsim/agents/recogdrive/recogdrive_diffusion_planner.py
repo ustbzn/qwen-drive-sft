@@ -299,6 +299,12 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     max_seq_len: int = 8
     ego_status_encoder_type: Literal['mlp', 'attention'] = 'mlp'
     ego_status_dim: int = 13
+    # SDE(状态丢弃编码器)参数，仅 ego_status_encoder_type='attention' 时生效，与 vlm_ablation 正交。
+    # status_feature 前 ego_num_command_states 维是导航命令(cmd_0..cmd_3)，永久可见；其余
+    # 运动学量(vx/vy/ax/ay/yaw_rate/curvature/curvature_rate/steer_angle/steer_rate)训练时
+    # 按 ego_state_dropout 概率随机遮蔽，抑制"外推当前自车运动学"的捷径。
+    ego_state_dropout: float = 0.75
+    ego_num_command_states: int = 4
 
     sampling_method: Literal['flow', 'ddpm', 'ddim'] = 'ddim'
     num_inference_steps: int = 5
@@ -359,7 +365,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             self.ego_status_encoder = StateAttentionEncoder(
                 state_dim=config.ego_status_dim,
                 embed_dim=config.input_embedding_dim,
-                num_kinematic_states=4 
+                num_command_states=config.ego_num_command_states,
+                state_dropout=config.ego_state_dropout,
             )
         else: 
             self.ego_status_encoder = Mlp(

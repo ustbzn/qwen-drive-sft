@@ -37,6 +37,17 @@ vlm_ablation: none
 first_hidden_state_index: 0
 last_hidden_state_index: -1
 # ego_status_dim: 8
+# --- 自车状态编码器 / 状态丢弃编码器 SDE（默认 mlp，等价原流程，零影响）---
+# mlp: 原始 Mlp，直接编码 13 维 status_feature。
+# attention: SDE(参考 pluto)。训练时随机遮蔽运动学量(vx/vy/ax/ay/yaw_rate/curvature/
+#   curvature_rate/steering_wheel_angle/steering_wheel_rate)，导航命令(cmd_0..cmd_3)永久可见，
+#   逼模型少走"外推当前自车运动学"的捷径；eval 时不丢弃、用全量状态(故开集 L2 会变差，须看闭环 PDM)。
+# 与 vlm_ablation 正交：none/zero 下均生效。切换 encoder 类型会改变权重结构，须重训 IL，且
+# RL/eval 必须与 IL 用同一类型(否则 ckpt 加载时 attention 层被 initialize() 的 strict=False 丢成随机初始化)。
+# 缓存无需重跑：status_feature 已在缓存里，改动只在模型侧。
+ego_status_encoder_type: mlp
+ego_state_dropout: 0.75      # SDE 运动学量遮蔽概率(0~1)，仅 attention 生效
+ego_num_command_states: 4    # status_feature 前 N 维为永久可见的导航命令(cmd_0..cmd_3)
 # --- 障碍物 obj token（默认关闭，等价当前流程，零影响）---
 # 开启后 agent.requires_scene=True：缓存 / eval 从 Scene 当前帧 GT annotations 取障碍物，
 # 编码成 context token 拼到 vl_context_tokens 后进 DiT cross-attention。

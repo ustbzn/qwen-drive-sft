@@ -31,6 +31,9 @@ export PORT=${PORT}
 export CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
 export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 export USE_OBJECT_VECTOR=true
+# 自车状态编码器：mlp(默认) | attention(SDE)。与 vlm_ablation 正交；IL/RL/eval 必须一致，
+# 且 CHECKPOINT/reference_policy_checkpoint 须来自同类型 IL(_init_grpo 对 ego_status_encoder 结构敏感)。
+export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 
 echo "NAVSIM_EXP_ROOT:    ${NAVSIM_EXP_ROOT}"
 echo "CACHE_PATH:         ${CACHE_PATH}"
@@ -45,6 +48,8 @@ OBJ_ARGS=()
 if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   OBJ_ARGS=(
     agent.use_object_vector=true
+    agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" 
+    agent.static_speed_threshold="${STATIC_SPEED_THRESHOLD:-0.5}" 
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}"
     agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}"
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}"
@@ -72,6 +77,9 @@ torchrun \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
+  agent.use_lane_boundaries=true \
+  agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
+  agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.3}" \
   agent.metric_cache_path="${METRIC_CACHE_PATH}" \
   agent.reference_policy_checkpoint=\"${CHECKPOINT}\" \
   trainer.params.max_epochs=20 \
@@ -79,7 +87,7 @@ torchrun \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size=16 \
   trainer.params.strategy=ddp_find_unused_parameters_true \
-  experiment_name=training_recogdrive_qwen3_obj_vlmzero_RL \
+  experiment_name=training_recogdrive_ego_SDE_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \

@@ -16,11 +16,15 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export USE_OBJECT_VECTOR=true
+# 自车状态编码器：mlp(默认，零影响) | attention(SDE，训练时随机遮蔽运动学量以抑制外推捷径)。
+# 与 vlm_ablation 正交(none/zero 均生效)。IL/RL/eval 必须三处一致，否则 ckpt 加载错配
+# (attention 层被 initialize() strict=False 丢成随机初始化)。
+export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
-GPUS="${GPUS:-4}"
-MASTER_PORT="${MASTER_PORT:-9696}"
-BATCH_SIZE="${BATCH_SIZE:-80}"
+GPUS="${GPUS:-8}"
+MASTER_PORT="${MASTER_PORT:-9675}"
+BATCH_SIZE="${BATCH_SIZE:-320}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启需与缓存端用同样的 obj 配置，
@@ -28,6 +32,8 @@ MAX_EPOCHS="${MAX_EPOCHS:-200}"
 if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   set -- \
     agent.use_object_vector=true \
+    agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" \
+    agent.static_speed_threshold="${STATIC_SPEED_THRESHOLD:-0.5}" \
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
     agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
@@ -55,12 +61,14 @@ torchrun \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
   agent.use_lane_boundaries=true \
+  agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
+  agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.3}" \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=training_recogdrive_qwen3_obj_vlmzero_IL \
+  experiment_name=training_recogdrive_ego_SDE_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   '+log_split@_global_=mogo' \
   cache_path="${CACHE_PATH}" \

@@ -19,11 +19,11 @@ export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export USE_OBJECT_VECTOR=true
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
-GPUS="${GPUS:-4}"
-MASTER_PORT="${MASTER_PORT:-9696}"
+GPUS="${GPUS:-8}"
+MASTER_PORT="${MASTER_PORT:-9675}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。USE_OBJECT_VECTOR=true 时补出 obj 缓存。
 # object_encoder_type=temporal -> 生成 object_temporal_feature_v1.gz（差分+时序FPN，动态运动意图/
