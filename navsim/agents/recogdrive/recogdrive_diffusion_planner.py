@@ -106,6 +106,115 @@ class ObjectEncoder(nn.Module):
         return tokens * mask
 
 
+class TemporalPyramidEncoder(nn.Module):
+    """短序列时序金字塔（纯 PyTorch Conv1d 版时序 FPN，不依赖 natten）。
+
+    输入差分序列 [M, C_in, T]（M=slot 数，T=T_delta，mogo=3），多尺度聚合 + top-down
+    FPN 融合，输出取当前帧侧最后时间步 [M, dim]。pluto NATSequenceEncoder 为 21 帧 +
+    natten 设计，对 3-4 帧短序列改用自适应 Conv1d 金字塔，保留「多尺度时序聚合」语义。
+    用 GroupNorm(不是 BatchNorm)，对可变/小批次稳定。
+    """
+
+    def __init__(self, in_chans: int, dim: int):
+        super().__init__()
+        self.tokenizer = nn.Conv1d(in_chans, dim, kernel_size=3, padding=1)
+        # 细尺度分支（全分辨率）
+        self.l0 = nn.Sequential(
+            nn.Conv1d(dim, dim, kernel_size=3, padding=1),
+            nn.GroupNorm(1, dim),
+            nn.SiLU(),
+        )
+        # 中尺度分支（下采样 2x），T<2 时在 forward 里跳过
+        self.l1 = nn.Sequential(
+            nn.Conv1d(dim, dim, kernel_size=3, stride=2, padding=1),
+            nn.GroupNorm(1, dim),
+            nn.SiLU(),
+        )
+        self.fpn_conv = nn.Conv1d(dim, dim, kernel_size=3, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """:param x: [M, C_in, T]; :return: [M, dim]（当前帧侧最后时间步）。"""
+        T = x.shape[-1]
+        x = self.tokenizer(x)                    # [M, dim, T]
+        l0 = self.l0(x)                          # [M, dim, T]
+        g = l0.mean(dim=-1, keepdim=True)        # 全局尺度 [M, dim, 1]
+        fused = l0 + g
+        if T >= 2:
+            l1 = self.l1(x)                      # [M, dim, ceil(T/2)]
+            l1_up = F.interpolate(l1, size=T, mode="linear", align_corners=False)
+            fused = fused + l1_up
+        fused = self.fpn_conv(fused)             # [M, dim, T]
+        return fused[:, :, -1]                   # [M, dim]
+
+
+class TemporalObjectEncoder(nn.Module):
+    """时序障碍物编码器：abs 几何分支 + 动态 motion 分支，加法融合。
+
+    - abs 分支（所有 slot）：与 ObjectEncoder 同构（LayerNorm+MLP+type_embedding），
+      编当前帧几何/位置约束。
+    - motion 分支：差分序列 -> TemporalPyramidEncoder -> motion_proj，仅对 (valid & is_dynamic)
+      的 slot 通过 gate 保留；静态/padding slot 的 motion 置零。
+    - final = output_norm(abs_token + motion)，按 valid_mask 置零、训练期 token_dropout。
+
+    motion_proj 零初始化 -> 加载旧 ckpt / 训练初期 motion≈0，final≈abs（等价旧 MLP），
+    平滑收敛，且 padding slot 天然输出 0。对所有 slot 都跑 temporal（而非 gather），避免
+    DDP 下某 batch 无动态物体时 temporal 参数收不到梯度而报 unused-parameter。
+    GRPO 需切 eval（同 ObjectEncoder），关掉 token_dropout 保证 rollout/logprob 一致。
+    """
+
+    def __init__(
+        self,
+        feature_dim: int,
+        diff_dim: int,
+        embed_dim: int,
+        num_types: int,
+        hidden_dim: int,
+        temporal_dim: int,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        # abs 分支：与 ObjectEncoder 结构一致
+        self.feature_norm = nn.LayerNorm(feature_dim)
+        self.feature_mlp = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, embed_dim),
+        )
+        self.type_embedding = nn.Embedding(num_types, embed_dim)
+        # motion 分支
+        self.temporal = TemporalPyramidEncoder(in_chans=diff_dim, dim=temporal_dim)
+        self.motion_proj = nn.Linear(temporal_dim, embed_dim)
+        nn.init.zeros_(self.motion_proj.weight)
+        nn.init.zeros_(self.motion_proj.bias)
+        self.output_norm = nn.LayerNorm(embed_dim)
+        self.token_dropout = float(dropout)
+
+    def forward(
+        self,
+        obj_features: torch.Tensor,
+        obj_diff_features: torch.Tensor,
+        obj_type: torch.Tensor,
+        obj_valid_mask: torch.Tensor,
+        obj_is_dynamic: torch.Tensor,
+    ) -> torch.Tensor:
+        """:return: [B, N, embed_dim]，padding / dropped 行为全 0（与 ObjectEncoder 一致）。"""
+        B, N = obj_features.shape[0], obj_features.shape[1]
+        abs_token = self.feature_mlp(self.feature_norm(obj_features)) + self.type_embedding(obj_type.long())
+
+        # 对所有 slot 跑 temporal（DDP 友好），再用 gate 只保留有效动态 slot 的 motion。
+        diff = obj_diff_features.permute(0, 1, 3, 2).reshape(B * N, obj_diff_features.shape[-1], obj_diff_features.shape[-2])
+        motion = self.motion_proj(self.temporal(diff)).view(B, N, -1)
+        gate = (obj_valid_mask.bool() & obj_is_dynamic.bool()).unsqueeze(-1).to(motion.dtype)
+        motion = motion * gate
+
+        tokens = self.output_norm(abs_token + motion)
+        mask = obj_valid_mask.unsqueeze(-1).to(tokens.dtype)
+        if self.training and self.token_dropout > 0.0:
+            keep = (torch.rand_like(obj_valid_mask.float()) >= self.token_dropout)
+            mask = mask * keep.unsqueeze(-1).to(tokens.dtype)
+        return tokens * mask
+
+
 @dataclass
 class FlowConfig:
     """Configuration specific to Flow Matching."""
@@ -220,6 +329,11 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     obj_feature_dim: int = 15
     obj_num_types: int = 5
     object_token_dropout: float = 0.1
+    # 编码器类型: "mlp"=ObjectEncoder(单帧几何); "temporal"=TemporalObjectEncoder(差分+时序FPN+静态MLP)
+    object_encoder_type: Literal["mlp", "temporal"] = "mlp"
+    obj_diff_dim: int = 9                 # 差分特征维（temporal 分支），须与 object_temporal_features.OBJECT_DIFF_DIM 一致
+    obj_temporal_dim: int = 128           # 时序金字塔内部维
+    static_speed_threshold: float = 0.5   # 动/静划分阈值(m/s)，数据侧划分用；此处保留以便配置透传
 
     tune_projector: bool = True
     tune_diffusion_model: bool = True
@@ -285,13 +399,24 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         # 障碍物编码器：把 obj 特征编成 context token，拼到 vl_context_tokens 后面。
         # 必须在下方 _init_grpo() 的 deepcopy(self) 之前创建，old_policy 才会带上它。
         if config.use_object_vector:
-            self.object_encoder = ObjectEncoder(
-                feature_dim=config.obj_feature_dim,
-                embed_dim=config.input_embedding_dim,
-                num_types=config.obj_num_types,
-                hidden_dim=config.hidden_size,
-                dropout=config.object_token_dropout,
-            )
+            if config.object_encoder_type == "temporal":
+                self.object_encoder = TemporalObjectEncoder(
+                    feature_dim=config.obj_feature_dim,
+                    diff_dim=config.obj_diff_dim,
+                    embed_dim=config.input_embedding_dim,
+                    num_types=config.obj_num_types,
+                    hidden_dim=config.hidden_size,
+                    temporal_dim=config.obj_temporal_dim,
+                    dropout=config.object_token_dropout,
+                )
+            else:
+                self.object_encoder = ObjectEncoder(
+                    feature_dim=config.obj_feature_dim,
+                    embed_dim=config.input_embedding_dim,
+                    num_types=config.obj_num_types,
+                    hidden_dim=config.hidden_size,
+                    dropout=config.object_token_dropout,
+                )
         else:
             self.object_encoder = None
 
@@ -368,11 +493,18 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             return None
         if "obj_features" not in action_input.data:
             return None
-        return {
+        obj_inputs = {
             "obj_features": action_input.obj_features,
             "obj_type": action_input.obj_type,
             "obj_valid_mask": action_input.obj_valid_mask,
         }
+        # temporal 编码器额外需要差分序列与动静标记
+        if isinstance(self.object_encoder, TemporalObjectEncoder):
+            if "obj_diff_features" not in action_input.data:
+                return None
+            obj_inputs["obj_diff_features"] = action_input.obj_diff_features
+            obj_inputs["obj_is_dynamic"] = action_input.obj_is_dynamic
+        return obj_inputs
 
     def build_context_tokens(
         self,
@@ -399,11 +531,20 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         obj_inputs = self._extract_obj_inputs(action_input) if action_input is not None else None
         obj_context_tokens = None
         if self.object_encoder is not None and obj_inputs is not None:
-            obj_context_tokens = self.object_encoder(
-                obj_inputs["obj_features"].to(vl_context_tokens.dtype),
-                obj_inputs["obj_type"],
-                obj_inputs["obj_valid_mask"],
-            )
+            if isinstance(self.object_encoder, TemporalObjectEncoder):
+                obj_context_tokens = self.object_encoder(
+                    obj_inputs["obj_features"].to(vl_context_tokens.dtype),
+                    obj_inputs["obj_diff_features"].to(vl_context_tokens.dtype),
+                    obj_inputs["obj_type"],
+                    obj_inputs["obj_valid_mask"],
+                    obj_inputs["obj_is_dynamic"],
+                )
+            else:
+                obj_context_tokens = self.object_encoder(
+                    obj_inputs["obj_features"].to(vl_context_tokens.dtype),
+                    obj_inputs["obj_type"],
+                    obj_inputs["obj_valid_mask"],
+                )
 
         # 拼接所有 context tokens 和构建 mask
         B, N_vl = vl_context_tokens.shape[0], vl_context_tokens.shape[1]

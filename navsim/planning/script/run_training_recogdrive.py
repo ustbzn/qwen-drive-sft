@@ -66,6 +66,10 @@ def custom_collate_fn(
         features["obj_features"] = torch.stack([f["obj_features"] for f in features_list], dim=0).cpu()
         features["obj_type"] = torch.stack([f["obj_type"] for f in features_list], dim=0).cpu()
         features["obj_valid_mask"] = torch.stack([f["obj_valid_mask"] for f in features_list], dim=0).cpu()
+        # temporal 编码器的差分序列与动静标记（mlp 缓存无这两个键，用内层 if 保护）
+        if "obj_diff_features" in features_list[0]:
+            features["obj_diff_features"] = torch.stack([f["obj_diff_features"] for f in features_list], dim=0).cpu()
+            features["obj_is_dynamic"] = torch.stack([f["obj_is_dynamic"] for f in features_list], dim=0).cpu()
 
     targets = {
         'trajectory': trajectory

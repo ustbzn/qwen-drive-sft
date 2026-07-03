@@ -25,12 +25,18 @@ MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
 GPUS="${GPUS:-4}"
 MASTER_PORT="${MASTER_PORT:-9696}"
 
-# --- 障碍物 obj token 开关（默认关闭，零影响）。USE_OBJECT_VECTOR=true 时补出
-# object_vector_feature_v1.gz。指向已有 CACHE_PATH 重跑时，已存在的 qwen3_feature*.gz 会被
-# 跳过（不重算 VLM），只新增 obj 缓存。---
+# --- 障碍物 obj token 开关（默认关闭，零影响）。USE_OBJECT_VECTOR=true 时补出 obj 缓存。
+# object_encoder_type=temporal -> 生成 object_temporal_feature_v1.gz（差分+时序FPN，动态运动意图/
+#   静态几何约束，需 IL/RL/eval 同设 object_encoder_type=temporal）；
+# object_encoder_type=mlp      -> 生成单帧 object_vector_feature_v1.gz（旧行为）。
+# 指向已有 CACHE_PATH 重跑时：token 目录里已存在的 qwen3_feature*.gz / hdmap*.gz 会按 builder
+# 逐个跳过（不重算 VLM，省数小时），只新增缺失的 object_temporal_feature_v1.gz。旧的
+# object_vector_feature_v1.gz（若曾生成）残留无害、不被 temporal 读取。---
 if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   set -- \
     agent.use_object_vector=true \
+    agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" \
+    agent.static_speed_threshold="${STATIC_SPEED_THRESHOLD:-0.5}" \
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
     agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \

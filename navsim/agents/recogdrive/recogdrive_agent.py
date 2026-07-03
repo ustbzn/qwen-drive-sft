@@ -28,6 +28,7 @@ from .object_vector_features import (
     OBJECT_FEATURE_DIM,
     OBJECT_NUM_TYPES,
 )
+from .object_temporal_features import ObjectTemporalFeatureBuilder
 from .recogdrive_backbone import RecogDriveBackbone
 from .recogdrive_view_utils import (
     collect_view_frame_paths,
@@ -82,6 +83,8 @@ class ReCogDriveAgent(AbstractAgent):
         obj_range_y: Optional[List[float]] = None,
         include_static_objects: bool = False,
         object_token_dropout: float = 0.1,
+        object_encoder_type: str = "mlp",
+        static_speed_threshold: float = 0.5,
     ):
         super().__init__(requires_scene=bool(use_object_vector))
         self._trajectory_sampling = trajectory_sampling
@@ -123,6 +126,9 @@ class ReCogDriveAgent(AbstractAgent):
         self.obj_range_y = tuple(obj_range_y) if obj_range_y is not None else (-40.0, 40.0)
         self.include_static_objects = bool(include_static_objects)
         self.object_token_dropout = float(object_token_dropout)
+        # obj 编码器类型: "mlp"=单帧几何(ObjectEncoder); "temporal"=差分+时序FPN+静态MLP(TemporalObjectEncoder)
+        self.object_encoder_type = str(object_encoder_type)
+        self.static_speed_threshold = float(static_speed_threshold)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -170,6 +176,8 @@ class ReCogDriveAgent(AbstractAgent):
                 obj_feature_dim=OBJECT_FEATURE_DIM,
                 obj_num_types=OBJECT_NUM_TYPES,
                 object_token_dropout=self.object_token_dropout,
+                object_encoder_type=self.object_encoder_type,
+                static_speed_threshold=self.static_speed_threshold,
             )
         elif self.dit_type == "small":
             cfg = make_recogdrive_config(
@@ -188,6 +196,8 @@ class ReCogDriveAgent(AbstractAgent):
                 obj_feature_dim=OBJECT_FEATURE_DIM,
                 obj_num_types=OBJECT_NUM_TYPES,
                 object_token_dropout=self.object_token_dropout,
+                object_encoder_type=self.object_encoder_type,
+                static_speed_threshold=self.static_speed_threshold,
             )
 
         cfg.vlm_size = self.vlm_size
@@ -248,12 +258,21 @@ class ReCogDriveAgent(AbstractAgent):
             )
 
         if self.use_object_vector:
-            builders.append(ObjectVectorFeatureBuilder(
-                max_obj_tokens=self.max_obj_tokens,
-                obj_range_x=self.obj_range_x,
-                obj_range_y=self.obj_range_y,
-                include_static=self.include_static_objects,
-            ))
+            if self.object_encoder_type == "temporal":
+                builders.append(ObjectTemporalFeatureBuilder(
+                    max_obj_tokens=self.max_obj_tokens,
+                    obj_range_x=self.obj_range_x,
+                    obj_range_y=self.obj_range_y,
+                    include_static=self.include_static_objects,
+                    static_speed_threshold=self.static_speed_threshold,
+                ))
+            else:
+                builders.append(ObjectVectorFeatureBuilder(
+                    max_obj_tokens=self.max_obj_tokens,
+                    obj_range_x=self.obj_range_x,
+                    obj_range_y=self.obj_range_y,
+                    include_static=self.include_static_objects,
+                ))
         return builders
 
     def _build_action_inputs(
@@ -359,6 +378,10 @@ class ReCogDriveAgent(AbstractAgent):
                 "obj_type": features["obj_type"].long(),
                 "obj_valid_mask": features["obj_valid_mask"].bool(),
             }
+            # temporal 编码器额外注入差分序列与动静标记
+            if self.object_encoder_type == "temporal" and "obj_diff_features" in features:
+                obj_data["obj_diff_features"] = features["obj_diff_features"].to(model_dtype)
+                obj_data["obj_is_dynamic"] = features["obj_is_dynamic"].bool()
 
         if self.training and not self.grpo:    # Planner.forward 训练
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
@@ -544,6 +567,9 @@ def make_recogdrive_config(
     obj_feature_dim: int = OBJECT_FEATURE_DIM,
     obj_num_types: int = OBJECT_NUM_TYPES,
     object_token_dropout: float = 0.1,
+    object_encoder_type: str = "mlp",
+    obj_temporal_dim: int = 128,
+    static_speed_threshold: float = 0.5,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -603,6 +629,9 @@ def make_recogdrive_config(
         obj_feature_dim=obj_feature_dim,
         obj_num_types=obj_num_types,
         object_token_dropout=object_token_dropout,
+        object_encoder_type=object_encoder_type,
+        obj_temporal_dim=obj_temporal_dim,
+        static_speed_threshold=static_speed_threshold,
     )
 
     return config

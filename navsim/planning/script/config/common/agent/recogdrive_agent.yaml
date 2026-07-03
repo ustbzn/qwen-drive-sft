@@ -48,6 +48,11 @@ obj_range_x: [-20.0, 100.0]
 obj_range_y: [-40.0, 40.0]
 include_static_objects: false
 object_token_dropout: 0.1
+# obj 编码器类型: mlp=单帧几何(ObjectEncoder); temporal=差分+时序FPN+静态MLP(TemporalObjectEncoder)。
+# 切 temporal 需重跑 obj 缓存(get_unique_name -> object_temporal_feature_v1)，且全链路一致。
+object_encoder_type: mlp
+# 动/静划分阈值(m/s)：当前帧地速 < 阈值判为静态(纯几何约束)，>= 判为动态(几何+运动意图)。
+static_speed_threshold: 0.5
 grpo: False
 # Step 3 (optional): tighten the behavior-cloning anchor. Defaults reproduce the
 # Step 1+2 RL run. Override from the RL script, e.g.
