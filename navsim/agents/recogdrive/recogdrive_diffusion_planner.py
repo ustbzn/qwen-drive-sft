@@ -313,6 +313,8 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     use_hdmap_vector: bool = False
     max_map_tokens: int = 128
     map_sample_points: int = 20
+    # 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数/缓存均不变。
+    use_lane_boundaries: bool = False
     num_map_polygon_types: int = 3
     num_map_tl_states: int = 4
 
@@ -394,6 +396,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             hidden_size=config.input_embedding_dim,
             num_polygon_types=config.num_map_polygon_types,
             num_tl_states=config.num_map_tl_states,
+            use_lane_boundaries=config.use_lane_boundaries,
         ) if config.use_hdmap_vector else None
 
         # 障碍物编码器：把 obj 特征编成 context token，拼到 vl_context_tokens 后面。

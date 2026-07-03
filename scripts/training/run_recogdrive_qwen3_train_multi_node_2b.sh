@@ -54,6 +54,7 @@ torchrun \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
+  agent.use_lane_boundaries=true \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \

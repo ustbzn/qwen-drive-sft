@@ -8,6 +8,7 @@ from navsim.common.dataclasses import Scene, SensorConfig
 from navsim.agents.recogdrive import recogdrive_features
 from navsim.agents.recogdrive.recogdrive_agent import make_recogdrive_config
 from navsim.agents.recogdrive.recogdrive_backbone import load_qwen3_processor, system_message
+from navsim.agents.recogdrive.hdmap_vector_encoder import MapEncoder
 from navsim.agents.recogdrive.recogdrive_diffusion_planner import ReCogDriveDiffusionPlanner
 from navsim.agents.recogdrive.recogdrive_features import ReCogDriveFeatureBuilder, select_hidden_state
 
@@ -161,3 +162,76 @@ def test_mogo_scene_can_be_built_without_nuplan_map_for_training_cache():
     assert scene.scene_metadata.map_name == "las_vegas"
     assert scene.map_api is None
     assert scene.frames[0].lidar.lidar_pc is None
+
+
+def _random_map_inputs(batch_size=2, max_map_tokens=4, sample_points=10, num_valid=3):
+    """构造 MapEncoder.forward 所需的随机 HDMap 张量；前 num_valid 个 polygon 有效，其余为 padding（三线置零）。"""
+    B, M, P = batch_size, max_map_tokens, sample_points
+    point_position = torch.randn(B, M, 3, P, 2)
+    point_vector = torch.randn(B, M, 3, P, 2)
+    point_orientation = torch.randn(B, M, 3, P)
+    point_valid_mask = torch.zeros(B, M, P)
+    point_valid_mask[:, :num_valid] = 1.0
+    map_valid_mask = torch.zeros(B, M)
+    map_valid_mask[:, :num_valid] = 1.0
+    # padding polygon 三线几何置零，贴近 HDMapVectorFeatureBuilder._empty_feature_dict 的行为
+    point_position[:, num_valid:] = 0.0
+    point_vector[:, num_valid:] = 0.0
+    point_orientation[:, num_valid:] = 0.0
+    return dict(
+        point_position=point_position,
+        point_vector=point_vector,
+        point_orientation=point_orientation,
+        polygon_type=torch.randint(0, 3, (B, M)),
+        polygon_on_route=torch.randint(0, 2, (B, M)),
+        polygon_tl_status=torch.randint(0, 4, (B, M)),
+        polygon_has_speed_limit=torch.randint(0, 2, (B, M)).bool(),
+        polygon_speed_limit=torch.randn(B, M).abs(),
+        point_valid_mask=point_valid_mask,
+        map_valid_mask=map_valid_mask,
+    )
+
+
+def test_map_encoder_boundaries_disabled_keeps_centerline_only():
+    encoder = MapEncoder(hidden_size=32, use_lane_boundaries=False)
+    assert encoder.centerline_encoder.point_mlp[0].in_features == 6
+
+    inputs = _random_map_inputs()
+    tokens = encoder(**inputs)
+
+    B, M = inputs["map_valid_mask"].shape
+    assert tokens.shape == (B, M, 32)
+    # 无效（padding）polygon 的 token 必须严格为 0
+    assert torch.count_nonzero(tokens[inputs["map_valid_mask"] == 0]) == 0
+
+
+def test_map_encoder_boundaries_enabled_widens_input_and_runs():
+    encoder = MapEncoder(hidden_size=32, use_lane_boundaries=True)
+    # 中心线 6 维 + 左右边界几何 7 维 = 13
+    assert encoder.centerline_encoder.point_mlp[0].in_features == 13
+
+    inputs = _random_map_inputs()
+    tokens = encoder(**inputs)
+
+    B, M = inputs["map_valid_mask"].shape
+    assert tokens.shape == (B, M, 32)
+    assert torch.isfinite(tokens).all()
+    # 边界特征不改变 mask 语义：padding polygon 仍严格置零
+    assert torch.count_nonzero(tokens[inputs["map_valid_mask"] == 0]) == 0
+
+
+def test_make_recogdrive_config_accepts_use_lane_boundaries():
+    config = make_recogdrive_config(
+        "small",
+        action_dim=3,
+        action_horizon=8,
+        input_embedding_dim=384,
+        vl_hidden_dim=2048,
+        use_hdmap_vector=True,
+        use_lane_boundaries=True,
+    )
+    assert config.use_lane_boundaries is True
+
+    planner = ReCogDriveDiffusionPlanner(config)
+    assert planner.map_encoder is not None
+    assert planner.map_encoder.centerline_encoder.point_mlp[0].in_features == 13

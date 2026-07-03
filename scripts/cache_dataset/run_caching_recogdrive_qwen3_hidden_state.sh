@@ -59,6 +59,7 @@ torchrun \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.use_hdmap_vector=true \
+  agent.use_lane_boundaries=true \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
   train_test_split="${TRAIN_TEST_SPLIT}" \

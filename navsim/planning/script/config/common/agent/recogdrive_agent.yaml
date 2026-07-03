@@ -65,3 +65,6 @@ max_map_tokens: 128
 map_sample_points: 20
 hdmap_radius: 120.0
 strict_hdmap_vector: false
+# 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数不变、缓存无需重跑；
+# 但新增 centerline_encoder 权重，须重训 IL（旧 ckpt 该层随机初始化），RL/eval 换用新 IL 产物。
+use_lane_boundaries: false

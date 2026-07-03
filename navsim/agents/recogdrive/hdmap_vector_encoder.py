@@ -35,9 +35,13 @@ class MapEncoder(nn.Module):
         hidden_size: int,
         num_polygon_types: int = 3,
         num_tl_states: int = 4,
+        use_lane_boundaries: bool = False,
     ) -> None:
         super().__init__()
-        self.centerline_encoder = PointsEncoder(input_dim=6, hidden_size=hidden_size)
+        self.use_lane_boundaries = bool(use_lane_boundaries)
+        # 中心线 per-point 6 维 [pos(2), vec(2), sinθ, cosθ]；开启车道边界再拼 7 维边界几何 -> 13 维。
+        point_input_dim = 13 if self.use_lane_boundaries else 6
+        self.centerline_encoder = PointsEncoder(input_dim=point_input_dim, hidden_size=hidden_size)
         self.type_embedding = nn.Embedding(num_polygon_types, hidden_size)
         self.route_embedding = nn.Embedding(2, hidden_size)
         self.tl_embedding = nn.Embedding(num_tl_states, hidden_size)
@@ -78,6 +82,13 @@ class MapEncoder(nn.Module):
             dim=-1,
         )
 
+        # 开启车道边界：追加左右边界显式横向几何（7 维），拼到中心线 per-point 特征后 -> 13 维。
+        if self.use_lane_boundaries:
+            boundary_features = self._boundary_point_features(
+                point_position, center_position, center_orientation
+            )
+            point_features = torch.cat([point_features, boundary_features], dim=-1)
+
         flattened_points = point_features.reshape(batch_size * max_map_tokens, sample_points, -1)
         flattened_mask = point_valid_mask.reshape(batch_size * max_map_tokens, sample_points)
         polyline_tokens = self.centerline_encoder(flattened_points, flattened_mask)
@@ -100,3 +111,32 @@ class MapEncoder(nn.Module):
         )
         tokens = self.output_norm(tokens)
         return tokens * map_valid_mask.to(dtype=tokens.dtype).unsqueeze(-1)
+
+    def _boundary_point_features(
+        self,
+        point_position: torch.Tensor,
+        center_position: torch.Tensor,
+        center_orientation: torch.Tensor,
+    ) -> torch.Tensor:
+        """从左右边界采样点算显式横向几何，返回 (B, M, P, 7)。
+
+        left/right 与 center 同 index（各自按弧长重采样到 P），逐点作差即得横向走廊几何：
+        左/右边界相对中心的偏移(4) + 车道宽(1) + 到左/右边界的带符号横向距离(2)。
+        padding polygon 三线全 0 -> 输出全 0，末端再乘 map_valid_mask 置零；
+        fallback(±1.75m 合成) 宽恒 3.5m、对称，作为中性先验可接受。
+        """
+        dtype = center_position.dtype
+        left_position = point_position[:, :, 1].to(dtype=dtype)
+        right_position = point_position[:, :, 2].to(dtype=dtype)
+        left_offset = left_position - center_position                              # (B,M,P,2)
+        right_offset = right_position - center_position                            # (B,M,P,2)
+        lane_width = (left_position - right_position).norm(dim=-1, keepdim=True)   # (B,M,P,1)
+        # 中心线单位法向 n = (-sinθc, cosθc)，把偏移投影成带符号横向距离（左正右负与朝向无关）。
+        normal = torch.stack(
+            [-torch.sin(center_orientation), torch.cos(center_orientation)], dim=-1
+        )                                                                          # (B,M,P,2)
+        signed_left = (left_offset * normal).sum(dim=-1, keepdim=True)             # (B,M,P,1)
+        signed_right = (right_offset * normal).sum(dim=-1, keepdim=True)           # (B,M,P,1)
+        return torch.cat(
+            [left_offset, right_offset, lane_width, signed_left, signed_right], dim=-1
+        )                                                                          # (B,M,P,7)
