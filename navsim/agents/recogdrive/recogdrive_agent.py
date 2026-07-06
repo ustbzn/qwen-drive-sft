@@ -29,6 +29,7 @@ from .object_vector_features import (
     OBJECT_NUM_TYPES,
 )
 from .object_temporal_features import ObjectTemporalFeatureBuilder
+from .front_image_features import FrontImageFeatureBuilder
 from .recogdrive_backbone import RecogDriveBackbone
 from .recogdrive_view_utils import (
     collect_view_frame_paths,
@@ -89,6 +90,15 @@ class ReCogDriveAgent(AbstractAgent):
         ego_status_encoder_type: str = 'mlp',
         ego_state_dropout: float = 0.75,
         ego_num_command_states: int = 4,
+        use_image_encoder: bool = False,
+        image_encoder_arch: str = "resnet34",
+        image_encoder_pretrained: bool = True,
+        image_height: int = 256,
+        image_width: int = 704,
+        image_grid_h: int = 8,
+        image_grid_w: int = 16,
+        image_token_dropout: float = 0.0,
+        image_view: str = "cam_f0",
     ):
         super().__init__(requires_scene=bool(use_object_vector))
         self._trajectory_sampling = trajectory_sampling
@@ -141,6 +151,18 @@ class ReCogDriveAgent(AbstractAgent):
         self.ego_status_encoder_type = str(ego_status_encoder_type)
         self.ego_state_dropout = float(ego_state_dropout)
         self.ego_num_command_states = int(ego_num_command_states)
+        # 前视图像 ResNet encoder（默认关闭，零影响；实验用）。图像从 agent_input.cameras
+        # 当前帧取，不依赖 Scene，故不改 requires_scene。开启需全链路（缓存/IL/RL/eval）一致，
+        # 并重跑 hidden-state 缓存补出 front_image_feature_*.gz（VLM 不重算）。
+        self.use_image_encoder = bool(use_image_encoder)
+        self.image_encoder_arch = str(image_encoder_arch)
+        self.image_encoder_pretrained = bool(image_encoder_pretrained)
+        self.image_height = int(image_height)
+        self.image_width = int(image_width)
+        self.image_grid_h = int(image_grid_h)
+        self.image_grid_w = int(image_grid_w)
+        self.image_token_dropout = float(image_token_dropout)
+        self.image_view = str(image_view)
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -194,6 +216,12 @@ class ReCogDriveAgent(AbstractAgent):
                 ego_status_encoder_type=self.ego_status_encoder_type,
                 ego_state_dropout=self.ego_state_dropout,
                 ego_num_command_states=self.ego_num_command_states,
+                use_image_encoder=self.use_image_encoder,
+                image_encoder_arch=self.image_encoder_arch,
+                image_encoder_pretrained=self.image_encoder_pretrained,
+                image_grid_h=self.image_grid_h,
+                image_grid_w=self.image_grid_w,
+                image_token_dropout=self.image_token_dropout,
             )
         elif self.dit_type == "small":
             cfg = make_recogdrive_config(
@@ -218,6 +246,12 @@ class ReCogDriveAgent(AbstractAgent):
                 ego_status_encoder_type=self.ego_status_encoder_type,
                 ego_state_dropout=self.ego_state_dropout,
                 ego_num_command_states=self.ego_num_command_states,
+                use_image_encoder=self.use_image_encoder,
+                image_encoder_arch=self.image_encoder_arch,
+                image_encoder_pretrained=self.image_encoder_pretrained,
+                image_grid_h=self.image_grid_h,
+                image_grid_w=self.image_grid_w,
+                image_token_dropout=self.image_token_dropout,
             )
 
         cfg.vlm_size = self.vlm_size
@@ -293,6 +327,13 @@ class ReCogDriveAgent(AbstractAgent):
                     obj_range_y=self.obj_range_y,
                     include_static=self.include_static_objects,
                 ))
+
+        if self.use_image_encoder:
+            builders.append(FrontImageFeatureBuilder(
+                image_height=self.image_height,
+                image_width=self.image_width,
+                view=self.image_view,
+            ))
         return builders
 
     def _build_action_inputs(
@@ -403,23 +444,38 @@ class ReCogDriveAgent(AbstractAgent):
                 obj_data["obj_diff_features"] = features["obj_diff_features"].to(model_dtype)
                 obj_data["obj_is_dynamic"] = features["obj_is_dynamic"].bool()
 
+        # 前视图像字段（启用图像 encoder 且 features 里带图时才注入）。front_image 保持 uint8
+        # （ImageEncoder 内部转 float + 归一化，省显存/带宽）；front_image_valid 为 bool。
+        img_data: Dict[str, torch.Tensor] = {}
+        if self.use_image_encoder and "front_image" in features:
+            img_data = {
+                "front_image": features["front_image"],
+                "front_image_valid": features["front_image_valid"].bool(),
+            }
+
         if self.training and not self.grpo:    # Planner.forward 训练
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
             # 合并 obj_data 到 action_inputs
             if obj_data:
                 action_inputs.data.update(obj_data)
+            if img_data:
+                action_inputs.data.update(img_data)
             return self.action_head(first_hidden_state, last_hidden_state, action_inputs)
         elif self.training and self.grpo: # GRPO 训练
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
             # 合并 obj_data 到 action_inputs
             if obj_data:
                 action_inputs.data.update(obj_data)
+            if img_data:
+                action_inputs.data.update(img_data)
             return self.action_head.forward_grpo(first_hidden_state, last_hidden_state, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道"这个样本对应哪个场景/片段"的 token，用 token 去加载对应的 metric cache
         else:    # 推理，无 action
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype)
             # 合并 obj_data 到 action_inputs
             if obj_data:
                 action_inputs.data.update(obj_data)
+            if img_data:
+                action_inputs.data.update(img_data)
             return self.action_head.get_action(first_hidden_state, last_hidden_state, action_inputs)
 
     def _is_online_backbone(self) -> bool:
@@ -594,6 +650,12 @@ def make_recogdrive_config(
     ego_status_encoder_type: str = 'mlp',
     ego_state_dropout: float = 0.75,
     ego_num_command_states: int = 4,
+    use_image_encoder: bool = False,
+    image_encoder_arch: str = "resnet34",
+    image_encoder_pretrained: bool = True,
+    image_grid_h: int = 8,
+    image_grid_w: int = 16,
+    image_token_dropout: float = 0.0,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -660,6 +722,12 @@ def make_recogdrive_config(
         ego_status_encoder_type=ego_status_encoder_type,
         ego_state_dropout=ego_state_dropout,
         ego_num_command_states=ego_num_command_states,
+        use_image_encoder=use_image_encoder,
+        image_encoder_arch=image_encoder_arch,
+        image_encoder_pretrained=image_encoder_pretrained,
+        image_grid_h=image_grid_h,
+        image_grid_w=image_grid_w,
+        image_token_dropout=image_token_dropout,
     )
 
     return config

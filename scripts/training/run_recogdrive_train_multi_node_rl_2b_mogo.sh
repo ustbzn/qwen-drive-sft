@@ -19,9 +19,8 @@ export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 # Update CHECKPOINT to the HDMap IL run after training completes.
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_obj_vlmzero_IL/2026.06.30.14.39.02/lightning_logs/version_0/checkpoints/epoch=197-step=5346.ckpt}"
-GPUS="${GPUS:-4}"
-MASTER_PORT="${MASTER_PORT:-9696}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_IL/2026.07.03.09.55.12/lightning_logs/version_0/checkpoints/epoch=192-step=5211.ckpt}"
+MASTER_PORT="${MASTER_PORT:-9675}"
 PORT=${PORT:-63665}
 GPUS=${GPUS:-8}
 GPUS_PER_NODE=${GPUS_PER_NODE:-$GPUS}
@@ -30,7 +29,11 @@ export MASTER_PORT=${MASTER_PORT}
 export PORT=${PORT}
 export CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
 export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
-export USE_OBJECT_VECTOR=true
+export USE_OBJECT_VECTOR=false
+# 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。开启需与 IL 缓存端一致，且
+# CHECKPOINT / reference_policy_checkpoint 必须来自带 image_encoder 的 IL 训练
+# （_init_grpo strict=True，缺 image_encoder.* 会报缺键）。常与 vlm_ablation=zero 组合实验。
+export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。与 vlm_ablation 正交；IL/RL/eval 必须一致，
 # 且 CHECKPOINT/reference_policy_checkpoint 须来自同类型 IL(_init_grpo 对 ego_status_encoder 结构敏感)。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
@@ -56,6 +59,22 @@ if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   )
 fi
 
+# --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。CHECKPOINT 须来自带 image_encoder 的 IL。---
+IMG_ARGS=()
+if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+  IMG_ARGS=(
+    agent.use_image_encoder=true
+    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}"
+    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-true}"
+    agent.image_height="${IMAGE_HEIGHT:-256}"
+    agent.image_width="${IMAGE_WIDTH:-704}"
+    agent.image_grid_h="${IMAGE_GRID_H:-8}"
+    agent.image_grid_w="${IMAGE_GRID_W:-16}"
+    agent.image_token_dropout="${IMAGE_TOKEN_DROPOUT:-0.0}"
+    agent.image_view="${IMAGE_VIEW:-cam_f0}"
+  )
+fi
+
 torchrun \
   --nnodes=1 \
   --node_rank="${MLP_ROLE_INDEX:-0}" \
@@ -76,8 +95,8 @@ torchrun \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  agent.use_hdmap_vector=true \
-  agent.use_lane_boundaries=true \
+  agent.use_hdmap_vector=false \
+  agent.use_lane_boundaries=false \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.3}" \
   agent.metric_cache_path="${METRIC_CACHE_PATH}" \
@@ -91,11 +110,11 @@ torchrun \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \
-  train_token_whitelist_path=navsim/local_config/data_selection/rl_grpo_n4000_selected_tokens_v1.txt \
+  train_token_whitelist_path=navsim/local_config/data_selection/rl_grpo_20260706_n4000_selected_tokens_v1.txt \
   cache_path="${CACHE_PATH}" \
   use_cache_without_dataset=True \
   force_cache_computation=False \
-  "${OBJ_ARGS[@]}" > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
+  "${OBJ_ARGS[@]}" "${IMG_ARGS[@]}" > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
 
 python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
 

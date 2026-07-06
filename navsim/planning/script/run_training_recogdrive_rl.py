@@ -15,6 +15,7 @@ from navsim.common.dataloader import SceneLoader
 from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
 from navsim.planning.training.agent_lightning_module import AgentLightningModule, AgentLightningDiT
 from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
+from navsim.agents.recogdrive.front_image_features import collate_front_image_features
 from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 import torch
 import torch.nn.utils.rnn as rnn_utils
@@ -71,6 +72,9 @@ def custom_collate_fn(
         if "obj_diff_features" in features_list[0]:
             features["obj_diff_features"] = torch.stack([f["obj_diff_features"] for f in features_list], dim=0).cpu()
             features["obj_is_dynamic"] = torch.stack([f["obj_is_dynamic"] for f in features_list], dim=0).cpu()
+
+    # 前视图像字段（固定形状 uint8，直接 stack）。GRPO 时 forward_grpo 会按 G 复制这些字段。
+    collate_front_image_features(features, features_list)
 
     targets = {
         'trajectory': trajectory

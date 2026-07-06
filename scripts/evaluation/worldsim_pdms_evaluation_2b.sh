@@ -17,10 +17,11 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export USE_OBJECT_VECTOR=true
+export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_obj_vlmzero_RL/2026.07.01.03.42.32/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-CHECKPOINT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_obj_vlmzero_RL/2026.07.01.03.42.32/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt"
+CHECKPOINT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
@@ -33,6 +34,8 @@ MASTER_PORT="${MASTER_PORT:-9675}"
 if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   set -- \
     agent.use_object_vector=true \
+    agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" \
+    agent.static_speed_threshold="${STATIC_SPEED_THRESHOLD:-0.5}" \
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
     agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
@@ -60,9 +63,12 @@ torchrun \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
+  agent.use_lane_boundaries=true \
+  agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
+  agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.3}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
-  experiment_name=recogdrive_vlmzero_obj_ddim_RL_eval \
+  experiment_name=worldsim_ego_SDE_obj_hdmap_IL_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

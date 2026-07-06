@@ -79,3 +79,20 @@ strict_hdmap_vector: false
 # 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数不变、缓存无需重跑；
 # 但新增 centerline_encoder 权重，须重训 IL（旧 ckpt 该层随机初始化），RL/eval 换用新 IL 产物。
 use_lane_boundaries: false
+# --- 前视图像 ResNet encoder token（默认关闭，等价当前流程，零影响；仅实验用）---
+# 目的：vlm_ablation=zero 屏蔽 VLM 语义 token 的同时，仍通过独立可训练 ResNet 向 DiT 注入
+# 前视图像视觉信息。图像从 agent_input 当前帧 cam_f0 取，编成空间 token 拼到 vl_context_tokens
+# 后进 DiT cross-attention（与 obj/hdmap token 并列）。与 vlm_ablation 正交（zero 下图像 token 保留）。
+# 开启需在全链路（缓存/IL/RL/eval）一致设 use_image_encoder=true，并重跑 hidden-state 缓存补出
+# front_image_feature_v1_cam_f0_{H}x{W}.gz（VLM 不重算；CacheOnlyDataset 缺该 .gz 会静默丢样本）。
+# ckpt 不可移植：旧 IL ckpt 无 ResNet，加载进带 encoder 的 agent 时该层被 strict=False 丢成随机
+# 初始化，故须重训 IL，RL/eval 用新 IL 产物。缓存 uint8 图像，磁盘按 token 数量级增长（见评估）。
+use_image_encoder: false
+image_encoder_arch: resnet34   # timm features_only 主干；无网络时自动退化到随机初始化
+image_encoder_pretrained: true
+image_height: 256              # 缓存 resize 目标高（H）
+image_width: 704               # 缓存 resize 目标宽（W）
+image_grid_h: 8                # ResNet 特征图自适应池化到的 token 网格高
+image_grid_w: 16               # 网格宽；图像 token 数 = grid_h*grid_w（默认 128）
+image_token_dropout: 0.0       # 训练期图像 token 随机丢弃概率（GRPO 时强制 eval 关闭）
+image_view: cam_f0             # 取图相机字段名

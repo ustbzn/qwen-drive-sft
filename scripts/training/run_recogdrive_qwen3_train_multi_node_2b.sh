@@ -16,6 +16,10 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export USE_OBJECT_VECTOR=true
+# 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。开启需与缓存端一致，且
+# CACHE_PATH 必须已带 front_image_feature_*.gz，否则 CacheOnlyDataset 静默丢样本。
+# 典型实验：与 agent.vlm_ablation=zero 组合 —— 屏蔽 VLM 语义、保留前视图像视觉信息。
+export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 # 自车状态编码器：mlp(默认，零影响) | attention(SDE，训练时随机遮蔽运动学量以抑制外推捷径)。
 # 与 vlm_ablation 正交(none/zero 均生效)。IL/RL/eval 必须三处一致，否则 ckpt 加载错配
 # (attention 层被 initialize() strict=False 丢成随机初始化)。
@@ -37,6 +41,21 @@ if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
     agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
+    "$@"
+fi
+
+# --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。开启需 CACHE_PATH 已带前视图 .gz。---
+if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+  set -- \
+    agent.use_image_encoder=true \
+    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}" \
+    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-true}" \
+    agent.image_height="${IMAGE_HEIGHT:-256}" \
+    agent.image_width="${IMAGE_WIDTH:-704}" \
+    agent.image_grid_h="${IMAGE_GRID_H:-8}" \
+    agent.image_grid_w="${IMAGE_GRID_W:-16}" \
+    agent.image_token_dropout="${IMAGE_TOKEN_DROPOUT:-0.0}" \
+    agent.image_view="${IMAGE_VIEW:-cam_f0}" \
     "$@"
 fi
 

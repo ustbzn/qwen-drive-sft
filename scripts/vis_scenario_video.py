@@ -45,7 +45,7 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_agent_IL/2026.06.11.13.28.50/lightning_logs/version_0/checkpoints/epoch=188-step=13986.ckpt",
+    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_ego_SDE_obj_hdmap_IL/2026.07.05.12.23.59/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt",
     "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_obj_RL/2026.06.30.06.19.52/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
@@ -251,8 +251,12 @@ def generate_videos_for_tokens(
             vlm_size="small",
             grpo=False,
             vlm_ablation="none",          # 对齐 RL/eval
-            use_hdmap_vector=False,        # 对齐 RL/eval
+            ego_status_encoder_type="attention",  # 对齐 RL/eval
+            use_hdmap_vector=True,        # 对齐 RL/eval
+            use_lane_boundaries=True,    # 对齐 RL/eval
             use_object_vector=True,       # 对齐 RL/eval → requires_scene=True
+            object_encoder_type="temporal",
+            static_speed_threshold=0.5,
             max_obj_tokens=64,
             include_static_objects=False,
             object_token_dropout=0.1,
@@ -279,8 +283,8 @@ def main():
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为视频")
     parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
     parser.add_argument("--token", nargs="+", default=None, help="anchor scenario token（可传多个）")
-    parser.add_argument("--model", choices=["il", "rl", "both"], default="rl", help="IL / RL / 两者")
-    parser.add_argument("--output-dir", default="vis_output/videos/obj_shworldsim", help="视频输出目录")
+    parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
+    parser.add_argument("--output-dir", default="vis_output/videos/qwen3_ego_hdmap_obj_shworldsim", help="视频输出目录")
     parser.add_argument("--frames-dir", default="vis_output/video_frames", help="中间帧目录")
     parser.add_argument("--window", type=int, default=30, help="anchor 前后各取多少帧")
     parser.add_argument("--full-log", action="store_true", help="渲染整条 log（较慢）")

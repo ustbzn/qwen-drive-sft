@@ -106,6 +106,103 @@ class ObjectEncoder(nn.Module):
         return tokens * mask
 
 
+class ImageEncoder(nn.Module):
+    """前视图像 ResNet 编码器（实验用，use_image_encoder）。
+
+    把当前帧前视图编成一组空间 context token，与 VLM / obj / hdmap token 并列进 DiT
+    cross-attention。用于在 vlm_ablation=zero（屏蔽 VLM 语义 token）时仍向规划器注入
+    图像视觉信息。参考 DiffusionDriveV2 的 ResNet->flatten->pos_embed pattern。
+
+    uint8 (B,3,H,W) -> /255 -> ImageNet 标准化 -> timm ResNet features_only 末层特征图
+      -> 1x1 conv 投到 embed_dim -> AdaptiveAvgPool2d(grid) 固定 token 数
+      -> flatten HxW -> + 可学习位置嵌入 -> LayerNorm。
+
+    token 数 = grid_h*grid_w，与输入分辨率解耦（adaptive pool），故位置嵌入尺寸固定。
+    有效位（front_image_valid=False，缺图占位）对应样本的全部 token 被 mask 置零并在
+    cross-attention 里忽略，与 ObjectEncoder 的 valid_mask 行为一致。
+
+    dtype：训练走 16-mixed autocast（模块参数 fp32，BN 由 autocast 保持 fp32），无需手动
+    半精度；输出在 build_context_tokens 里 .to(vl_context_tokens.dtype) 后再拼接。
+    GRPO 时必须切 eval（见 forward_grpo）关掉 token_dropout，保证 rollout/logprob 一致。
+    """
+
+    # ImageNet 归一化常量（timm 预训练权重按此统计量训练）
+    _PIXEL_MEAN = (0.485, 0.456, 0.406)
+    _PIXEL_STD = (0.229, 0.224, 0.225)
+
+    def __init__(
+        self,
+        embed_dim: int,
+        arch: str = "resnet34",
+        pretrained: bool = True,
+        grid_h: int = 8,
+        grid_w: int = 16,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        import timm
+
+        # features_only 取各 stage 特征图，out_indices=末层。预训练下载失败（无网络）时
+        # 退化到随机初始化（features_only 仍可用），避免整个流程崩，仅打印告警。
+        try:
+            self.backbone = timm.create_model(
+                arch, pretrained=pretrained, features_only=True
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "ImageEncoder: timm.create_model(%s, pretrained=%s) failed (%s); "
+                "falling back to pretrained=False (random init).",
+                arch, pretrained, e,
+            )
+            self.backbone = timm.create_model(arch, pretrained=False, features_only=True)
+
+        feat_ch = int(self.backbone.feature_info.channels()[-1])
+        self.proj = nn.Conv2d(feat_ch, embed_dim, kernel_size=1)
+        self.pool = nn.AdaptiveAvgPool2d((int(grid_h), int(grid_w)))
+        self.num_tokens = int(grid_h) * int(grid_w)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_tokens, embed_dim))
+        nn.init.normal_(self.pos_embed, std=0.02)
+        self.output_norm = nn.LayerNorm(embed_dim)
+        self.token_dropout = float(dropout)
+
+        self.register_buffer(
+            "pixel_mean", torch.tensor(self._PIXEL_MEAN).view(1, 3, 1, 1), persistent=False
+        )
+        self.register_buffer(
+            "pixel_std", torch.tensor(self._PIXEL_STD).view(1, 3, 1, 1), persistent=False
+        )
+
+    def forward(
+        self,
+        image: torch.Tensor,
+        image_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """:param image: [B,3,H,W] uint8 或 float；:param image_valid: [B] bool。
+        :return: (tokens [B,N,embed_dim], keep_mask [B,N] bool)，无效 / dropped token 全 0。
+        """
+        B = image.shape[0]
+        # uint8/[0,255] -> [0,1]；已是 [0,1] float 则不重复缩放
+        x = image.float()
+        if x.dtype == torch.float32 and x.max() > 1.5:
+            x = x / 255.0
+        elif image.dtype == torch.uint8:
+            x = x / 255.0
+        x = (x - self.pixel_mean) / self.pixel_std
+
+        feat = self.backbone(x)[-1]          # [B, C, H', W']
+        feat = self.proj(feat)               # [B, embed_dim, H', W']
+        feat = self.pool(feat)               # [B, embed_dim, grid_h, grid_w]
+        tokens = feat.flatten(2).transpose(1, 2)  # [B, N, embed_dim]
+        tokens = self.output_norm(tokens + self.pos_embed.to(tokens.dtype))
+
+        keep = image_valid.bool().unsqueeze(-1).expand(B, self.num_tokens)  # [B, N]
+        if self.training and self.token_dropout > 0.0:
+            drop = torch.rand(B, self.num_tokens, device=tokens.device) >= self.token_dropout
+            keep = keep & drop
+        tokens = tokens * keep.unsqueeze(-1).to(tokens.dtype)
+        return tokens, keep
+
+
 class TemporalPyramidEncoder(nn.Module):
     """短序列时序金字塔（纯 PyTorch Conv1d 版时序 FPN，不依赖 natten）。
 
@@ -343,6 +440,17 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     obj_temporal_dim: int = 128           # 时序金字塔内部维
     static_speed_threshold: float = 0.5   # 动/静划分阈值(m/s)，数据侧划分用；此处保留以便配置透传
 
+    # --- 前视图像 ResNet encoder token（默认关闭，零影响；实验用）---
+    # 开启后把当前帧前视图经 ResNet 编成空间 token，拼到 vl_context_tokens 后进 DiT
+    # cross-attention。与 vlm_ablation 正交：vlm_ablation=zero 仅置零 VLM token，图像 token
+    # 保留，从而"屏蔽 VLM 语义、保留图像视觉信息"。需重跑 hidden-state 缓存补 front_image .gz。
+    use_image_encoder: bool = False
+    image_encoder_arch: str = "resnet34"
+    image_encoder_pretrained: bool = True
+    image_grid_h: int = 8                  # ResNet 特征图自适应池化到的 token 网格高
+    image_grid_w: int = 16                 # 网格宽；token 数 = grid_h*grid_w（默认 128）
+    image_token_dropout: float = 0.0       # 训练期图像 token 随机丢弃概率（GRPO 时强制 eval 关闭）
+
     tune_projector: bool = True
     tune_diffusion_model: bool = True
     
@@ -430,6 +538,20 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         else:
             self.object_encoder = None
 
+        # 前视图像 ResNet 编码器（实验用）。同 object_encoder，必须在下方 _init_grpo() 的
+        # deepcopy(self) 之前创建，old_policy 才会带上它，GRPO rollout/logprob 才条件一致。
+        if config.use_image_encoder:
+            self.image_encoder = ImageEncoder(
+                embed_dim=config.input_embedding_dim,
+                arch=config.image_encoder_arch,
+                pretrained=config.image_encoder_pretrained,
+                grid_h=config.image_grid_h,
+                grid_w=config.image_grid_w,
+                dropout=config.image_token_dropout,
+            )
+        else:
+            self.image_encoder = None
+
         output_dim = 2 * config.action_dim if (
             config.sampling_method == 'flow' and config.flow_cfg.mean_variance_net
         ) else config.action_dim
@@ -516,6 +638,30 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             obj_inputs["obj_is_dynamic"] = action_input.obj_is_dynamic
         return obj_inputs
 
+    def _extract_img_inputs(self, action_input: Optional[BatchFeature]) -> Optional[Dict[str, torch.Tensor]]:
+        """从 action_input 取前视图字段；未启用图像 encoder 或字段缺失时返回 None。"""
+        if self.image_encoder is None or action_input is None:
+            return None
+        if "front_image" not in action_input.data:
+            return None
+        return {
+            "front_image": action_input.front_image,
+            "front_image_valid": action_input.front_image_valid,
+        }
+
+    def encode_image_context_tokens(
+        self, action_input: Optional[BatchFeature]
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """编码前视图 context tokens。:return: (tokens [B,N,D], keep_mask [B,N]) 或 (None, None)。"""
+        img_inputs = self._extract_img_inputs(action_input)
+        if img_inputs is None:
+            return None, None
+        tokens, keep = self.image_encoder(
+            img_inputs["front_image"],
+            img_inputs["front_image_valid"],
+        )
+        return tokens, keep
+
     def build_context_tokens(
         self,
         first_hidden_state: torch.Tensor,
@@ -556,6 +702,9 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     obj_inputs["obj_valid_mask"],
                 )
 
+        # 收集前视图 context tokens（实验用）
+        img_context_tokens, img_keep_mask = self.encode_image_context_tokens(action_input)
+
         # 拼接所有 context tokens 和构建 mask
         B, N_vl = vl_context_tokens.shape[0], vl_context_tokens.shape[1]
         context_tokens_list = [vl_context_tokens]
@@ -570,6 +719,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             context_tokens_list.append(obj_context_tokens)
             obj_mask = obj_inputs["obj_valid_mask"].bool().to(device=vl_context_tokens.device)
             mask_list.append(obj_mask)
+
+        if img_context_tokens is not None:
+            context_tokens_list.append(img_context_tokens.to(vl_context_tokens.dtype))
+            mask_list.append(img_keep_mask.bool().to(device=vl_context_tokens.device))
 
         if len(context_tokens_list) > 1:
             vl_context_tokens = torch.cat(context_tokens_list, dim=1)
@@ -761,6 +914,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 self.fusion_projector.eval()
                 if self.object_encoder is not None:
                     self.object_encoder.eval()
+                if self.image_encoder is not None:
+                    self.image_encoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
             
@@ -1393,6 +1548,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         # 让 rollout 与打分用同一份确定的 obj context。对 IL 无影响（IL 不走这里）。
         if self.object_encoder is not None:
             self.object_encoder.eval()
+        # 图像 encoder 的 token_dropout 同理会破坏 rollout/logprob 一致性；GRPO 全程切 eval。
+        # ResNet 的 BatchNorm 在 eval 下用 running stats（而非 batch 统计），rollout 与
+        # logprob 用同一份确定的图像 context，避免两次前向 BN 统计不同导致 mean 漂移。
+        if self.image_encoder is not None:
+            self.image_encoder.eval()
         B = last_hidden_state.shape[0]
         G = sample_time
 
