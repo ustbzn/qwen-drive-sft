@@ -19,15 +19,15 @@ export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export USE_OBJECT_VECTOR=true
 # 自车状态编码器：mlp(默认) | attention(SDE)。eval 时不 dropout(self.training=False)，但类型
 # 必须与训练 ckpt 一致，否则 attention 层被 initialize() strict=False 丢成随机初始化。
-export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-mlp}"
+export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_obj_RL/2026.06.30.06.19.52/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_ego_SDE_obj_hdmap_IL/2026.07.05.12.23.59/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt}"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
-GPUS="${GPUS:-4}"
-MASTER_PORT="${MASTER_PORT:-9696}"
+GPUS="${GPUS:-8}"
+MASTER_PORT="${MASTER_PORT:-9675}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
 # eval 从 GT annotations 取障碍物（方案 A privileged 上限）。CHECKPOINT 必须来自带 obj 的
@@ -35,6 +35,8 @@ MASTER_PORT="${MASTER_PORT:-9696}"
 if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   set -- \
     agent.use_object_vector=true \
+    agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" \
+    agent.static_speed_threshold="${STATIC_SPEED_THRESHOLD:-0.5}" \
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
     agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
@@ -55,19 +57,20 @@ torchrun \
   agent.cam_type=single \
   agent.grpo=False \
   agent.cache_hidden_state=False \
-  agent.vlm_ablation=zero \
   agent.vlm_type=qwen3 \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
+  agent.use_lane_boundaries=true \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
-  experiment_name=recogdrive_qwen3_hdmap_ddim_IL_eval \
+  experiment_name=recogdrive_qwen3_ego_SDE_obj_hdmap_IL_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \
 #   agent.use_video_input=True \
 #   agent.num_frames=4 \
+# agent.vlm_ablation=zero \

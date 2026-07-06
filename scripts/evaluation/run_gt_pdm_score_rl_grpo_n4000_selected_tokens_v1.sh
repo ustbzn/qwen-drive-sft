@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
-DATA_SPLIT="${DATA_SPLIT:-val}"
+DATA_SPLIT="${DATA_SPLIT:-trainval}"
 
 export NUPLAN_MAP_VERSION="${NUPLAN_MAP_VERSION:-nuplan-maps-v1.0}"
 export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${DATA_ROOT}/dataset/maps}"
@@ -15,7 +15,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 GT_TOKEN_PATH="${GT_TOKEN_PATH:-null}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-gt_pdm_score_val}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-gt_pdm_score_trainval}"
 
 python "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_gt.py" \
   train_test_split="${TRAIN_TEST_SPLIT}" \

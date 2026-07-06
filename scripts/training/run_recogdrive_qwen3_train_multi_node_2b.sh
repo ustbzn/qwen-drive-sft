@@ -21,10 +21,10 @@ export USE_OBJECT_VECTOR=true
 # (attention 层被 initialize() strict=False 丢成随机初始化)。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 
-CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_hdmap_cache}"
+CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9675}"
-BATCH_SIZE="${BATCH_SIZE:-320}"
+BATCH_SIZE="${BATCH_SIZE:-160}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启需与缓存端用同样的 obj 配置，
@@ -53,7 +53,6 @@ torchrun \
   agent.vlm_path="${QWEN3_VL_PATH}" \
   agent.cam_type=single \
   agent.cache_hidden_state=True \
-  agent.vlm_ablation=zero \
   agent.vlm_type=qwen3 \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
@@ -66,9 +65,8 @@ torchrun \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
-  trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=training_recogdrive_ego_SDE_IL \
+  experiment_name=training_recogdrive_qwen3_ego_SDE_obj_hdmap_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   '+log_split@_global_=mogo' \
   cache_path="${CACHE_PATH}" \
@@ -82,3 +80,5 @@ python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
 # "agent.view_list=[cam_f0]" \
 #   agent.use_video_input=True \
 #   agent.num_frames=4 \
+# agent.vlm_ablation=zero \
+# trainer.params.strategy=ddp_find_unused_parameters_true \
