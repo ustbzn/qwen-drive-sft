@@ -528,9 +528,29 @@ def build_agent(args, device: torch.device) -> ReCogDriveAgent:
         cache_hidden_state=bool(args.cache_hidden_state),
         vlm_size=str(args.vlm_size),
         grpo=bool(args.grpo),
+        vl_hidden_dim=args.vl_hidden_dim,
         normalize_vl_hidden_states=bool(args.normalize_vl_hidden_states),
         first_hidden_state_index=int(args.first_hidden_state_index),
         last_hidden_state_index=int(args.last_hidden_state_index),
+        # --- 模型架构开关（须与 checkpoint 训练时一致，否则被 strict=False 丢成随机初始化）---
+        use_vlm=bool(args.use_vlm),
+        vlm_ablation=str(args.vlm_ablation),
+        ego_status_encoder_type=str(args.ego_status_encoder_type),
+        use_object_vector=bool(args.use_object_vector),
+        object_encoder_type=str(args.object_encoder_type),
+        max_obj_tokens=int(args.max_obj_tokens),
+        include_static_objects=bool(args.include_static_objects),
+        object_token_dropout=float(args.object_token_dropout),
+        static_speed_threshold=float(args.static_speed_threshold),
+        use_hdmap_vector=bool(args.use_hdmap_vector),
+        use_lane_boundaries=bool(args.use_lane_boundaries),
+        strict_hdmap_vector=bool(args.strict_hdmap_vector),
+        max_map_tokens=int(args.max_map_tokens),
+        map_sample_points=int(args.map_sample_points),
+        hdmap_radius=float(args.hdmap_radius),
+        use_image_encoder=bool(args.use_image_encoder),
+        image_encoder_arch=str(args.image_encoder_arch),
+        image_view=str(args.image_view),
     ).to(device)
     agent.initialize()
     return agent
@@ -732,7 +752,11 @@ def save_vis_for_tokens(
 
             model_trajectory = load_saved_trajectory(metrics.get("trajectory_path"))
             if model_trajectory is None:
-                model_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input())
+                # 传入 scene_traj，使 obj/hdmap builder 能走 compute_features_from_scene；
+                # 对 VLM-only agent（无 scene-aware builder）该参数被忽略，行为不变。
+                model_trajectory = agent.compute_trajectory_vis(
+                    scene_traj.get_agent_input(), scene=scene_traj
+                )
 
             diagnostics: PDMFailureDiagnostics | None = None
             debug_notes: list[str] = []
@@ -930,6 +954,33 @@ def parse_args():
     parser.add_argument("--mogo_map_geometry_srid", type=int, default=4326)
     parser.add_argument("--mogo_map_utm_zone", type=int, default=50)
     parser.add_argument("--mogo_map_utm_south", action="store_true")
+    # --- 模型架构开关（须与 checkpoint 训练时一致；默认对齐 agent yaml 的"全关"VLM-only 配置，
+    #     故不加任何 flag 时行为与旧版一致。换 obj/hdmap/obj-SDE/img/vlm 模型时显式 override）---
+    parser.add_argument("--vl_hidden_dim", type=int, default=None,
+                        help="VLM hidden dim；留空则按 vlm_type 自动推断（qwen3→2048）")
+    parser.add_argument("--use_vlm", action=argparse.BooleanOptionalAction, default=True,
+                        help="--no-use_vlm=完全不加载/不前向 VLM，DiT 只用 obj/hdmap/img token")
+    parser.add_argument("--vlm_ablation", default="none", choices=["none", "zero"])
+    parser.add_argument("--ego_status_encoder_type", default="mlp", choices=["mlp", "attention"],
+                        help="attention=状态丢弃编码器 SDE")
+    # obj token
+    parser.add_argument("--use_object_vector", action="store_true")
+    parser.add_argument("--object_encoder_type", default="mlp", choices=["mlp", "temporal"])
+    parser.add_argument("--max_obj_tokens", type=int, default=64)
+    parser.add_argument("--include_static_objects", action="store_true")
+    parser.add_argument("--object_token_dropout", type=float, default=0.1)
+    parser.add_argument("--static_speed_threshold", type=float, default=0.5)
+    # hdmap token
+    parser.add_argument("--use_hdmap_vector", action="store_true")
+    parser.add_argument("--use_lane_boundaries", action="store_true")
+    parser.add_argument("--strict_hdmap_vector", action="store_true")
+    parser.add_argument("--max_map_tokens", type=int, default=128)
+    parser.add_argument("--map_sample_points", type=int, default=20)
+    parser.add_argument("--hdmap_radius", type=float, default=120.0)
+    # 前视图像 ResNet encoder token
+    parser.add_argument("--use_image_encoder", action="store_true")
+    parser.add_argument("--image_encoder_arch", default="resnet34")
+    parser.add_argument("--image_view", default="cam_f0")
     return parser.parse_args()
 
 

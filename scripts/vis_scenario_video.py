@@ -45,7 +45,7 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_ego_SDE_obj_hdmap_IL/2026.07.05.12.23.59/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt",
+    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt",
     "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_obj_RL/2026.06.30.06.19.52/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
@@ -121,7 +121,14 @@ def render_frames(
     for i, token in enumerate(tqdm(tokens, desc=f"渲染帧 -> {frame_dir.name}")):
         scene = scene_loader.get_scene_from_token(token)
         scene_traj = scene_loader_traj.get_scene_from_token(token)
-        fig, _, _ = plot_bev_and_camera_with_agent(scene, scene_traj, center_idx, agent)
+        agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input(), scene_traj)
+        fig, _, _ = plot_bev_and_camera_with_agent(
+            scene,
+            scene_traj,
+            center_idx,
+            agent,
+            agent_trajectory=agent_trajectory,
+        )
         frame_path = frame_dir / f"{i:05d}_{token}.png"
         fig.savefig(frame_path, bbox_inches="tight", dpi=200)
         plt.close(fig)
@@ -242,24 +249,27 @@ def generate_videos_for_tokens(
             checkpoint_path=CHECKPOINTS[model],
             vlm_path=VLM_PATH,
             cam_type="single",
-            vlm_type="qwen3",
-            vl_hidden_dim=2048,
-            dit_type="small",
-            sampling_method="ddim",
+            vlm_type=str(args.vlm_type),
+            vl_hidden_dim=int(args.vl_hidden_dim),
+            dit_type=str(args.dit_type),
+            sampling_method=str(args.sampling_method),
             cache_mode=False,
             cache_hidden_state=False,
             vlm_size="small",
             grpo=False,
-            vlm_ablation="none",          # 对齐 RL/eval
-            ego_status_encoder_type="attention",  # 对齐 RL/eval
-            use_hdmap_vector=True,        # 对齐 RL/eval
-            use_lane_boundaries=True,    # 对齐 RL/eval
-            use_object_vector=True,       # 对齐 RL/eval → requires_scene=True
-            object_encoder_type="temporal",
-            static_speed_threshold=0.5,
-            max_obj_tokens=64,
-            include_static_objects=False,
-            object_token_dropout=0.1,
+            # 模型架构开关（来自 CLI，默认对齐历史 qwen3 ego-SDE+obj+hdmap 配置）
+            use_vlm=bool(args.use_vlm),
+            vlm_ablation=str(args.vlm_ablation),
+            ego_status_encoder_type=str(args.ego_status_encoder_type),
+            use_hdmap_vector=bool(args.use_hdmap_vector),
+            use_lane_boundaries=bool(args.use_lane_boundaries),
+            use_object_vector=bool(args.use_object_vector),
+            object_encoder_type=str(args.object_encoder_type),
+            static_speed_threshold=float(args.static_speed_threshold),
+            max_obj_tokens=int(args.max_obj_tokens),
+            include_static_objects=bool(args.include_static_objects),
+            object_token_dropout=float(args.object_token_dropout),
+            use_image_encoder=bool(args.use_image_encoder),
         )
         agent.initialize()
 
@@ -279,12 +289,46 @@ def generate_videos_for_tokens(
                 shutil.rmtree(frame_dir)
 
 
+def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
+    """模型架构开关：让可视化脚本按训练时的配置构造 agent。
+
+    默认值对齐本脚本历史硬编码的 qwen3 ego-SDE + obj(temporal) + hdmap 模型；换其它模型
+    （obj/hdmap/obj SDE(ego attention)/img/vlm 置零或不用）时用这些 flag override。所有
+    影响权重形状的开关都必须和 checkpoint 训练时一致，否则会被 initialize() 的 strict=False
+    静默丢成随机初始化。
+    """
+    group = parser.add_argument_group("model architecture (align with training)")
+    group.add_argument("--vlm-type", default="qwen3")
+    group.add_argument("--vl-hidden-dim", type=int, default=2048)
+    group.add_argument("--dit-type", default="small")
+    group.add_argument("--sampling-method", default="ddim")
+    # VLM 总开关 / 消融
+    group.add_argument("--use-vlm", action=argparse.BooleanOptionalAction, default=True,
+                       help="False=不加载/不前向 VLM，DiT 只用 obj/hdmap/img token（更小更省）")
+    group.add_argument("--vlm-ablation", default="zero", choices=["none", "zero"],
+                       help="zero=加载 VLM 但投影后置零（区别于 --no-use-vlm 的完全不用）")
+    # ego 状态编码器（attention=SDE 状态丢弃编码器）
+    group.add_argument("--ego-status-encoder-type", default="attention", choices=["mlp", "attention"])
+    # 障碍物 obj token
+    group.add_argument("--use-object-vector", action=argparse.BooleanOptionalAction, default=True)
+    group.add_argument("--object-encoder-type", default="temporal", choices=["mlp", "temporal"])
+    group.add_argument("--max-obj-tokens", type=int, default=64)
+    group.add_argument("--include-static-objects", action=argparse.BooleanOptionalAction, default=False)
+    group.add_argument("--object-token-dropout", type=float, default=0.1)
+    group.add_argument("--static-speed-threshold", type=float, default=0.5)
+    # hdmap 向量 token
+    group.add_argument("--use-hdmap-vector", action=argparse.BooleanOptionalAction, default=True)
+    group.add_argument("--use-lane-boundaries", action=argparse.BooleanOptionalAction, default=True)
+    # 前视图像 ResNet encoder token
+    group.add_argument("--use-image-encoder", action=argparse.BooleanOptionalAction, default=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为视频")
     parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
     parser.add_argument("--token", nargs="+", default=None, help="anchor scenario token（可传多个）")
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
-    parser.add_argument("--output-dir", default="vis_output/videos/qwen3_ego_hdmap_obj_shworldsim", help="视频输出目录")
+    parser.add_argument("--output-dir", default="vis_output/videos/ego_hdmap_obj_shworldsim3", help="视频输出目录")
     parser.add_argument("--frames-dir", default="vis_output/video_frames", help="中间帧目录")
     parser.add_argument("--window", type=int, default=30, help="anchor 前后各取多少帧")
     parser.add_argument("--full-log", action="store_true", help="渲染整条 log（较慢）")
@@ -294,6 +338,7 @@ def main():
     parser.add_argument("--mogo-map-sqlite-path", default="", help="MOGO sqlite 地图路径；默认使用 OPENSCENE_DATA_ROOT/maps 下第一个 .sqlite")
     parser.add_argument("--mogo-map-utm-zone", type=int, default=51, help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致")
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
+    _add_model_arch_args(parser)
     args = parser.parse_args()
 
     if args.gpu is not None:
