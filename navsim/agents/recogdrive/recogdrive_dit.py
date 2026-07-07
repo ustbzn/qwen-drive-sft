@@ -234,15 +234,21 @@ class LightningDiT(nn.Module):
             The final output tensor, or a tuple of the output and all hidden states.
         """
         action_latents = action_latents.contiguous()
-        context_tokens = context_tokens.contiguous()
+        if context_tokens is not None:
+            context_tokens = context_tokens.contiguous()
         condition_features = condition_features.contiguous()
+
+        # 空 context 兜底：use_vlm=False 且未开 obj/hdmap/img 时 context 为 [B, 0, D]（或 None）。
+        # 此时若仍走 cross-attention，key 长度为 0 会让 softmax 未定义 / 产生 NaN。故当无 context
+        # token 时，所有层都当作 self-attention（current_context_tokens=None）。
+        has_context = context_tokens is not None and context_tokens.shape[1] > 0
 
         time_embedding = self.timestep_encoder(timesteps)
         conditioning = time_embedding + condition_features
 
         all_hidden_states = [action_latents]
         for idx, block in enumerate(self.transformer_blocks):
-            use_cross_attention = not (idx % 2 == 0 and self.interleave_attention)
+            use_cross_attention = has_context and not (idx % 2 == 0 and self.interleave_attention)
             current_context_tokens = context_tokens if use_cross_attention else None
 
             action_latents = block(

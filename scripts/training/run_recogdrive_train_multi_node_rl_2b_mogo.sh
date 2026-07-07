@@ -37,6 +37,12 @@ export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。与 vlm_ablation 正交；IL/RL/eval 必须一致，
 # 且 CHECKPOINT/reference_policy_checkpoint 须来自同类型 IL(_init_grpo 对 ego_status_encoder 结构敏感)。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
+# VLM 总开关：true(默认) | false(完全不用 VLM，模型更小)。use_vlm=false 时 planner 无 vl 投影层，
+# vlm_ablation 为 no-op；且 _init_grpo 的 reference 加载是 strict=True——CHECKPOINT/reference
+# 必须来自 use_vlm=false 的 IL 训练（novlm），否则会静默把带 VLM 的权重灌进无 VLM 结构。
+# 用法：USE_VLM=false CHECKPOINT=<novlm IL ckpt> bash scripts/training/run_recogdrive_train_multi_node_rl_2b_mogo.sh
+export USE_VLM="${USE_VLM:-true}"
+if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 
 echo "NAVSIM_EXP_ROOT:    ${NAVSIM_EXP_ROOT}"
 echo "CACHE_PATH:         ${CACHE_PATH}"
@@ -88,6 +94,7 @@ torchrun \
   agent.cam_type=single \
   agent.grpo=True \
   agent.cache_hidden_state=True \
+  agent.use_vlm="${USE_VLM}" \
   agent.vlm_ablation=zero \
   agent.vlm_type=qwen3 \
   agent.checkpoint_path=\"${CHECKPOINT}\" \
@@ -106,7 +113,7 @@ torchrun \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size=16 \
   trainer.params.strategy=ddp_find_unused_parameters_true \
-  experiment_name=training_recogdrive_ego_SDE_RL \
+  experiment_name=training_recogdrive_ego_SDE${VLM_TAG}_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \

@@ -76,6 +76,12 @@ class Attention(nn.Module):
         if attention_mask is not None and attention_mask.dtype == torch.bool:
             if attention_mask.dim() == 2:
                 attention_mask = attention_mask[:, None, None, :]  # [B,1,1,N_k]
+            # 全 masked 行兜底：若某样本的 context key 全部无效（例如无有效 obj/hdmap/img
+            # token），softmax over 全 -inf 会得到 NaN。这里把这类行的所有 key 视为有效，令其
+            # 退化为均匀注意力而非 NaN。VLM context token 恒被标记为有效，故 use_vlm=True 路径
+            # 不会触发该分支，行为字节级不变。
+            all_masked = (~attention_mask).all(dim=-1, keepdim=True)
+            attention_mask = attention_mask | all_masked
             additive = torch.zeros_like(attention_mask, dtype=q.dtype)
             additive.masked_fill_(~attention_mask, float('-inf'))
             attention_mask = additive

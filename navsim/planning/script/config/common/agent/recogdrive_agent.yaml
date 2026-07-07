@@ -34,6 +34,16 @@ normalize_vl_hidden_states: false
 # 依赖性测试：加载已训练 ckpt，仅 eval 时 override agent.vlm_ablation=zero。
 # 公平能力测试：IL 与 GRPO 全程同设 agent.vlm_ablation=zero（缓存可复用，无需重生成）。
 vlm_ablation: none
+# VLM 总开关（默认 true=加载并使用 VLM，与历史行为一致）。
+# false: 完全不使用 VLM —— agent 不加载 Qwen3 backbone（在线 eval 也不前向），planner 不构造
+#   vl_*_projector/gate/fusion_projector（模型更小），DiT 的 cross-attention context 仅由
+#   obj/hdmap/img token 组成（三者都关则退化为纯 ego+action self-attention）。
+# 与 vlm_ablation 区别：zero 仍加载 VLM 并投影后置零（不省参数/算力）；use_vlm=false 直接不构造、
+#   不前向（更小更省，在线 eval 省一次 2B 前向）。低风险变体：缓存/collate 不变，训练仍读现有
+#   qwen3_feature.gz 里的 ego/history/command，只是忽略其中的 hidden state。
+# ckpt 不可与 use_vlm=true 互移植（投影层集合不同，会被 initialize() 的 strict=False 静默丢弃），
+#   须重训 IL 并重派生 RL reference；全链路（缓存/IL/RL/eval/可视化）须一致设 use_vlm。
+use_vlm: true
 first_hidden_state_index: 0
 last_hidden_state_index: -1
 # ego_status_dim: 8

@@ -25,6 +25,13 @@ export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。eval 时不 dropout(self.training=False)，但类型
 # 必须与训练 ckpt 一致，否则 attention 层被 initialize() strict=False 丢成随机初始化。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
+# VLM 总开关：true(默认) | false(完全不用 VLM)。use_vlm=false 时 eval 不加载 Qwen3（省一次
+# 2B 在线前向），planner 无 vl 投影层、DiT context 仅 obj/hdmap/img；vlm_ablation 为 no-op。
+# CHECKPOINT 必须来自 use_vlm=false 的 IL/RL 训练（否则 vl 投影层被 initialize() strict=False
+# 静默丢弃，其余共享层按有-VLM 训练的权重加载，结果错配）。
+# 用法：USE_VLM=false CHECKPOINT=<novlm ckpt> bash scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh
+export USE_VLM="${USE_VLM:-true}"
+if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt}"
@@ -68,7 +75,7 @@ torchrun \
   --master_port="${MASTER_PORT}" \
   "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_recogdrive.py" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
-  train_test_split.data_split=val \
+  train_test_split.data_split=trainval \
   agent=recogdrive_agent \
   agent.checkpoint_path=\"${CHECKPOINT}\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
@@ -76,6 +83,7 @@ torchrun \
   agent.cam_type=single \
   agent.grpo=False \
   agent.cache_hidden_state=False \
+  agent.use_vlm="${USE_VLM}" \
   agent.vlm_ablation=zero \
   agent.vlm_type=qwen3 \
   agent.vl_hidden_dim=2048 \
@@ -87,7 +95,7 @@ torchrun \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
-  experiment_name=recogdrive_ego_SDE_obj_hdmap_IL_eval \
+  experiment_name=recogdrive_ego_SDE_obj_hdmap${VLM_TAG}_IL_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

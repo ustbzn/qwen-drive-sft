@@ -429,6 +429,17 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     #         IL / eval / GRPO-rollout / GRPO-logprob 四处入口共用 encode_vl_* 函数，自动一致。
     vlm_ablation: Literal["none", "zero"] = "none"
 
+    # --- VLM 总开关（默认 True=加载并使用 VLM）---
+    # True: 与历史行为完全一致（构造 vl_*_projector/gate/fusion_projector，DiT 用 VLM
+    #   summary/context token）。
+    # False: 完全不使用 VLM —— planner 不构造任何 vl_*_projector/gate/fusion_projector（模型
+    #   更小），DiT 的 cross-attention context 只由 obj/hdmap/img token 组成（若三者都关，则
+    #   context 为空、DiT 退化为纯 ego(adaLN)+action self-attention）；agent 侧不加载 Qwen3、
+    #   eval 不在线前向。与 vlm_ablation 的区别：zero 仍加载 VLM 并在投影后置零（不省算力/参数），
+    #   use_vlm=False 直接不构造、不前向。ckpt 不可与 use_vlm=True 互移植（投影层集合不同，会被
+    #   initialize() 的 strict=False 静默丢弃），须重训 IL 并重派生 RL reference。
+    use_vlm: bool = True
+
     # --- 障碍物 obj token（默认关闭，零影响）---
     use_object_vector: bool = False
     obj_feature_dim: int = 15
@@ -490,23 +501,37 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         )
         vl_hidden_dim = int(config.vl_hidden_dim)
 
-        if config.normalize_vl_hidden_states:
-            self.vl_summary_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
-            self.vl_context_first_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
-            self.vl_context_last_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
-        else:
-            self.vl_summary_norm = nn.Identity()
-            self.vl_context_first_norm = nn.Identity()
-            self.vl_context_last_norm = nn.Identity()
+        if config.use_vlm:
+            if config.normalize_vl_hidden_states:
+                self.vl_summary_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
+                self.vl_context_first_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
+                self.vl_context_last_norm = nn.LayerNorm(vl_hidden_dim, eps=config.vl_hidden_norm_eps)
+            else:
+                self.vl_summary_norm = nn.Identity()
+                self.vl_context_first_norm = nn.Identity()
+                self.vl_context_last_norm = nn.Identity()
 
-        self.vl_summary_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
-        self.vl_context_first_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
-        self.vl_context_last_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
-        self.vl_context_gate = nn.Linear(config.input_embedding_dim * 2, config.input_embedding_dim)
-        nn.init.zeros_(self.vl_context_gate.weight)
-        nn.init.constant_(self.vl_context_gate.bias, 1.0)
-            
-        self.fusion_projector = nn.Linear(config.input_embedding_dim * 2, config.input_embedding_dim)
+            self.vl_summary_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
+            self.vl_context_first_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
+            self.vl_context_last_projector = nn.Linear(vl_hidden_dim, config.input_embedding_dim)
+            self.vl_context_gate = nn.Linear(config.input_embedding_dim * 2, config.input_embedding_dim)
+            nn.init.zeros_(self.vl_context_gate.weight)
+            nn.init.constant_(self.vl_context_gate.bias, 1.0)
+
+            self.fusion_projector = nn.Linear(config.input_embedding_dim * 2, config.input_embedding_dim)
+        else:
+            # use_vlm=False：不构造任何 VLM 投影 / 门控 / 融合层（模型更小）。
+            # build_context_tokens 走 _build_context_tokens_no_vlm，build_action_latents
+            # 直接返回 action_features（不再拼 VLM summary），故这些层永不被引用。
+            self.vl_summary_norm = None
+            self.vl_context_first_norm = None
+            self.vl_context_last_norm = None
+            self.vl_summary_projector = None
+            self.vl_context_first_projector = None
+            self.vl_context_last_projector = None
+            self.vl_context_gate = None
+            self.fusion_projector = None
+
         self.map_encoder = MapEncoder(
             hidden_size=config.input_embedding_dim,
             num_polygon_types=config.num_map_polygon_types,
@@ -677,6 +702,9 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         VLM tokens are always valid; map/obj padding slots are marked False.
         Returns None for the mask when both HDMap and Object are disabled (backward-compat path).
         """
+        if not self.config.use_vlm:
+            return self._build_context_tokens_no_vlm(action_input)
+
         vl_summary_tokens = self.encode_vl_summary_tokens(last_hidden_state)
         vl_context_tokens = self.encode_vl_context_tokens(first_hidden_state, last_hidden_state)
 
@@ -731,6 +759,79 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             context_key_padding_mask = None
 
         return vl_summary_tokens, vl_context_tokens, context_key_padding_mask
+
+    def _build_context_tokens_no_vlm(
+        self,
+        action_input: Optional[BatchFeature] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """use_vlm=False 分支：不使用任何 VLM hidden state / 投影层。
+
+        context 仅由 obj / hdmap / img token 组成（三者都关则为 [B, 0, D] 空张量，DiT 会对
+        空 context 退化为纯 self-attention，不产生 NaN）。返回的 vl_summary_tokens 是一个
+        [B, 1, D] 零占位张量，仅用于向下游 get_action / sample_chain / get_logprobs 传递
+        batch/device/dtype；build_action_latents 在 use_vlm=False 时会忽略它。
+        """
+        assert action_input is not None, (
+            "use_vlm=False requires action_input (for status_feature shape/device)."
+        )
+        ref = action_input.status_feature
+        B = ref.shape[0]
+        device = ref.device
+        dtype = next(self.model.parameters()).dtype
+        D = self.config.input_embedding_dim
+
+        context_tokens_list = []
+        mask_list = []
+
+        # hdmap context tokens
+        map_context_tokens = self.encode_map_context_tokens(action_input)
+        if map_context_tokens is not None:
+            context_tokens_list.append(map_context_tokens.to(dtype))
+            mask_list.append(action_input.map_valid_mask.bool().to(device=device))
+
+        # obj context tokens（与 build_context_tokens 的 obj 分支等价，复制以保持 use_vlm=True
+        # 路径字节级不变）
+        obj_inputs = self._extract_obj_inputs(action_input)
+        if self.object_encoder is not None and obj_inputs is not None:
+            if isinstance(self.object_encoder, TemporalObjectEncoder):
+                obj_context_tokens = self.object_encoder(
+                    obj_inputs["obj_features"].to(dtype),
+                    obj_inputs["obj_diff_features"].to(dtype),
+                    obj_inputs["obj_type"],
+                    obj_inputs["obj_valid_mask"],
+                    obj_inputs["obj_is_dynamic"],
+                )
+            else:
+                obj_context_tokens = self.object_encoder(
+                    obj_inputs["obj_features"].to(dtype),
+                    obj_inputs["obj_type"],
+                    obj_inputs["obj_valid_mask"],
+                )
+            context_tokens_list.append(obj_context_tokens.to(dtype))
+            mask_list.append(obj_inputs["obj_valid_mask"].bool().to(device=device))
+
+        # 前视图像 context tokens
+        img_context_tokens, img_keep_mask = self.encode_image_context_tokens(action_input)
+        if img_context_tokens is not None:
+            context_tokens_list.append(img_context_tokens.to(dtype))
+            mask_list.append(img_keep_mask.bool().to(device=device))
+
+        # 占位 summary token（[B, 1, D] 零向量），仅承载 batch/device/dtype。
+        vl_summary_tokens = torch.zeros(B, 1, D, dtype=dtype, device=device)
+
+        if len(context_tokens_list) == 0:
+            # 无任何结构化 token：空 context，DiT 会退化为纯 self-attention。
+            context_tokens = torch.zeros(B, 0, D, dtype=dtype, device=device)
+            return vl_summary_tokens, context_tokens, None
+
+        context_tokens = (
+            torch.cat(context_tokens_list, dim=1)
+            if len(context_tokens_list) > 1 else context_tokens_list[0]
+        )
+        context_key_padding_mask = (
+            torch.cat(mask_list, dim=1) if len(mask_list) > 1 else mask_list[0]
+        )
+        return vl_summary_tokens, context_tokens, context_key_padding_mask
 
     def _repeat_action_input(self, action_input: BatchFeature, repeats: int) -> BatchFeature:
         repeated = {}
@@ -907,11 +1008,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 self.ego_status_encoder.eval()
                 self.action_encoder.eval()
                 self.action_decoder.eval()
-                self.vl_summary_projector.eval()
-                self.vl_context_first_projector.eval()
-                self.vl_context_last_projector.eval()
-                self.vl_context_gate.eval()
-                self.fusion_projector.eval()
+                if self.config.use_vlm:
+                    self.vl_summary_projector.eval()
+                    self.vl_context_first_projector.eval()
+                    self.vl_context_last_projector.eval()
+                    self.vl_context_gate.eval()
+                    self.fusion_projector.eval()
                 if self.object_encoder is not None:
                     self.object_encoder.eval()
                 if self.image_encoder is not None:
@@ -938,6 +1040,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         action_features: torch.Tensor,
     ) -> torch.Tensor:
         """Build DiT action tokens without directly injecting historical trajectory."""
+        if not self.config.use_vlm:
+            # use_vlm=False：不拼 VLM summary（fusion_projector 未构造），action latent 即
+            # action_features 本身（已是 input_embedding_dim 宽）。
+            return action_features
         vl_summary = vl_summary_tokens.mean(1).unsqueeze(1).expand(
             -1, action_features.shape[1], -1
         )
@@ -1323,12 +1429,14 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         deterministic: bool = False,
         action_input: Optional[BatchFeature] = None,
     ):
-        B, D = last_hidden_state.shape[0], self.config.action_dim
-        device, dtype = last_hidden_state.device, last_hidden_state.dtype
-
         vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
+        # 从 vl_summary_tokens 取 batch/device/dtype：use_vlm=True 时它是投影后的 summary，
+        # use_vlm=False 时是 [B,1,D] 零占位张量（见 _build_context_tokens_no_vlm），故无需
+        # 触碰 hidden state（use_vlm=False 下为 None）。数值上与原先取 last_hidden_state 一致。
+        B, D = vl_summary_tokens.shape[0], self.config.action_dim
+        device, dtype = vl_summary_tokens.device, vl_summary_tokens.dtype
 
         ego_status_features = self.ego_status_encoder(
             ego_status_features
@@ -1553,11 +1661,16 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         # logprob 用同一份确定的图像 context，避免两次前向 BN 统计不同导致 mean 漂移。
         if self.image_encoder is not None:
             self.image_encoder.eval()
-        B = last_hidden_state.shape[0]
+        B = last_hidden_state.shape[0] if self.config.use_vlm else action_input.status_feature.shape[0]
         G = sample_time
 
-        first_hidden_state_rep = first_hidden_state.repeat_interleave(G, 0)
-        last_hidden_state_rep = last_hidden_state.repeat_interleave(G, 0)
+        if self.config.use_vlm:
+            first_hidden_state_rep = first_hidden_state.repeat_interleave(G, 0)
+            last_hidden_state_rep = last_hidden_state.repeat_interleave(G, 0)
+        else:
+            # use_vlm=False：无 hidden state，占位 None，下游 build_context_tokens 会忽略。
+            first_hidden_state_rep = None
+            last_hidden_state_rep = None
         status_feature_rep = action_input.status_feature.repeat_interleave(G, 0)
         action_input_rep = self._repeat_action_input(action_input, G)
 

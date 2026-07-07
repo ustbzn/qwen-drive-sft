@@ -65,6 +65,7 @@ class ReCogDriveAgent(AbstractAgent):
         vl_hidden_dim: Optional[int] = None,
         normalize_vl_hidden_states: bool = False,
         vlm_ablation: str = "none",
+        use_vlm: bool = True,
         first_hidden_state_index: int = 0,
         last_hidden_state_index: int = -1,
         bc_coeff: float = 0.1,
@@ -118,6 +119,10 @@ class ReCogDriveAgent(AbstractAgent):
         self.vl_hidden_dim = vl_hidden_dim
         self.normalize_vl_hidden_states = normalize_vl_hidden_states
         self.vlm_ablation = vlm_ablation
+        # VLM 总开关（默认 True）。False：完全不加载 / 不前向 VLM（不构造在线 backbone），
+        # planner 也不构造 VLM 投影层，DiT context 仅由 obj/hdmap/img token 组成。与 vlm_ablation
+        # 正交：use_vlm=False 直接不用 VLM（更小更省），vlm_ablation=zero 仍加载并投影后置零。
+        self.use_vlm = bool(use_vlm)
         self.first_hidden_state_index = int(first_hidden_state_index)
         self.last_hidden_state_index = int(last_hidden_state_index)
         self.bc_coeff = bc_coeff
@@ -167,7 +172,7 @@ class ReCogDriveAgent(AbstractAgent):
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
         self.device = device
-        if not self.cache_hidden_state and not self.cache_mode:
+        if not self.cache_hidden_state and not self.cache_mode and self.use_vlm:
             print("Agent running in 'no-cache' mode. Initializing internal backbone.")
             if not self.vlm_path or not self.vlm_type:
                 raise ValueError("In 'no-cache' mode, vlm_path and vlm_type are required.")
@@ -183,6 +188,10 @@ class ReCogDriveAgent(AbstractAgent):
             else:
                 for p in self.backbone.parameters():
                     p.requires_grad = True
+        elif not self.cache_hidden_state and not self.cache_mode and not self.use_vlm:
+            # use_vlm=False 的在线 eval / 可视化：不加载 Qwen3，backbone 保持 None，
+            # forward 走无 VLM 分支（hidden state 置 None）。
+            print("Agent running in 'no-cache' mode with use_vlm=False. Skipping VLM backbone.")
 
         # action 为 [x, y, heading]，因此action_dim=3; action_horizon=8 表示预测未来8个时间步的轨迹，每一个时间步为0.5s;
         if self.vl_hidden_dim is None:
@@ -256,6 +265,7 @@ class ReCogDriveAgent(AbstractAgent):
 
         cfg.vlm_size = self.vlm_size
         cfg.vlm_ablation = self.vlm_ablation
+        cfg.use_vlm = self.use_vlm
 
         if self.grpo:
             cfg.grpo_cfg.metric_cache_path = self.metric_cache_path
@@ -375,7 +385,12 @@ class ReCogDriveAgent(AbstractAgent):
 
         # 优先用已算好的 hidden_state：缓存模式从缓存读；在线 eval 多视角 / 多帧时
         # 由 compute_trajectory 调 _encode_views 预先算好并注入 features（方案 B）。
-        if self.cache_hidden_state or ("first_hidden_state" in features):
+        # use_vlm=False：完全不使用 VLM hidden state（不读缓存、不在线跑 backbone），置 None
+        # 交给 planner 走无 VLM 分支。训练时缓存里仍带 hidden state，这里直接忽略即可。
+        if not self.use_vlm:
+            first_hidden_state = None
+            last_hidden_state = None
+        elif self.cache_hidden_state or ("first_hidden_state" in features):
             first_hidden_state = features["first_hidden_state"].cuda()
             last_hidden_state = features["last_hidden_state"].cuda()
         else:
@@ -422,13 +437,14 @@ class ReCogDriveAgent(AbstractAgent):
         status_feature = features["status_feature"].cuda()
         if status_feature.ndim == 1:
             status_feature = status_feature.unsqueeze(0)
-        if first_hidden_state.ndim == 2:
-            first_hidden_state = first_hidden_state.unsqueeze(0)
-        if last_hidden_state.ndim == 2:
-            last_hidden_state = last_hidden_state.unsqueeze(0)
+        if self.use_vlm:
+            if first_hidden_state.ndim == 2:
+                first_hidden_state = first_hidden_state.unsqueeze(0)
+            if last_hidden_state.ndim == 2:
+                last_hidden_state = last_hidden_state.unsqueeze(0)
 
-        first_hidden_state = first_hidden_state.to(model_dtype)
-        last_hidden_state = last_hidden_state.to(model_dtype)
+            first_hidden_state = first_hidden_state.to(model_dtype)
+            last_hidden_state = last_hidden_state.to(model_dtype)
 
         # 障碍物 obj 字段（启用 obj token 且 features 里带 obj 时才注入）。obj_features 跟随
         # model_dtype，obj_type/obj_valid_mask 保持 long/bool。

@@ -24,10 +24,18 @@ export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 # 与 vlm_ablation 正交(none/zero 均生效)。IL/RL/eval 必须三处一致，否则 ckpt 加载错配
 # (attention 层被 initialize() strict=False 丢成随机初始化)。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
+# VLM 总开关：true(默认，加载并使用 VLM，与历史一致) | false(完全不用 VLM：planner 不建 VLM
+# 投影层、DiT cross-attention context 仅由 obj/hdmap/img token 组成、agent 不加载 Qwen3；模型更小)。
+# 低风险变体：训练仍读现有 CACHE_PATH 里的 ego/history/command，只忽略其中的 hidden state，故
+# 无需重跑 hidden-state 缓存。use_vlm=false 下 vlm_ablation 为 no-op。ckpt 不可跨 use_vlm 移植，
+# RL/eval 的 CHECKPOINT 必须来自 use_vlm=false 的上游（否则 vl 投影层缺失，行为错配）。
+# 用法：USE_VLM=false bash scripts/training/run_recogdrive_qwen3_train_multi_node_2b.sh
+export USE_VLM="${USE_VLM:-false}"
+if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 GPUS="${GPUS:-8}"
-MASTER_PORT="${MASTER_PORT:-9675}"
+MASTER_PORT="${MASTER_PORT:-9676}"
 BATCH_SIZE="${BATCH_SIZE:-160}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
 
@@ -73,6 +81,7 @@ torchrun \
   agent.cam_type=single \
   agent.cache_hidden_state=True \
   agent.vlm_type=qwen3 \
+  agent.use_vlm="${USE_VLM}" \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
@@ -85,7 +94,7 @@ torchrun \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=training_recogdrive_qwen3_ego_SDE_obj_hdmap_IL \
+  experiment_name=training_recogdrive_ego_SDE_obj_hdmap${VLM_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   '+log_split@_global_=mogo' \
   cache_path="${CACHE_PATH}" \
