@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
+LOG_SPLIT="${LOG_SPLIT:-mogo}"
 
 export NUPLAN_MAP_VERSION="${NUPLAN_MAP_VERSION:-nuplan-maps-v1.0}"
 export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${DATA_ROOT}/dataset/maps}"
@@ -38,6 +39,20 @@ GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
 BATCH_SIZE="${BATCH_SIZE:-160}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
+
+CACHE_ARGS=(cache_path="${CACHE_PATH}")
+if [ -n "${CACHE_PATHS:-}" ]; then
+  IFS=':' read -r -a CACHE_PATH_ARRAY <<< "${CACHE_PATHS}"
+  CACHE_PATH_LIST=""
+  for CACHE_ITEM in "${CACHE_PATH_ARRAY[@]}"; do
+    if [ -z "${CACHE_PATH_LIST}" ]; then
+      CACHE_PATH_LIST="${CACHE_ITEM}"
+    else
+      CACHE_PATH_LIST="${CACHE_PATH_LIST},${CACHE_ITEM}"
+    fi
+  done
+  CACHE_ARGS=(cache_path="${CACHE_PATH}" "cache_paths=[${CACHE_PATH_LIST}]")
+fi
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启需与缓存端用同样的 obj 配置，
 # 且 CACHE_PATH 必须已带 object_vector_feature_v1.gz，否则 CacheOnlyDataset 静默丢样本。---
@@ -96,8 +111,8 @@ torchrun \
   dataloader.params.batch_size="${BATCH_SIZE}" \
   experiment_name=training_recogdrive_ego_SDE_obj_hdmap${VLM_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
-  '+log_split@_global_=mogo' \
-  cache_path="${CACHE_PATH}" \
+  "+log_split@_global_=${LOG_SPLIT}" \
+  "${CACHE_ARGS[@]}" \
   use_cache_without_dataset=True \
   force_cache_computation=False \
   "$@"

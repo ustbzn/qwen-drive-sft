@@ -21,10 +21,12 @@ export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_qwen3_obj_vlmzero_RL/2026.07.01.03.42.32/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-CHECKPOINT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt"
+CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt}"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
+MOGO_UTM_SOUTH="${MOGO_UTM_SOUTH:-false}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-worldsim_ego_SDE_obj_hdmap_IL_eval}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9675}"
 
@@ -68,7 +70,8 @@ torchrun \
   agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.3}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
-  experiment_name=worldsim_ego_SDE_obj_hdmap_IL_eval \
+  mogo_map.utm_south="${MOGO_UTM_SOUTH}" \
+  experiment_name="${EXPERIMENT_NAME}" \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

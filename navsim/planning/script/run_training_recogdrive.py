@@ -11,7 +11,7 @@ import torch.distributed as dist
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
-from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
+from navsim.planning.training.dataset import Dataset, build_cache_only_dataset
 from navsim.planning.training.agent_lightning_module import AgentLightningModule
 from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
 from navsim.agents.recogdrive.front_image_features import collate_front_image_features
@@ -176,16 +176,18 @@ def main(cfg: DictConfig) -> None:
             not cfg.force_cache_computation
         ), "force_cache_computation must be False when using cached data without building SceneLoader"
         assert (
-            cfg.cache_path is not None
-        ), "cache_path must be provided when using cached data without building SceneLoader"
-        train_data = CacheOnlyDataset(
+            cfg.cache_path is not None or cfg.get("cache_paths", None)
+        ), "cache_path or cache_paths must be provided when using cached data without building SceneLoader"
+        train_data = build_cache_only_dataset(
             cache_path=cfg.cache_path,
+            cache_paths=cfg.get("cache_paths", None),
             feature_builders=agent.get_feature_builders(),
             target_builders=agent.get_target_builders(),
             log_names=cfg.train_logs,
         )
-        val_data = CacheOnlyDataset(
+        val_data = build_cache_only_dataset(
             cache_path=cfg.cache_path,
+            cache_paths=cfg.get("cache_paths", None),
             feature_builders=agent.get_feature_builders(),
             target_builders=agent.get_target_builders(),
             log_names=cfg.val_logs,

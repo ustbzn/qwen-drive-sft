@@ -924,7 +924,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.clip_advantage_upper_quantile = cfg.clip_advantage_upper_quantile
         self.gamma_denoising = cfg.gamma_denoising
         
-        self.metric_cache_loader = MetricCacheLoader(Path(cfg.metric_cache_path))
+        self.metric_cache_loader = MetricCacheLoader(cfg.metric_cache_path)
         proposal_sampling = TrajectorySampling(time_horizon=4, interval_length=0.1)
         self.simulator = PDMSimulator(proposal_sampling)
         self.train_scorer = PDMScorer(

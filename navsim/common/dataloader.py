@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
+import os
 
 from tqdm import tqdm
 import pickle
@@ -175,29 +176,56 @@ class SceneLoader:
 
 
 class MetricCacheLoader:
-    """Simple dataloader for metric cache."""
+    """Simple dataloader for one or more metric cache roots."""
 
-    def __init__(self, cache_path: Path, file_name: str = "metric_cache.pkl"):
+    def __init__(self, cache_path: Any, file_name: str = "metric_cache.pkl"):
         """
         Initializes the metric cache loader.
-        :param cache_path: directory of cache folder
+        :param cache_path: cache folder path, path-list, or os.pathsep-separated path string
         :param file_name: file name of cached files, defaults to "metric_cache.pkl"
         """
 
         self._file_name = file_name
         self.metric_cache_paths = self._load_metric_cache_paths(cache_path)
 
-    def _load_metric_cache_paths(self, cache_path: Path) -> Dict[str, Path]:
+    @staticmethod
+    def _normalize_cache_paths(cache_path: Any) -> List[Path]:
+        if isinstance(cache_path, str):
+            return [Path(path) for path in cache_path.split(os.pathsep) if path]
+        if isinstance(cache_path, os.PathLike):
+            return [Path(cache_path)]
+        if hasattr(cache_path, "__iter__"):
+            return [Path(path) for path in cache_path if str(path)]
+        return [Path(cache_path)]
+
+    def _load_metric_cache_paths(self, cache_path: Any) -> Dict[str, Path]:
         """
-        Helper function to load all cache file paths from folder.
-        :param cache_path: directory of cache folder
+        Helper function to load all cache file paths from one or more folders.
+        :param cache_path: directory/directories of cache folders
         :return: dictionary of token and file path
         """
+        metric_cache_dict: Dict[str, Path] = {}
+        duplicate_tokens: List[str] = []
+        for cache_root in self._normalize_cache_paths(cache_path):
+            for token, path in self._load_metric_cache_paths_from_root(cache_root).items():
+                if token in metric_cache_dict:
+                    duplicate_tokens.append(token)
+                    continue
+                metric_cache_dict[token] = path
+        if duplicate_tokens:
+            raise ValueError(
+                "Duplicate token(s) across metric cache roots; token-only reward lookup is ambiguous: "
+                f"{sorted(duplicate_tokens)[:10]}"
+            )
+        return metric_cache_dict
+
+    def _load_metric_cache_paths_from_root(self, cache_path: Path) -> Dict[str, Path]:
+        """Load all metric cache file paths from a single cache folder."""
         metadata_dir = cache_path / "metadata"
         metadata_file = [file for file in metadata_dir.iterdir() if ".csv" in str(file)][0]
         with open(str(metadata_file), "r") as f:
             cache_paths = f.read().splitlines()[1:]
-        metric_cache_dict = {cache_path.split("/")[-2]: cache_path for cache_path in cache_paths}
+        metric_cache_dict = {cache_path.split("/")[-2]: Path(cache_path) for cache_path in cache_paths}
         return metric_cache_dict
 
     @property

@@ -26,6 +26,7 @@ export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
+MOGO_UTM_SOUTH="${MOGO_UTM_SOUTH:-false}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9675}"
 
@@ -80,6 +81,7 @@ torchrun \
   agent.use_lane_boundaries=true \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
+  mogo_map.utm_south="${MOGO_UTM_SOUTH}" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   cache_path="${CACHE_PATH}" \
   force_cache_computation="${FORCE_CACHE_COMPUTATION:-False}" \

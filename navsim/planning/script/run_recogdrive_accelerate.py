@@ -32,7 +32,7 @@ import shutil
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
-from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
+from navsim.planning.training.dataset import Dataset, build_cache_only_dataset
 from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
 from navsim.agents.recogdrive.front_image_features import collate_front_image_features
 from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
@@ -363,10 +363,11 @@ class ReCogDriveTrainer:
             logger.info("Using CacheOnlyDataset for training")
             assert not self.cfg.force_cache_computation, \
                 "force_cache_computation must be False when using cached data"
-            assert self.cfg.cache_path is not None, \
-                "cache_path must be provided when using cached data"
-            self.train_dataset = CacheOnlyDataset(
+            assert self.cfg.cache_path is not None or self.cfg.get("cache_paths", None), \
+                "cache_path or cache_paths must be provided when using cached data"
+            self.train_dataset = build_cache_only_dataset(
                 cache_path=self.cfg.cache_path,
+                cache_paths=self.cfg.get("cache_paths", None),
                 feature_builders=agent.get_feature_builders(),
                 target_builders=agent.get_target_builders(),
                 log_names=self.cfg.train_logs,
@@ -392,10 +393,11 @@ class ReCogDriveTrainer:
             logger.info("Using CacheOnlyDataset for validation")
             assert not self.cfg.force_cache_computation, \
                 "force_cache_computation must be False when using cached data"
-            assert self.cfg.cache_path is not None, \
-                "cache_path must be provided when using cached data"
-            self.val_dataset = CacheOnlyDataset(
+            assert self.cfg.cache_path is not None or self.cfg.get("cache_paths", None), \
+                "cache_path or cache_paths must be provided when using cached data"
+            self.val_dataset = build_cache_only_dataset(
                 cache_path=self.cfg.cache_path,
+                cache_paths=self.cfg.get("cache_paths", None),
                 feature_builders=agent.get_feature_builders(),
                 target_builders=agent.get_target_builders(),
                 log_names=self.cfg.val_logs,

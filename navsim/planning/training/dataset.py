@@ -1,4 +1,5 @@
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import logging
 import pickle
@@ -17,6 +18,15 @@ import numpy as np
 import math
 from navsim.visualization.camera import _transform_points_to_image, _rotation_3d_in_axis, _transform_annotations_to_camera
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CacheSampleKey:
+    """Unique key for one cached sample across multiple cache roots."""
+
+    cache_index: int
+    log_name: str
+    token: str
 
 
 def load_feature_target_from_pickle(path: Path) -> Dict[str, torch.Tensor]:
@@ -143,6 +153,199 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
             targets.update(data_dict)
 
         return (features, targets, token)
+
+
+class MultiCacheOnlyDataset(torch.utils.data.Dataset):
+    """Dataset wrapper that reads feature/target samples from multiple cache roots."""
+
+    def __init__(
+        self,
+        cache_paths: List[str],
+        feature_builders: List[AbstractFeatureBuilder],
+        target_builders: List[AbstractTargetBuilder],
+        log_names: Optional[List[str]] = None,
+        tokens: Optional[List[str]] = None,
+    ):
+        """
+        Initializes the dataset module.
+        :param cache_paths: directories to cache folders
+        :param feature_builders: list of feature builders
+        :param target_builders: list of target builders
+        :param log_names: optional list of log folders to consider in each cache root
+        :param tokens: optional list of sample tokens to consider
+        """
+        super().__init__()
+        assert cache_paths, "At least one cache path must be provided!"
+        self._cache_paths = [Path(cache_path) for cache_path in cache_paths]
+        for cache_path in self._cache_paths:
+            assert cache_path.is_dir(), f"Cache path {cache_path} does not exist!"
+
+        self._tokens = set(tokens) if tokens is not None else None
+        self._feature_builders = feature_builders
+        self._target_builders = target_builders
+        self._valid_cache_paths: Dict[CacheSampleKey, Path] = self._load_valid_caches(
+            cache_paths=self._cache_paths,
+            feature_builders=self._feature_builders,
+            target_builders=self._target_builders,
+            log_names=log_names,
+            tokens=self._tokens,
+        )
+        self.samples = list(self._valid_cache_paths.keys())
+        self.tokens = [sample.token for sample in self.samples]
+        self._warn_on_duplicate_tokens()
+
+    def __len__(self) -> int:
+        """
+        :return: number of samples to load
+        """
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], str]:
+        """
+        Loads and returns pair of feature and target dict from data.
+        :param idx: index of sample to load.
+        :return: tuple of feature dictionary, target dictionary, and original token
+        """
+        return self._load_scene_with_key(self.samples[idx])
+
+    @staticmethod
+    def _iter_log_paths(cache_path: Path, log_names: Optional[List[str]]) -> List[Path]:
+        if log_names is not None:
+            return [cache_path / Path(log_name) for log_name in log_names if (cache_path / Path(log_name)).is_dir()]
+        return [log_path for log_path in cache_path.iterdir() if log_path.is_dir()]
+
+    @staticmethod
+    def _load_valid_caches(
+        cache_paths: List[Path],
+        feature_builders: List[AbstractFeatureBuilder],
+        target_builders: List[AbstractTargetBuilder],
+        log_names: Optional[List[str]] = None,
+        tokens: Optional[set[str]] = None,
+    ) -> Dict[CacheSampleKey, Path]:
+        """
+        Helper method to load valid cache paths.
+        :param cache_paths: directories of training cache folders
+        :param feature_builders: list of feature builders
+        :param target_builders: list of target builders
+        :param log_names: optional list of log paths to load from each cache root
+        :param tokens: optional set of allowed tokens
+        :return: dictionary of unique sample keys and sample paths as keys / values
+        """
+
+        valid_cache_paths: Dict[CacheSampleKey, Path] = {}
+
+        for cache_index, cache_path in enumerate(cache_paths):
+            log_paths = MultiCacheOnlyDataset._iter_log_paths(cache_path, log_names)
+            for log_path in tqdm(log_paths, desc=f"Loading Valid Caches ({cache_path.name})"):
+                for token_path in log_path.iterdir():
+                    if not token_path.is_dir():
+                        continue
+                    if tokens is not None and token_path.name not in tokens:
+                        continue
+                    found_caches: List[bool] = []
+                    for builder in feature_builders + target_builders:
+                        data_dict_path = token_path / (builder.get_unique_name() + ".gz")
+                        found_caches.append(data_dict_path.is_file())
+                    if all(found_caches):
+                        key = CacheSampleKey(
+                            cache_index=cache_index,
+                            log_name=log_path.name,
+                            token=token_path.name,
+                        )
+                        valid_cache_paths[key] = token_path
+
+        return valid_cache_paths
+
+    def _warn_on_duplicate_tokens(self) -> None:
+        token_counts: Dict[str, int] = {}
+        for sample in self.samples:
+            token_counts[sample.token] = token_counts.get(sample.token, 0) + 1
+        duplicate_tokens = [token for token, count in token_counts.items() if count > 1]
+        if duplicate_tokens:
+            logger.warning(
+                "MultiCacheOnlyDataset found %d duplicate token(s) across cache roots. "
+                "Samples are kept distinct by (cache_path, log_name, token); downstream "
+                "code that uses token-only lookup must handle this explicitly. Examples: %s",
+                len(duplicate_tokens),
+                duplicate_tokens[:5],
+            )
+
+    def _load_scene_with_key(
+        self, sample: CacheSampleKey
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], str]:
+        """
+        Helper method to load sample tensors given a cache sample key.
+        :param sample: unique cache-root/log/token key
+        :return: tuple of feature dictionary, target dictionary, and original token
+        """
+
+        token_path = self._valid_cache_paths[sample]
+
+        features: Dict[str, torch.Tensor] = {}
+        for builder in self._feature_builders:
+            data_dict_path = token_path / (builder.get_unique_name() + ".gz")
+            data_dict = load_feature_target_from_pickle(data_dict_path)
+            features.update(data_dict)
+
+        targets: Dict[str, torch.Tensor] = {}
+        for builder in self._target_builders:
+            data_dict_path = token_path / (builder.get_unique_name() + ".gz")
+            data_dict = load_feature_target_from_pickle(data_dict_path)
+            targets.update(data_dict)
+
+        return (features, targets, sample.token)
+
+
+def normalize_cache_paths(
+    cache_path: Optional[str] = None,
+    cache_paths: Optional[Any] = None,
+) -> List[str]:
+    """Normalize single-path and multi-path cache config into a list."""
+    normalized_paths: List[str] = []
+
+    if cache_paths:
+        if isinstance(cache_paths, str):
+            normalized_paths = [path for path in cache_paths.split(os.pathsep) if path]
+        else:
+            normalized_paths = [str(path) for path in cache_paths if str(path)]
+
+    if normalized_paths:
+        return normalized_paths
+
+    if cache_path:
+        return [str(cache_path)]
+
+    return []
+
+
+def build_cache_only_dataset(
+    cache_path: Optional[str],
+    feature_builders: List[AbstractFeatureBuilder],
+    target_builders: List[AbstractTargetBuilder],
+    log_names: Optional[List[str]] = None,
+    tokens: Optional[List[str]] = None,
+    cache_paths: Optional[Any] = None,
+) -> torch.utils.data.Dataset:
+    """Build a cache-only dataset from either one cache root or multiple roots."""
+    resolved_cache_paths = normalize_cache_paths(cache_path=cache_path, cache_paths=cache_paths)
+    assert resolved_cache_paths, "cache_path or cache_paths must be provided when using cached data"
+
+    if len(resolved_cache_paths) == 1:
+        return CacheOnlyDataset(
+            cache_path=resolved_cache_paths[0],
+            feature_builders=feature_builders,
+            target_builders=target_builders,
+            log_names=log_names,
+            tokens=tokens,
+        )
+
+    return MultiCacheOnlyDataset(
+        cache_paths=resolved_cache_paths,
+        feature_builders=feature_builders,
+        target_builders=target_builders,
+        log_names=log_names,
+        tokens=tokens,
+    )
 
 
 class Dataset(torch.utils.data.Dataset):

@@ -1,0 +1,19 @@
+# MOGO worldsim data manifest. Keep raw city roots independent; merge only cache roots at training time.
+datasets:
+  - name: beijing_worldsim
+    city: beijing
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/beijing
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/beijing/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+    utm_zone: 50
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/beijing/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/beijing/exp/metric_cache_mogo_v3
+
+  - name: shanghai_worldsim
+    city: shanghai
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset/maps/hm_shanghai_1.9.1_20260522.sqlite
+    utm_zone: 51
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/metric_cache_mogo_v3
