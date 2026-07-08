@@ -19,9 +19,13 @@ Design notes (see plan deep-churning-shannon):
     and collate already tolerate via mean-pooling / pad_sequence.
 """
 
-from typing import List, Optional
+import os
+import tempfile
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 import torch
+
 
 # 视角字段名 -> prompt 语义标签。措辞沿用 navsim/agents/intervl_agent.py 的 6 视角写法。
 # 注意：mogo pkl 的 cam_l2 / cam_r2 为空，多视角实际应使用真实存在的 cam_l1 / cam_r1
@@ -36,6 +40,24 @@ VIEW_LABELS = {
     "cam_r2": "BACK RIGHT VIEW",
     "cam_b0": "BACK VIEW",
 }
+
+_BLACK_IMAGE_SIZE = (960, 540)
+_BLACK_IMAGE_NAME = "recogdrive_black_960x540.jpg"
+
+
+def ensure_black_image_path() -> str:
+    """确保存在一张可供 VLM 读取的黑图占位图，并返回其路径。"""
+    path = Path(tempfile.gettempdir()) / _BLACK_IMAGE_NAME
+    if path.is_file():
+        return str(path)
+
+    # 多进程缓存时用每个进程自己的临时文件，再原子替换到固定路径。
+    tmp_path = path.with_name(f"{path.stem}.{os.getpid()}.tmp{path.suffix}")
+    from PIL import Image
+
+    Image.new("RGB", _BLACK_IMAGE_SIZE, (0, 0, 0)).save(tmp_path, format="JPEG", quality=95)
+    os.replace(tmp_path, path)
+    return str(path)
 
 
 def _camera_image_path(camera_obj) -> Optional[str]:
@@ -89,10 +111,26 @@ def collect_view_frame_paths(
     :return: ``out[i]`` 为第 i 个视角（顺序同 ``view_list``）的一段帧路径序列
         （oldest -> newest）。单帧时长度为 1。所有元素均为有效路径（已 edge-pad）。
     """
+    view_frame_paths, _ = collect_view_frame_paths_with_status(cameras, view_list, num_frames)
+    return view_frame_paths
+
+
+def collect_view_frame_paths_with_status(
+    cameras,
+    view_list: List[str],
+    num_frames: int = 1,
+) -> Tuple[List[List[str]], bool]:
+    """取图像路径矩阵，并返回该 token 是否使用黑图占位。
+
+    第二个返回值仅在该 token 没有任何有效相机图像时为 True。此时函数返回
+    一张共享黑图路径组成的矩阵，调用方可继续缓存 hidden state，并把缺图状态记录下来。
+    """
     if not view_list:
         view_list = ["cam_f0"]
-    n_frames = max(1, min(int(num_frames), len(cameras)))
-    frame_slice = cameras[len(cameras) - n_frames:]  # oldest -> newest
+    requested_frames = max(1, int(num_frames))
+    num_available_frames = len(cameras) if cameras is not None else 0
+    n_frames = min(requested_frames, num_available_frames) if num_available_frames else requested_frames
+    frame_slice = cameras[num_available_frames - n_frames:] if num_available_frames else []  # oldest -> newest
 
     # 1. 逐视角逐帧取原始路径，并做帧级 edge-pad
     raw: List[List[Optional[str]]] = []
@@ -100,30 +138,33 @@ def collect_view_frame_paths(
         per_view = [_camera_image_path(getattr(cams, view, None)) for cams in frame_slice]
         raw.append(_edge_pad(per_view))
 
+    def _is_complete(per_view: List[Optional[str]]) -> bool:
+        return len(per_view) == n_frames and all(p for p in per_view)
+
     # 2. 视角级 edge-pad：整视角全空时，复制第一个有有效帧的视角
     fallback_view: Optional[List[str]] = None
     for per_view in raw:
-        if all(p for p in per_view):
+        if _is_complete(per_view):
             fallback_view = [str(p) for p in per_view]
             break
+
+    used_black_placeholder = False
     if fallback_view is None:
-        # 所有视角都至少缺一帧（含全空）；尝试用任意有效帧拼一个兜底序列
+        # 所有视角都至少缺一帧（含全空）；优先用任意有效帧兜底，完全无图才用黑图。
         any_path = next((p for per_view in raw for p in per_view if p), None)
         if any_path is None:
-            raise RuntimeError(
-                "collect_view_frame_paths: no valid camera image found for any "
-                f"view in {view_list}; cannot build VLM input."
-            )
-        fallback_view = [any_path] * n_frames
+            any_path = ensure_black_image_path()
+            used_black_placeholder = True
+        fallback_view = [str(any_path)] * n_frames
 
     out: List[List[str]] = []
     for per_view in raw:
-        if all(p for p in per_view):
+        if _is_complete(per_view):
             out.append([str(p) for p in per_view])
         else:
             # 该视角整段不可用 -> 用兜底视角复制（决策 5：edge-pad，不报错）
             out.append(list(fallback_view))
-    return out
+    return out, used_black_placeholder
 
 
 def flatten_view_frames(view_frame_paths: List[List[str]]) -> List[str]:

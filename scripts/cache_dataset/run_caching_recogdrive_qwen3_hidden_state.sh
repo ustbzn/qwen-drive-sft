@@ -7,7 +7,7 @@ set -euo pipefail
 # + common/train_test_split/scene_filter/all_scenes.yaml
 # + common/agent/recogdrive_agent.yaml
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0320-0325new}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 

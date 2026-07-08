@@ -16,7 +16,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
-export USE_OBJECT_VECTOR=true
+export USE_OBJECT_VECTOR=false
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。eval 走在线 backbone
 # (cache_hidden_state=False)，图像由 FrontImageFeatureBuilder 从当前帧 cam_f0 现场读取，
 # 不依赖缓存。类型/分辨率须与训练一致，CHECKPOINT 必须来自带 image_encoder 的 IL/RL 训练，
@@ -34,12 +34,12 @@ export USE_VLM="${USE_VLM:-true}"
 if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_RL/2026.07.08.04.59.48/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
 GPUS="${GPUS:-8}"
-MASTER_PORT="${MASTER_PORT:-9675}"
+MASTER_PORT="${MASTER_PORT:-9676}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
 # eval 从 GT annotations 取障碍物（方案 A privileged 上限）。CHECKPOINT 必须来自带 obj 的
@@ -75,7 +75,7 @@ torchrun \
   --master_port="${MASTER_PORT}" \
   "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_recogdrive.py" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
-  train_test_split.data_split=trainval \
+  train_test_split.data_split=val \
   agent=recogdrive_agent \
   agent.checkpoint_path=\"${CHECKPOINT}\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
@@ -90,12 +90,12 @@ torchrun \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  agent.use_hdmap_vector=true \
-  agent.use_lane_boundaries=true \
+  agent.use_hdmap_vector=false \
+  agent.use_lane_boundaries=false \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
-  experiment_name=recogdrive_ego_SDE_obj_hdmap${VLM_TAG}_IL_eval \
+  experiment_name=recogdrive_ego_SDE${VLM_TAG}_RL_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

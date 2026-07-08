@@ -421,7 +421,7 @@ class Dataset(torch.utils.data.Dataset):
 
         self._valid_cache_paths[token] = token_path
 
-    def _cache_scene_with_token(self, token: str) -> None:
+    def _cache_scene_with_token(self, token: str) -> bool:
         """
         Helper function to compute feature / targets and save in cache.
         :param token: unique identifier of scene to cache
@@ -434,6 +434,8 @@ class Dataset(torch.utils.data.Dataset):
         token_path = self._cache_path / metadata.log_name / metadata.initial_token
         os.makedirs(token_path, exist_ok=True)
 
+        used_black_placeholder = False
+
         for builder in self._feature_builders:
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
             if data_dict_path.exists():
@@ -441,6 +443,11 @@ class Dataset(torch.utils.data.Dataset):
             # scene-aware builder（如 HDMapVectorFeatureBuilder, ObjectVectorFeatureBuilder）优先用 scene 提取；
             # 普通 builder（VLM 特征）仍走 agent_input。向后兼容，无该方法的 builder 行为不变。
             data_dict = self._compute_builder_features(builder, scene, agent_input)
+            missing = data_dict.get("vlm_image_missing")
+            if isinstance(missing, torch.Tensor):
+                used_black_placeholder = used_black_placeholder or bool(missing.item())
+            elif isinstance(missing, bool):
+                used_black_placeholder = used_black_placeholder or missing
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
         for builder in self._target_builders:
@@ -449,6 +456,7 @@ class Dataset(torch.utils.data.Dataset):
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 
         self._valid_cache_paths[token] = token_path
+        return used_black_placeholder
 
     def _load_scene_with_token(self, token: str) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """
@@ -493,8 +501,22 @@ class Dataset(torch.utils.data.Dataset):
                 """
             )
 
+        black_image_tokens = 0
+        black_image_log_limit = 10
         for token in tqdm(tokens_to_cache, desc="Caching Dataset"):
-            self._cache_scene_with_token(token)
+            used_black_placeholder = self._cache_scene_with_token(token)
+            if used_black_placeholder:
+                black_image_tokens += 1
+                if black_image_tokens <= black_image_log_limit:
+                    logger.warning(
+                        "Cached token %s with a black VLM image placeholder because no valid camera image was found.",
+                        token,
+                    )
+        if black_image_tokens:
+            logger.warning(
+                "Cached %d token(s) with black VLM image placeholders because no valid camera image was found.",
+                black_image_tokens,
+            )
 
     def __len__(self) -> None:
         """

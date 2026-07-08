@@ -12,7 +12,7 @@ from navsim.common.command_utils import command_code_to_text
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from .recogdrive_backbone import RecogDriveBackbone
 from .recogdrive_view_utils import (
-    collect_view_frame_paths,
+    collect_view_frame_paths_with_status,
     flatten_view_frames,
     view_labels_for,
     build_history_str,
@@ -145,7 +145,8 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             # 不走这里（见 recogdrive_agent._encode_views 方案 B，从 agent_input 直接取图）。
             # NOTE: 若将来要做 offline batched 多视角训练，此处单路径编码不够，需扩展为
             #       视角×帧矩阵的多路径编码，并相应调整 collate。
-            image_path = str(cameras[-1].cam_f0.image)
+            view_frame_paths, vlm_image_missing = collect_view_frame_paths_with_status(cameras, ["cam_f0"], 1)
+            image_path = view_frame_paths[0][0]
 
             path_as_ordinals = [ord(char) for char in image_path]
 
@@ -156,6 +157,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
                 "high_command_one_hot": high_command_one_hot.cpu(),
                 "status_feature": status_feature.cpu(),
                 "image_path_tensor": path_tensor.cpu(),
+                "vlm_image_missing": torch.tensor(vlm_image_missing, dtype=torch.bool).cpu(),
             }
         else:       # 用“当前图像 + 历史轨迹 + 导航指令”的 prompt 跑一遍 VLM，把得到的 last_hidden_state 作为视觉语言特征返回，供后面 Diffusion Planner 做轨迹预测。
             if self.backbone is None:
@@ -165,7 +167,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             history_str = build_history_str(history_trajectory)
 
             # 多视角 / 多帧取图（含 edge-pad），与在线 eval 共用 view_utils 保证一致。
-            view_frame_paths = collect_view_frame_paths(cameras, self.view_list, self.num_frames)
+            view_frame_paths, vlm_image_missing = collect_view_frame_paths_with_status(cameras, self.view_list, self.num_frames)
             flat = flatten_view_frames(view_frame_paths)
             question = build_driving_question(
                 history_str, command_str, self.view_list, self.num_frames,
@@ -190,6 +192,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
                 "first_hidden_state": first_hidden_state.squeeze(0).float().cpu(),
                 "last_hidden_state": last_hidden_state.squeeze(0).float().cpu(),
                 "status_feature": status_feature.cpu(),
+                "vlm_image_missing": torch.tensor(vlm_image_missing, dtype=torch.bool).cpu(),
             }
 
 
