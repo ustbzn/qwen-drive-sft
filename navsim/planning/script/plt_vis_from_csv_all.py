@@ -199,9 +199,9 @@ def _build_overlay_text(token: str, metrics: dict[str, object], debug_notes: lis
     other = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in OTHER_METRIC_FIELDS)
     lines.append(other)
 
-    # 最后一行：NC=0 或 DAC hard off-road 时显示碰撞/越界诊断
+    # 最后一行：NC hard collision 或 DAC hard off-road 时显示碰撞/越界诊断
     if debug_notes and (
-        _metric_is_zero(metrics.get("no_at_fault_collisions"))
+        _metric_is_hard_collision(metrics.get("no_at_fault_collisions"))
         or _metric_is_hard_offroad(metrics.get("drivable_area_compliance"))
     ):
         lines.append(" | ".join(debug_notes))
@@ -268,14 +268,18 @@ def build_pdm_simulator_scorer() -> tuple[PDMSimulator, PDMScorer]:
     return simulator, scorer
 
 
-def _metric_is_zero(value: object) -> bool:
+# Aligns with PDMScorerConfig.at_fault_collision_score_floor / drivable_area_hard_score.
+HARD_MULTI_METRIC_SCORE_FLOOR = 0.05
+
+
+def _metric_is_hard_collision(value: object) -> bool:
     metric = _metric_as_float(value)
-    return metric == 0.0 if metric is not None else False
+    return metric is not None and metric <= HARD_MULTI_METRIC_SCORE_FLOOR + 1e-9
 
 
 def _metric_is_hard_offroad(value: object) -> bool:
     metric = _metric_as_float(value)
-    return metric is not None and metric <= 0.05 + 1e-9
+    return metric is not None and metric <= HARD_MULTI_METRIC_SCORE_FLOOR + 1e-9
 
 
 def _should_debug_failures(metrics: dict[str, object], debug_failures: bool) -> bool:
@@ -283,7 +287,7 @@ def _should_debug_failures(metrics: dict[str, object], debug_failures: bool) -> 
         return False
     nc = metrics.get("no_at_fault_collisions")
     dac = metrics.get("drivable_area_compliance")
-    return _metric_is_zero(nc) or _metric_is_hard_offroad(dac)
+    return _metric_is_hard_collision(nc) or _metric_is_hard_offroad(dac)
 
 
 def _global_polygon_to_ego_local(polygon: Polygon, origin: StateSE2) -> np.ndarray:
@@ -444,7 +448,7 @@ def run_pdm_failure_diagnostics(
 
     diagnostics = PDMFailureDiagnostics(simulated_xy_local=simulated_xy_local)
 
-    if _metric_is_zero(metrics.get("no_at_fault_collisions")):
+    if _metric_is_hard_collision(metrics.get("no_at_fault_collisions")):
         collision = _find_first_at_fault_collision(scorer, pred_idx)
         if collision is not None:
             diagnostics.collision_time_s = collision["time_s"]
@@ -938,7 +942,7 @@ def parse_args():
     parser.add_argument(
         "--debug_failures",
         action="store_true",
-        help="对 NC=0 或 DAC=0 的样本叠加 PDM 仿真轨迹及碰撞/越界 box",
+        help="对 NC<=0.05 或 DAC<=0.05 的样本叠加 PDM 仿真轨迹及碰撞/越界 box",
     )
     parser.add_argument(
         "--metric_cache_path",
