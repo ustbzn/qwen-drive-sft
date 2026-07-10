@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Union, Tuple
+from typing import Any, Dict, List, Union
 from pathlib import Path
 from dataclasses import asdict
 from datetime import datetime
@@ -90,6 +90,38 @@ def compute_trajectory_l2_loss(
     per_step_l2 = np.linalg.norm(pred_xy - reference_xy, axis=1)
     return float(np.mean(per_step_l2))
 
+
+def load_scene_merge_map(csv_path: Path) -> Dict[str, str]:
+    """Load token -> scene_merge metadata used only for scoring decisions."""
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"Scenario type CSV does not exist: {csv_path}")
+
+    scenario_frame = pd.read_csv(csv_path, dtype="string", keep_default_na=False)
+    required_columns = {"token", "scene_merge"}
+    missing_columns = required_columns - set(scenario_frame.columns)
+    if missing_columns:
+        raise ValueError(
+            f"Scenario type CSV is missing columns: {sorted(missing_columns)}"
+        )
+
+    scenario_frame = scenario_frame.loc[:, ["token", "scene_merge"]].copy()
+    for column in scenario_frame.columns:
+        scenario_frame[column] = scenario_frame[column].str.strip()
+
+    if scenario_frame["token"].eq("").any():
+        raise ValueError(f"Scenario type CSV contains empty tokens: {csv_path}")
+    duplicated_tokens = scenario_frame.loc[
+        scenario_frame["token"].duplicated(keep=False), "token"
+    ].unique()
+    if len(duplicated_tokens) > 0:
+        raise ValueError(
+            f"Scenario type CSV contains duplicate tokens: {duplicated_tokens[:5].tolist()}"
+        )
+
+    scenario_frame["scene_merge"] = scenario_frame["scene_merge"].str.lower()
+    return dict(zip(scenario_frame["token"], scenario_frame["scene_merge"]))
+
+
 class InferenceSampler(torch.utils.data.sampler.Sampler):
     def __init__(self, size):
         self._size = int(size)
@@ -174,8 +206,30 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
 
     # 变道中心线满分模式
     lane_change_centerline_full_score = cfg.get("lane_change_centerline_full_score", False)
+    scene_merge_map: Dict[str, str] = {}
     if lane_change_centerline_full_score:
-        logger.info("Lane change centerline full score mode enabled.")
+        scenario_type_csv_path = cfg.get("scenario_type_csv_path", None)
+        if not scenario_type_csv_path:
+            raise ValueError(
+                "scenario_type_csv_path is required when "
+                "lane_change_centerline_full_score=true"
+            )
+        scene_merge_map = load_scene_merge_map(Path(scenario_type_csv_path))
+        missing_tokens = sorted(set(tokens_to_evaluate) - set(scene_merge_map))
+        if missing_tokens:
+            raise ValueError(
+                f"Scenario type CSV is missing {len(missing_tokens)} evaluation tokens; "
+                f"examples: {missing_tokens[:5]}"
+            )
+        lane_change_count = sum(
+            scene_merge_map[token] == "lane_change"
+            for token in tokens_to_evaluate
+        )
+        logger.info(
+            "Lane change centerline full score enabled for %d/%d local tokens.",
+            lane_change_count,
+            len(tokens_to_evaluate),
+        )
 
     pdm_results: List[Dict[str, Any]] = []
     for idx, (token) in enumerate(tokens_to_evaluate):
@@ -189,7 +243,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 metric_cache: MetricCache = pickle.load(f)
 
             scene = None
-            if requires_scene or use_gt_progress_reference or lane_change_centerline_full_score:
+            if requires_scene or use_gt_progress_reference:
                 scene = scene_loader.get_scene_from_token(token)
 
             agent_input = scene_loader.get_agent_input_from_token(token)
@@ -205,6 +259,10 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             score_row["progress_reference_source"] = (
                 "GT" if gt_progress_reference is not None else "PDM"
             )
+            is_lane_change = (
+                lane_change_centerline_full_score
+                and scene_merge_map.get(token) == "lane_change"
+            )
 
             trajectory_path = save_predicted_trajectory(Path(cfg.output_dir), token, trajectory)
             l2_loss = compute_trajectory_l2_loss(
@@ -214,52 +272,15 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 reference_trajectory=gt_progress_reference,
             )
 
-            # 变道中心线满分模式：修改 scorer 配置
-            if lane_change_centerline_full_score:
-                # 检查是否为变道场景（通过 driving_command 判断）
-                scene_for_command_check = scene or scene_loader.get_scene_from_token(token)
-                current_command = scene_for_command_check.frames[scene_for_command_check.scene_metadata.num_history_frames - 1].ego_status.driving_command
-                # driving_command: [0, 1, 0, 0] = straight, [0, 0, 1, 0] = left, [0, 0, 0, 1] = right
-                is_lane_change = (current_command[2] > 0.5) or (current_command[3] > 0.5)  # left or right lane change
-
-                if is_lane_change:
-                    # 创建一个临时 scorer，centerline_weight 设为 0，稍后手动设置为满分
-                    scorer_for_lane_change = PDMScorer(
-                        proposal_sampling=scorer.proposal_sampling,
-                        config=type(scorer._config)(
-                            **{k: v for k, v in scorer._config.__dict__.items() if k != 'centerline_weight'},
-                            centerline_weight=0.0  # 临时设为 0，后面手动设置
-                        ),
-                        vehicle_parameters=scorer._vehicle_parameters,
-                    )
-                    pdm_result = pdm_score(
-                        metric_cache=metric_cache,
-                        model_trajectory=trajectory,
-                        future_sampling=simulator.proposal_sampling,
-                        simulator=simulator,
-                        scorer=scorer_for_lane_change,
-                        progress_reference_trajectory=gt_progress_reference,
-                    )
-                    # 手动设置 centerline_convergence 为满分
-                    pdm_result.centerline_convergence = 1.0
-                else:
-                    pdm_result = pdm_score(
-                        metric_cache=metric_cache,
-                        model_trajectory=trajectory,
-                        future_sampling=simulator.proposal_sampling,
-                        simulator=simulator,
-                        scorer=scorer,
-                        progress_reference_trajectory=gt_progress_reference,
-                    )
-            else:
-                pdm_result = pdm_score(
-                    metric_cache=metric_cache,
-                    model_trajectory=trajectory,
-                    future_sampling=simulator.proposal_sampling,
-                    simulator=simulator,
-                    scorer=scorer,
-                    progress_reference_trajectory=gt_progress_reference,
-                )
+            pdm_result = pdm_score(
+                metric_cache=metric_cache,
+                model_trajectory=trajectory,
+                future_sampling=simulator.proposal_sampling,
+                simulator=simulator,
+                scorer=scorer,
+                progress_reference_trajectory=gt_progress_reference,
+                centerline_convergence_override=1.0 if is_lane_change else None,
+            )
 
             score_row.update(asdict(pdm_result))
             score_row["trajectory_path"] = str(trajectory_path)

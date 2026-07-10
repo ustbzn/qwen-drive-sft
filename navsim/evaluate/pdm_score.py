@@ -88,6 +88,7 @@ def pdm_score(
     scorer: PDMScorer,
     history_states: Optional[npt.NDArray[np.float64]] = None,
     progress_reference_trajectory: Optional[Trajectory] = None,
+    centerline_convergence_override: Optional[float] = None,
 ) -> PDMResults:
     """
     Runs PDM-Score and saves results in dataclass.
@@ -95,6 +96,8 @@ def pdm_score(
     :param model_trajectory: Predicted trajectory in ego frame.
     :param progress_reference_trajectory: Optional progress-normalization reference in ego frame.
         Defaults to the trajectory stored in the metric cache.
+    :param centerline_convergence_override: Optional predicted-trajectory centerline score.
+        The final score is re-aggregated with the original centerline weight.
     :return: Dataclass of PDM-Subscores.
     """
 
@@ -135,6 +138,16 @@ def pdm_score(
 
     # TODO: Refactor & add / modify existing metrics.
     pred_idx = 1
+    if centerline_convergence_override is not None:
+        override_value = float(centerline_convergence_override)
+        if not np.isfinite(override_value) or not 0.0 <= override_value <= 1.0:
+            raise ValueError(
+                f"centerline_convergence_override must be within [0, 1], got {override_value}"
+            )
+        scorer._weighted_metrics[
+            WeightedMetricIndex.CENTERLINE_CONVERGENCE, pred_idx
+        ] = override_value
+        scores = scorer._aggregate_scores()
 
     no_at_fault_collisions = scorer._multi_metrics[MultiMetricIndex.NO_COLLISION, pred_idx]
     drivable_area_compliance = scorer._multi_metrics[MultiMetricIndex.DRIVABLE_AREA, pred_idx]
