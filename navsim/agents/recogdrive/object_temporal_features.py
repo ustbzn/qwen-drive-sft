@@ -64,6 +64,13 @@ OBJECT_DIFF_DIM: int = 9
 # ego 0.5s 约移动 4~5m，物体相对位移可能更大；用 10m 作 delta 尺度，LayerNorm/GroupNorm 再规整。
 _NORM_DELTA_XY: float = 10.0
 
+# 单帧间隔(约0.5s)内物体相对位移的物理上限(米)。超过即判为异常帧并置零该 delta。
+# 已知触发源(上海 predata 批次)：原始 pkl 某帧 gt_boxes 漏做 global->ego 变换，该帧 object
+# 坐标是 UTM 大数(3.4e6)，object 在该中间帧"瞬移"产生 1e5~1e6 的 delta。根因在 object 坐标、
+# 不在 ego_pose（ego 变换成功抵消了 UTM，见 memory 与回溯 pkl 核实）。正常最快相对运动
+# (对向~200km/h≈55m/s * 0.5s ≈ 28m)远低于 100m；此阈值只兜底物理不可能的坏值。
+_MAX_DELTA_POS: float = 100.0
+
 # 时序窗口默认帧数（含当前帧），与 mogo_10hz 的 num_history_frames 对齐。
 DEFAULT_NUM_HISTORY_FRAMES: int = 4
 
@@ -375,6 +382,12 @@ class ObjectTemporalFeatureBuilder(AbstractFeatureBuilder):
             dheading = _wrap(xyt[t + 1, 2] - xyt[t, 2])
             speed_t1 = math.hypot(float(vel[t + 1, 0]), float(vel[t + 1, 1]))
             dpos = math.hypot(float(dx), float(dy))
+            # 异常帧防护：dpos 超过物理上限说明某帧坐标被 ego_pose 异常污染（残留 UTM 大偏移），
+            # 该 delta 不可信，整行置零并标 pair_valid=0（与"帧无效"同处理）。否则 1e5~1e6 坏值
+            # 会写进缓存，下游 fp16 Conv1d 溢出成 nan。这是根治：让新生成的缓存不再带毒。
+            if not math.isfinite(dpos) or dpos > _MAX_DELTA_POS:
+                deltas.append(np.zeros((OBJECT_DIFF_DIM,), dtype=np.float32))
+                continue
             deltas.append(
                 np.array(
                     [

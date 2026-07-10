@@ -37,18 +37,6 @@ def custom_collate_fn(
     high_command_one_hot = torch.stack([features['high_command_one_hot'] for features in features_list], dim=0).cpu()
     status_feature = torch.stack([features['status_feature'] for features in features_list], dim=0).cpu()
 
-    first_hidden_state = rnn_utils.pad_sequence(
-        [features['first_hidden_state'] for features in features_list],
-        batch_first=True,
-        padding_value=0.0
-    ).clone().detach()
-
-    last_hidden_state = rnn_utils.pad_sequence(
-        [features['last_hidden_state'] for features in features_list],
-        batch_first=True,
-        padding_value=0.0
-    ).clone().detach()
-
     trajectory = torch.stack([targets['trajectory'] for targets in targets_list], dim=0).cpu()
 
 
@@ -56,9 +44,23 @@ def custom_collate_fn(
         'history_trajectory': history_trajectory,
         'high_command_one_hot': high_command_one_hot,
         'status_feature': status_feature,
-        'first_hidden_state': first_hidden_state,
-        'last_hidden_state': last_hidden_state,
     }
+
+    # VLM 隐状态（变长，需 pad）。use_vlm=False 时 dataset 已在 __getitem__ pop 掉这两个键，
+    # planner/forward_grpo 也不引用，故此处成对判定：仅当 first 与 last 同时存在才 pad；
+    # 缺失（或脏 cache 半缺失）一律整体跳过，避免 KeyError。
+    f0 = features_list[0]
+    if 'first_hidden_state' in f0 and 'last_hidden_state' in f0:
+        features['first_hidden_state'] = rnn_utils.pad_sequence(
+            [features['first_hidden_state'] for features in features_list],
+            batch_first=True,
+            padding_value=0.0
+        ).clone().detach()
+        features['last_hidden_state'] = rnn_utils.pad_sequence(
+            [features['last_hidden_state'] for features in features_list],
+            batch_first=True,
+            padding_value=0.0
+        ).clone().detach()
 
     # hdmap vector 字段（变长，需要 collate）
     collate_hdmap_vector_features(features, features_list)
@@ -222,6 +224,7 @@ def main(cfg: DictConfig) -> None:
             target_builders=agent.get_target_builders(),
             log_names=cfg.train_logs,
             tokens=train_tokens,
+            drop_hidden_state=not getattr(agent, "use_vlm", True),
         )
         val_data = build_cache_only_dataset(
             cache_path=cfg.cache_path,
@@ -229,6 +232,7 @@ def main(cfg: DictConfig) -> None:
             feature_builders=agent.get_feature_builders(),
             target_builders=agent.get_target_builders(),
             log_names=cfg.val_logs,
+            drop_hidden_state=not getattr(agent, "use_vlm", True),
         )
     else:
         logger.info("Building SceneLoader")

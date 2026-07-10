@@ -6,6 +6,28 @@ DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
+# --- 多城市数据集：脚本内置默认 manifest，直接 bash 启动即多城市 ------------------------
+# 直接 `bash scripts/training/run_recogdrive_train_multi_node_rl_2b_mogo.sh` 即用下面的 manifest，
+# 自动派生 CACHE_PATHS、METRIC_CACHE_PATHS、NAVSIM_EXP_ROOT(=顶层 train_exp_root)。
+# 覆盖：MOGO_MANIFEST=<其他 manifest> 换数据集；MOGO_MANIFEST= 置空回到单城市旧行为；MOGO_NAMES="a,b" 只跑子集。
+# 注意：RL 用 token 白名单而非 log_split，多城市白名单须覆盖目标城市；MetricCacheLoader 多 metric root
+# 间发现重复 token 会直接报错（数据生成需保证 token 全局唯一）。CHECKPOINT 须来自同结构多城市 IL。
+MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml}"
+if [ -n "${MOGO_MANIFEST:-}" ]; then
+  MOGO_PATHS_HELPER="${REPO_ROOT}/scripts/cache_dataset/mogo_manifest_paths.py"
+  MOGO_NAMES_ARGS=""
+  [ -n "${MOGO_NAMES:-}" ] && MOGO_NAMES_ARGS="--names ${MOGO_NAMES}"
+  if [ -z "${CACHE_PATHS:-}" ]; then
+    CACHE_PATHS="$(python "${MOGO_PATHS_HELPER}" --manifest "${MOGO_MANIFEST}" --field cache_path ${MOGO_NAMES_ARGS})"
+  fi
+  CACHE_PATH="${CACHE_PATH:-${CACHE_PATHS%%:*}}"
+  if [ -z "${METRIC_CACHE_PATHS:-}" ]; then
+    METRIC_CACHE_PATHS="$(python "${MOGO_PATHS_HELPER}" --manifest "${MOGO_MANIFEST}" --field metric_cache_path ${MOGO_NAMES_ARGS})"
+  fi
+  MOGO_TRAIN_EXP_ROOT="$(python "${MOGO_PATHS_HELPER}" --manifest "${MOGO_MANIFEST}" --field train_exp_root --top-level)"
+  [ -n "${MOGO_TRAIN_EXP_ROOT}" ] && [ -z "${NAVSIM_EXP_ROOT:-}" ] && export NAVSIM_EXP_ROOT="${MOGO_TRAIN_EXP_ROOT}"
+fi
+
 export NUPLAN_MAP_VERSION="${NUPLAN_MAP_VERSION:-nuplan-maps-v1.0}"
 export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${DATA_ROOT}/dataset/maps}"
 export NAVSIM_EXP_ROOT="${NAVSIM_EXP_ROOT:-${DATA_ROOT}/exp}"

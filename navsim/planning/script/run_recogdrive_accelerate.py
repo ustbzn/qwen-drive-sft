@@ -94,15 +94,15 @@ def custom_collate_fn(
         "status_feature": status_feature,
     }
 
-    if "last_hidden_state" in f0:
+    if "first_hidden_state" in f0 and "last_hidden_state" in f0:
         # ---------- 模式 1：online（已有 hidden state，直接 pad） ----------
-        if "first_hidden_state" in f0:
-            first_hidden_state = rnn_utils.pad_sequence(
-                [f["first_hidden_state"] for f in features_list],
-                batch_first=True,
-                padding_value=0.0,
-            ).clone().detach()
-            features["first_hidden_state"] = first_hidden_state.cpu()
+        # 成对判定：first 与 last 必须同时存在才 pad，避免脏 cache 半缺失。
+        first_hidden_state = rnn_utils.pad_sequence(
+            [f["first_hidden_state"] for f in features_list],
+            batch_first=True,
+            padding_value=0.0,
+        ).clone().detach()
+        features["first_hidden_state"] = first_hidden_state.cpu()
         last_hidden_state = rnn_utils.pad_sequence(
             [f["last_hidden_state"] for f in features_list],
             batch_first=True,
@@ -120,11 +120,9 @@ def custom_collate_fn(
             padding_value=0,   # long 型 0
         )
         features["image_path_tensor"] = image_path_tensor.cpu()
-    else:
-        raise KeyError(
-            "features must contain either 'last_hidden_state' or 'image_path_tensor'. "
-            f"Got keys: {list(f0.keys())}"
-        )
+    # else: use_vlm=False —— dataset 已在 __getitem__ pop 掉 hidden state，且缓存模式无
+    # image_path_tensor。planner 走无 VLM 分支（_build_context_tokens_no_vlm）不需要任何
+    # VLM 输入，故这里不再 raise，静默跳过（与 IL/RL/EMA collate 缺失即跳过的行为一致）。
 
     # 障碍物 obj 字段（固定形状，直接 stack，无需 pad_sequence）。仅当缓存里有 obj 时才补。
     if "obj_features" in f0:
@@ -371,6 +369,7 @@ class ReCogDriveTrainer:
                 feature_builders=agent.get_feature_builders(),
                 target_builders=agent.get_target_builders(),
                 log_names=self.cfg.train_logs,
+                drop_hidden_state=not getattr(agent, "use_vlm", True),
             )
         else:
             logger.info("Building SceneLoader for training")
@@ -401,6 +400,7 @@ class ReCogDriveTrainer:
                 feature_builders=agent.get_feature_builders(),
                 target_builders=agent.get_target_builders(),
                 log_names=self.cfg.val_logs,
+                drop_hidden_state=not getattr(agent, "use_vlm", True),
             )
         else:
             logger.info("Building SceneLoader for validation")

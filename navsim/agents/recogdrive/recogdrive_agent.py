@@ -80,6 +80,7 @@ class ReCogDriveAgent(AbstractAgent):
         hdmap_radius: float = 120.0,
         strict_hdmap_vector: bool = False,
         use_lane_boundaries: bool = False,
+        hdmap_input_norm: bool = False,
         use_object_vector: bool = False,
         max_obj_tokens: int = 64,
         obj_range_x: Optional[List[float]] = None,
@@ -138,6 +139,7 @@ class ReCogDriveAgent(AbstractAgent):
         self.hdmap_radius = float(hdmap_radius)
         self.strict_hdmap_vector = bool(strict_hdmap_vector)
         self.use_lane_boundaries = bool(use_lane_boundaries)
+        self.hdmap_input_norm = bool(hdmap_input_norm)
         # 障碍物 obj token 配置（默认关闭，零影响）。开启则 requires_scene=True，
         # eval / 缓存时从 Scene 当前帧 annotations 取障碍物。
         self.use_object_vector = bool(use_object_vector)
@@ -216,6 +218,7 @@ class ReCogDriveAgent(AbstractAgent):
                 max_map_tokens=self.max_map_tokens,
                 map_sample_points=self.map_sample_points,
                 use_lane_boundaries=self.use_lane_boundaries,
+                hdmap_input_norm=self.hdmap_input_norm,
                 use_object_vector=self.use_object_vector,
                 obj_feature_dim=OBJECT_FEATURE_DIM,
                 obj_num_types=OBJECT_NUM_TYPES,
@@ -246,6 +249,7 @@ class ReCogDriveAgent(AbstractAgent):
                 max_map_tokens=self.max_map_tokens,
                 map_sample_points=self.map_sample_points,
                 use_lane_boundaries=self.use_lane_boundaries,
+                hdmap_input_norm=self.hdmap_input_norm,
                 use_object_vector=self.use_object_vector,
                 obj_feature_dim=OBJECT_FEATURE_DIM,
                 obj_num_types=OBJECT_NUM_TYPES,
@@ -656,6 +660,7 @@ def make_recogdrive_config(
     max_map_tokens: int = 128,
     map_sample_points: int = 20,
     use_lane_boundaries: bool = False,
+    hdmap_input_norm: bool = False,
     use_object_vector: bool = False,
     obj_feature_dim: int = OBJECT_FEATURE_DIM,
     obj_num_types: int = OBJECT_NUM_TYPES,
@@ -728,6 +733,7 @@ def make_recogdrive_config(
         max_map_tokens=max_map_tokens,
         map_sample_points=map_sample_points,
         use_lane_boundaries=use_lane_boundaries,
+        hdmap_input_norm=hdmap_input_norm,
         use_object_vector=use_object_vector,
         obj_feature_dim=obj_feature_dim,
         obj_num_types=obj_num_types,

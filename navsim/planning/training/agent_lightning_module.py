@@ -4,6 +4,7 @@ from torch import Tensor
 from typing import Dict, Tuple,Any
 
 from navsim.agents.abstract_agent import AbstractAgent
+from navsim.planning.training.nan_debug import maybe_install_nan_debug
 
 
 class AgentLightningModule(pl.LightningModule):
@@ -16,6 +17,7 @@ class AgentLightningModule(pl.LightningModule):
         """
         super().__init__()
         self.agent = agent
+        maybe_install_nan_debug(self.agent)  # 默认无操作；RECOGDRIVE_NAN_DEBUG=1 时定位首个 NaN 模块
 
     def _step(self, batch: Tuple[Dict[str, Tensor], Dict[str, Tensor]], logging_prefix: str) -> Tensor:
         """
@@ -76,6 +78,7 @@ class AgentLightningDiT(pl.LightningModule):
         """
         super().__init__()
         self.agent = agent
+        maybe_install_nan_debug(self.agent)  # 默认无操作；RECOGDRIVE_NAN_DEBUG=1 时定位首个 NaN 模块
 
     def _step(self, batch: Tuple[Dict[str, Tensor], Dict[str, Tensor]], logging_prefix: str) -> Tensor:
         """

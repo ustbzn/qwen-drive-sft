@@ -36,9 +36,19 @@ class MapEncoder(nn.Module):
         num_polygon_types: int = 3,
         num_tl_states: int = 4,
         use_lane_boundaries: bool = False,
+        input_norm: bool = False,
     ) -> None:
         super().__init__()
         self.use_lane_boundaries = bool(use_lane_boundaries)
+        # fp16 数值加固（默认关，字节级零影响）：对进 encoder 的局部米制坐标做
+        # nan_to_num→宽 clamp→scale 到 O(1)。局部坐标实测 <652m（远低于 fp16 上限 65504），
+        # clamp 阈值取 ±1000 覆盖全部真实数据不截断，仅兜底极端/脏坐标；scale 让首层 Linear
+        # 输入落到 O(1-10)，消除训练中激活/梯度被大尺度输入放大导致的溢出。首层是
+        # Linear→LayerNorm，LayerNorm 吸收全局 scale，故从头训练表达力/效果一致；旧 ckpt 不可
+        # 热启（首层输入尺度变了会错位）。
+        self.input_norm = bool(input_norm)
+        self._pos_clamp, self._pos_scale = 1000.0, 100.0
+        self._vec_clamp, self._vec_scale = 100.0, 10.0
         # 中心线 per-point 6 维 [pos(2), vec(2), sinθ, cosθ]；开启车道边界再拼 7 维边界几何 -> 13 维。
         point_input_dim = 13 if self.use_lane_boundaries else 6
         self.centerline_encoder = PointsEncoder(input_dim=point_input_dim, hidden_size=hidden_size)
@@ -68,6 +78,18 @@ class MapEncoder(nn.Module):
     ) -> torch.Tensor:
         batch_size, max_map_tokens, _, sample_points, _ = point_position.shape
         dtype = self.output_norm.weight.dtype
+
+        # fp16 数值加固：nan_to_num→宽 clamp→scale。必须在下面 center/boundary 计算之前做，
+        # 使中心线特征与从 point_position 现算的边界几何共享同一 scaled 坐标（13 维尺度自洽）。
+        # padding polygon 坐标为 0，经此变换仍为 0，末端再乘 map_valid_mask 置零，语义不变。
+        # orientation 走 sin/cos 已有界、speed_limit 量级小，均无需处理。
+        if self.input_norm:
+            point_position = torch.nan_to_num(
+                point_position, nan=0.0, posinf=0.0, neginf=0.0
+            ).clamp(-self._pos_clamp, self._pos_clamp) / self._pos_scale
+            point_vector = torch.nan_to_num(
+                point_vector, nan=0.0, posinf=0.0, neginf=0.0
+            ).clamp(-self._vec_clamp, self._vec_clamp) / self._vec_scale
 
         center_position = point_position[:, :, 0].to(dtype=dtype)
         center_vector = point_vector[:, :, 0].to(dtype=dtype)

@@ -1,0 +1,61 @@
+# MOGO multi-batch/multi-city manifest for the current project (3 beijing batches + 1 shanghai).
+# Keep raw dataset roots independent; merge only cache roots at training time.
+# Select this manifest for the manifest runners via: export MOGO_MANIFEST=<this file>
+# Add a new dataset by appending one entry under `datasets:` (see docs/mogo_multi_dataset_usage_plan.md).
+#
+# Field semantics:
+#   name              globally-unique id (used by --name filter, eval experiment suffix, logging)
+#   city              label only (merged-CSV grouping)
+#   data_root         dataset root; must contain dataset/{maps,navsim_logs,sensor_blobs}
+#   sqlite_path       this dataset's HD map sqlite; never reuse across cities
+#   utm_zone          beijing=50, shanghai=51
+#   utm_south         southern-hemisphere flag (false for China)
+#   cache_path        feature cache root (training); points at the already-built cache
+#   metric_cache_path metric cache root (PDM eval / RL reward)
+
+# Merged-evaluation CSV output root (keeps merged results out of worldsim/).
+merged_eval_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/merged_eval
+# Shared IL/RL output root. When MOGO_MANIFEST points here, the training shells default
+# NAVSIM_EXP_ROOT to this (so checkpoints/logs land in one shared place, not a single batch).
+train_exp_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp
+
+datasets:
+  - name: beijing_0312_0319
+    city: beijing
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+    utm_zone: 50
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp/metric_cache_mogo_v3
+
+  - name: beijing_0320_0325new
+    city: beijing
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0320-0325new
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0320-0325new/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+    utm_zone: 50
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0320-0325new/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0320-0325new/exp/metric_cache_mogo_v1
+
+  # NOTE: `predata` is SHANGHAI data (shanghai map, UTM 51). Its pkls carry no camera
+  # images, so its qwen3 VLM hidden states are degenerate. This is safe only while the
+  # active chain masks VLM semantics (IL use_vlm=false, RL/eval vlm_ablation=zero). Do
+  # not include it in a run that relies on real VLM features.
+  - name: shanghai_predata
+    city: shanghai
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata/dataset/maps/hm_shanghai_1.9.1_20260522.sqlite
+    utm_zone: 51
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata/exp/metric_cache_mogo_v3
+
+  - name: beijing_predata
+    city: beijing
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata_beijing
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata_beijing/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+    utm_zone: 50
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata_beijing/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/predata_beijing/exp/metric_cache_mogo_v3

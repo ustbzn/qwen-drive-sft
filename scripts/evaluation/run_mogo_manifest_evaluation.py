@@ -14,8 +14,16 @@ from omegaconf import OmegaConf
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MANIFEST = REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/worldsim.yaml"
+# Default manifest is overridable via `export MOGO_MANIFEST=<path>`; worldsim stays the fallback.
+DEFAULT_MANIFEST = Path(
+    os.environ.get(
+        "MOGO_MANIFEST",
+        str(REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml"),
+    )
+)
 DEFAULT_EVAL_SCRIPT = REPO_ROOT / "scripts/evaluation/worldsim_pdms_evaluation_2b.sh"
+# Fallback merged-CSV root when the manifest has no `merged_eval_root`.
+FALLBACK_MERGED_EVAL_ROOT = Path("/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim") / "merged_eval"
 
 
 def load_datasets(manifest: Path, names: list[str] | None) -> list[Any]:
@@ -28,6 +36,13 @@ def load_datasets(manifest: Path, names: list[str] | None) -> list[Any]:
         if missing:
             raise SystemExit(f"Unknown dataset name(s): {sorted(missing)}")
     return datasets
+
+
+def load_merged_eval_root(manifest: Path) -> str | None:
+    """Read optional top-level `merged_eval_root` from the manifest; None if absent."""
+    cfg = OmegaConf.load(manifest)
+    root = cfg.get("merged_eval_root", None)
+    return str(root) if root else None
 
 
 def latest_csv(data_root: Path, experiment_name: str, previous: set[Path]) -> Path | None:
@@ -120,7 +135,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--name", action="append", dest="names", help="Dataset name to run; repeatable")
     parser.add_argument("--eval-script", type=Path, default=DEFAULT_EVAL_SCRIPT)
-    parser.add_argument("--experiment-name", default="worldsim_multi_city_eval")
+    parser.add_argument("--experiment-name", default="mogo_multi_eval")
     parser.add_argument("--merged-csv", type=Path, default=None)
     parser.add_argument("--checkpoint", default="")
     parser.add_argument("--qwen3-vl-path", default="")
@@ -142,7 +157,8 @@ def main() -> None:
     output_path = args.merged_csv
     if output_path is None:
         timestamp = datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
-        output_path = Path("/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim") / "merged_eval" / f"{args.experiment_name}_{timestamp}.csv"
+        merged_root = load_merged_eval_root(args.manifest) or str(FALLBACK_MERGED_EVAL_ROOT)
+        output_path = Path(merged_root) / f"{args.experiment_name}_{timestamp}.csv"
     merge_csvs(csv_by_dataset, output_path)
 
 

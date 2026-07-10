@@ -12,7 +12,13 @@ from omegaconf import OmegaConf
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MANIFEST = REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/worldsim.yaml"
+# Default manifest is overridable via `export MOGO_MANIFEST=<path>`; worldsim stays the fallback.
+DEFAULT_MANIFEST = Path(
+    os.environ.get(
+        "MOGO_MANIFEST",
+        str(REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml"),
+    )
+)
 DEFAULT_CACHE_SCRIPT = REPO_ROOT / "scripts/cache_dataset/run_caching_recogdrive_qwen3_hidden_state.sh"
 
 

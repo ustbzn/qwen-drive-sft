@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 from pathlib import Path
 from typing import Any
@@ -12,8 +13,15 @@ from omegaconf import OmegaConf
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MANIFEST = REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/worldsim.yaml"
-DEFAULT_OUT = REPO_ROOT / "navsim/planning/script/config/training/log_split/mogo_worldsim.yaml"
+LOG_SPLIT_DIR = REPO_ROOT / "navsim/planning/script/config/training/log_split"
+# Default manifest = MOGO_MANIFEST env, else the project's active multi-city manifest (mogo_multi).
+# Override with `export MOGO_MANIFEST=<path>` or `--manifest <path>`.
+DEFAULT_MANIFEST = Path(
+    os.environ.get(
+        "MOGO_MANIFEST",
+        str(REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml"),
+    )
+)
 
 
 def load_datasets(manifest: Path, names: list[str] | None) -> list[Any]:
@@ -68,13 +76,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--name", action="append", dest="names", help="Dataset name to include; repeatable")
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="output yaml; default log_split/<manifest stem>.yaml (matches training LOG_SPLIT=<stem>)",
+    )
     parser.add_argument("--train-subdir", default="train")
     parser.add_argument("--test-subdir", default="val")
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--global-split", action="store_true", help="Split after merging all dataset logs")
     args = parser.parse_args()
+    if args.out is None:
+        args.out = LOG_SPLIT_DIR / f"{args.manifest.stem}.yaml"
 
     train_source_logs: list[str] = []
     train_logs: list[str] = []

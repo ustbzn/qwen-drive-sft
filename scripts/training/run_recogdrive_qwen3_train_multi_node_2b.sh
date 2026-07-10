@@ -5,6 +5,26 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
+
+# --- 多城市数据集：脚本内置默认 manifest，直接 bash 启动即多城市 ------------------------
+# 直接 `bash scripts/training/run_recogdrive_qwen3_train_multi_node_2b.sh` 即用下面的 manifest，
+# 自动派生 CACHE_PATHS、LOG_SPLIT(=manifest 文件名 stem)、NAVSIM_EXP_ROOT(=顶层 train_exp_root)。
+# 覆盖：MOGO_MANIFEST=<其他 manifest> 换数据集；MOGO_MANIFEST= （置空）回到单城市旧行为；
+# MOGO_NAMES="a,b" 只跑子集；显式传 CACHE_PATHS/LOG_SPLIT/NAVSIM_EXP_ROOT 亦优先。
+MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml}"
+LOG_SPLIT="${LOG_SPLIT:-}"
+if [ -n "${MOGO_MANIFEST:-}" ]; then
+  MOGO_PATHS_HELPER="${REPO_ROOT}/scripts/cache_dataset/mogo_manifest_paths.py"
+  MOGO_NAMES_ARGS=""
+  [ -n "${MOGO_NAMES:-}" ] && MOGO_NAMES_ARGS="--names ${MOGO_NAMES}"
+  if [ -z "${CACHE_PATHS:-}" ]; then
+    CACHE_PATHS="$(python "${MOGO_PATHS_HELPER}" --manifest "${MOGO_MANIFEST}" --field cache_path ${MOGO_NAMES_ARGS})"
+  fi
+  CACHE_PATH="${CACHE_PATH:-${CACHE_PATHS%%:*}}"
+  [ -z "${LOG_SPLIT}" ] && LOG_SPLIT="$(basename "${MOGO_MANIFEST}" .yaml)"
+  MOGO_TRAIN_EXP_ROOT="$(python "${MOGO_PATHS_HELPER}" --manifest "${MOGO_MANIFEST}" --field train_exp_root --top-level)"
+  [ -n "${MOGO_TRAIN_EXP_ROOT}" ] && [ -z "${NAVSIM_EXP_ROOT:-}" ] && export NAVSIM_EXP_ROOT="${MOGO_TRAIN_EXP_ROOT}"
+fi
 LOG_SPLIT="${LOG_SPLIT:-mogo}"
 
 export NUPLAN_MAP_VERSION="${NUPLAN_MAP_VERSION:-nuplan-maps-v1.0}"
@@ -37,8 +57,8 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
-BATCH_SIZE="${BATCH_SIZE:-160}"
-MAX_EPOCHS="${MAX_EPOCHS:-200}"
+BATCH_SIZE="${BATCH_SIZE:-1280}"
+MAX_EPOCHS="${MAX_EPOCHS:-100}"
 
 CACHE_ARGS=(cache_path="${CACHE_PATH}")
 if [ -n "${CACHE_PATHS:-}" ]; then
@@ -103,6 +123,7 @@ torchrun \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
   agent.use_lane_boundaries=true \
+  agent.hdmap_input_norm=false \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.3}" \
   trainer.params.max_epochs="${MAX_EPOCHS}" \

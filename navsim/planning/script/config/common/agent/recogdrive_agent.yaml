@@ -89,6 +89,11 @@ strict_hdmap_vector: false
 # 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数不变、缓存无需重跑；
 # 但新增 centerline_encoder 权重，须重训 IL（旧 ckpt 该层随机初始化），RL/eval 换用新 IL 产物。
 use_lane_boundaries: false
+# fp16 数值加固开关（默认关，字节级零影响）：对进 MapEncoder 的局部米制坐标做 nan_to_num+
+# clamp(±1000)+scale，消除未归一化大坐标(实测<652m)在 fp16 训练下的激活/梯度放大。仅改
+# planner 内 MapEncoder.forward、不改缓存；从头训练效果一致，但旧 ckpt 不可热启（首层输入
+# 尺度变了）。多城市/长训数值稳健用，须与 use_hdmap_vector=true 搭配。
+hdmap_input_norm: false
 # --- 前视图像 ResNet encoder token（默认关闭，等价当前流程，零影响；仅实验用）---
 # 目的：vlm_ablation=zero 屏蔽 VLM 语义 token 的同时，仍通过独立可训练 ResNet 向 DiT 注入
 # 前视图像视觉信息。图像从 agent_input 当前帧 cam_f0 取，编成空间 token 拼到 vl_context_tokens

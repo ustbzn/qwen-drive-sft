@@ -29,6 +29,25 @@ class CacheSampleKey:
     token: str
 
 
+# VLM 隐状态特征键。use_vlm=False 时 planner 完全不引用这两个键（见
+# recogdrive_agent.compute_features 的 not self.use_vlm 分支 与 planner 的
+# _build_context_tokens_no_vlm），但它们和 use_vlm=False 仍需要的
+# history_trajectory/high_command_one_hot/status_feature 同存于一个 qwen3_feature.gz。
+# 缓存里单样本 first+last≈16MB，若随样本流入 DataLoader worker 会在 batch 级
+# 累积并被 collate 的 pad_sequence(...).clone() 放大，成为高 batch 训练 OOM(SIGKILL)
+# 的峰值来源。drop_hidden_state=True 时在 __getitem__ 就 pop 掉，从源头消除累积。
+# 仅 use_vlm=False 才丢；use_vlm=True / vlm_ablation=zero 都保留（zero 仍需读后置零）。
+VLM_HIDDEN_STATE_KEYS = ("first_hidden_state", "last_hidden_state")
+
+
+def _maybe_drop_hidden_state(features: Dict[str, torch.Tensor], drop: bool) -> None:
+    """当 drop=True 时，就地移除 VLM 隐状态键（成对移除，缺失则忽略）。"""
+    if not drop:
+        return
+    for key in VLM_HIDDEN_STATE_KEYS:
+        features.pop(key, None)
+
+
 def load_feature_target_from_pickle(path: Path) -> Dict[str, torch.Tensor]:
     """Helper function to load pickled feature/target from path."""
     with gzip.open(path, "rb") as f:
@@ -53,6 +72,7 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         target_builders: List[AbstractTargetBuilder],
         log_names: Optional[List[str]] = None,
         tokens: Optional[List[str]] = None,
+        drop_hidden_state: bool = False,
     ):
         """
         Initializes the dataset module.
@@ -61,11 +81,13 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         :param target_builders: list of target builders
         :param log_names: optional list of log folder to consider, defaults to None
         :param tokens: optional list of sample tokens to consider, defaults to None
+        :param drop_hidden_state: drop VLM hidden-state keys on load (use_vlm=False), defaults to False
         """
         super().__init__()
         assert Path(cache_path).is_dir(), f"Cache path {cache_path} does not exist!"
         self._cache_path = Path(cache_path)
         self._tokens = set(tokens) if tokens is not None else None
+        self._drop_hidden_state = bool(drop_hidden_state)
 
         if log_names is not None:
             self.log_names = [Path(log_name) for log_name in log_names if (self._cache_path / log_name).is_dir()]
@@ -152,6 +174,8 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
             data_dict = load_feature_target_from_pickle(data_dict_path)
             targets.update(data_dict)
 
+        _maybe_drop_hidden_state(features, self._drop_hidden_state)
+
         return (features, targets, token)
 
 
@@ -165,6 +189,7 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         target_builders: List[AbstractTargetBuilder],
         log_names: Optional[List[str]] = None,
         tokens: Optional[List[str]] = None,
+        drop_hidden_state: bool = False,
     ):
         """
         Initializes the dataset module.
@@ -173,6 +198,7 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         :param target_builders: list of target builders
         :param log_names: optional list of log folders to consider in each cache root
         :param tokens: optional list of sample tokens to consider
+        :param drop_hidden_state: drop VLM hidden-state keys on load (use_vlm=False), defaults to False
         """
         super().__init__()
         assert cache_paths, "At least one cache path must be provided!"
@@ -181,6 +207,7 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
             assert cache_path.is_dir(), f"Cache path {cache_path} does not exist!"
 
         self._tokens = set(tokens) if tokens is not None else None
+        self._drop_hidden_state = bool(drop_hidden_state)
         self._feature_builders = feature_builders
         self._target_builders = target_builders
         self._valid_cache_paths: Dict[CacheSampleKey, Path] = self._load_valid_caches(
@@ -293,6 +320,8 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
             data_dict = load_feature_target_from_pickle(data_dict_path)
             targets.update(data_dict)
 
+        _maybe_drop_hidden_state(features, self._drop_hidden_state)
+
         return (features, targets, sample.token)
 
 
@@ -325,8 +354,14 @@ def build_cache_only_dataset(
     log_names: Optional[List[str]] = None,
     tokens: Optional[List[str]] = None,
     cache_paths: Optional[Any] = None,
+    drop_hidden_state: bool = False,
 ) -> torch.utils.data.Dataset:
-    """Build a cache-only dataset from either one cache root or multiple roots."""
+    """Build a cache-only dataset from either one cache root or multiple roots.
+
+    :param drop_hidden_state: when True (agent use_vlm=False), VLM hidden-state
+        keys are dropped at load time to avoid batch-level memory accumulation.
+        Defaults to False so all other callers keep the original behavior.
+    """
     resolved_cache_paths = normalize_cache_paths(cache_path=cache_path, cache_paths=cache_paths)
     assert resolved_cache_paths, "cache_path or cache_paths must be provided when using cached data"
 
@@ -337,6 +372,7 @@ def build_cache_only_dataset(
             target_builders=target_builders,
             log_names=log_names,
             tokens=tokens,
+            drop_hidden_state=drop_hidden_state,
         )
 
     return MultiCacheOnlyDataset(
@@ -345,6 +381,7 @@ def build_cache_only_dataset(
         target_builders=target_builders,
         log_names=log_names,
         tokens=tokens,
+        drop_hidden_state=drop_hidden_state,
     )
 
 

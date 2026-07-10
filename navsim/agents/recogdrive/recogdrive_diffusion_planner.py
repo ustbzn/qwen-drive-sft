@@ -268,8 +268,13 @@ class TemporalObjectEncoder(nn.Module):
         hidden_dim: int,
         temporal_dim: int,
         dropout: float = 0.0,
+        sanitize_diff: bool = True,
+        diff_clamp: float = 20.0,
     ):
         super().__init__()
+        # 时序差分输入净化开关（默认开，正常数据零影响；兜底极少数 ego_pose 异常样本的 1e5~1e6 坏值）。
+        self.sanitize_diff = bool(sanitize_diff)
+        self.diff_clamp = float(diff_clamp)
         # abs 分支：与 ObjectEncoder 结构一致
         self.feature_norm = nn.LayerNorm(feature_dim)
         self.feature_mlp = nn.Sequential(
@@ -299,6 +304,14 @@ class TemporalObjectEncoder(nn.Module):
         abs_token = self.feature_mlp(self.feature_norm(obj_features)) + self.type_embedding(obj_type.long())
 
         # 对所有 slot 跑 temporal（DDP 友好），再用 gate 只保留有效动态 slot 的 motion。
+        # 净化：极少数样本因历史帧 ego_pose 异常，diff 出现 1e5~1e6 坏值，fp16 下经 Conv1d
+        # tokenizer 溢出成 inf/nan 并污染整个 batch。入口 nan_to_num + 对称 clamp 到 ±diff_clamp
+        # （正常 diff 已归一化到 O(1)，实测全量 max≈6；clamp 到 20 不触及真实数据，仅截断坏值）。
+        # 在 permute/reshape 前做，最省算子且不改变形状语义。
+        if self.sanitize_diff:
+            obj_diff_features = torch.nan_to_num(
+                obj_diff_features, nan=0.0, posinf=0.0, neginf=0.0
+            ).clamp(-self.diff_clamp, self.diff_clamp)
         diff = obj_diff_features.permute(0, 1, 3, 2).reshape(B * N, obj_diff_features.shape[-1], obj_diff_features.shape[-2])
         motion = self.motion_proj(self.temporal(diff)).view(B, N, -1)
         gate = (obj_valid_mask.bool() & obj_is_dynamic.bool()).unsqueeze(-1).to(motion.dtype)
@@ -418,6 +431,10 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     map_sample_points: int = 20
     # 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数/缓存均不变。
     use_lane_boundaries: bool = False
+    # fp16 数值加固开关（默认关，字节级零影响）：对进 MapEncoder 的局部米制坐标做
+    # nan_to_num→clamp→scale。仅影响 planner 内 MapEncoder.forward，不改缓存；从头训练效果
+    # 一致，但旧 ckpt 不可热启（首层输入尺度变了）。多城市/长训 fp16 数值稳健性用。
+    hdmap_input_norm: bool = False
     num_map_polygon_types: int = 3
     num_map_tl_states: int = 4
 
@@ -450,6 +467,18 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     obj_diff_dim: int = 9                 # 差分特征维（temporal 分支），须与 object_temporal_features.OBJECT_DIFF_DIM 一致
     obj_temporal_dim: int = 128           # 时序金字塔内部维
     static_speed_threshold: float = 0.5   # 动/静划分阈值(m/s)，数据侧划分用；此处保留以便配置透传
+    # 时序差分输入净化（默认开，对正常数据字节级零影响）。极少数样本（实测上海 predata 批次
+    # 6/72万）因**原始 pkl 某帧 gt_boxes 漏做 global->ego 变换**，该帧 object 坐标是 UTM 大数
+    # (3.4e6)，导致差分 obj_diff_features 出现 1e5~1e6 量级坏值（object 在该中间帧瞬移出去再
+    # 回来，产生等量反向 delta）。注意根因在 object 坐标、不在 ego_pose：ego 变换其实成功抵消了
+    # UTM 偏移，抵消不掉的是 object 自身 baked-in 的大数（已回溯原始 pkl 核实，见 memory）。
+    # 这些坏值经 fp16 的 Conv1d tokenizer 溢出成 inf/nan，污染整个 batch 的 loss。入口处
+    # nan_to_num + 对称 clamp 到 ±obj_diff_clamp（正常 diff 已归一化到 O(1)，实测全量 max≈6，
+    # clamp 到 20 不触及真实数据、仅兜底坏值），彻底阻断 nan。与数据侧修复(_build_diff_features
+    # 异常帧置零)互补：数据侧根治新缓存、此处兜底已固化在旧缓存里的坏样本，缓存无需重跑即可安全
+    # 训练。真正的上游根治需在 DrivePi_mogo parseRosBag 修 gt_boxes 变换。
+    sanitize_obj_diff: bool = True
+    obj_diff_clamp: float = 20.0
 
     # --- 前视图像 ResNet encoder token（默认关闭，零影响；实验用）---
     # 开启后把当前帧前视图经 ResNet 编成空间 token，拼到 vl_context_tokens 后进 DiT
@@ -537,6 +566,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             num_polygon_types=config.num_map_polygon_types,
             num_tl_states=config.num_map_tl_states,
             use_lane_boundaries=config.use_lane_boundaries,
+            input_norm=config.hdmap_input_norm,
         ) if config.use_hdmap_vector else None
 
         # 障碍物编码器：把 obj 特征编成 context token，拼到 vl_context_tokens 后面。
@@ -551,6 +581,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     hidden_dim=config.hidden_size,
                     temporal_dim=config.obj_temporal_dim,
                     dropout=config.object_token_dropout,
+                    sanitize_diff=config.sanitize_obj_diff,
+                    diff_clamp=config.obj_diff_clamp,
                 )
             else:
                 self.object_encoder = ObjectEncoder(
