@@ -87,25 +87,32 @@ def pdm_score(
     simulator: PDMSimulator,
     scorer: PDMScorer,
     history_states: Optional[npt.NDArray[np.float64]] = None,
+    progress_reference_trajectory: Optional[Trajectory] = None,
 ) -> PDMResults:
     """
     Runs PDM-Score and saves results in dataclass.
     :param metric_cache: Metric cache dataclass
     :param model_trajectory: Predicted trajectory in ego frame.
+    :param progress_reference_trajectory: Optional progress-normalization reference in ego frame.
+        Defaults to the trajectory stored in the metric cache.
     :return: Dataclass of PDM-Subscores.
     """
 
     initial_ego_state = metric_cache.ego_state
 
-    pdm_trajectory = metric_cache.trajectory
+    reference_trajectory = (
+        transform_trajectory(progress_reference_trajectory, initial_ego_state)
+        if progress_reference_trajectory is not None
+        else metric_cache.trajectory
+    )
     pred_trajectory = transform_trajectory(model_trajectory, initial_ego_state)
 
-    pdm_states, pred_states = (
-        get_trajectory_as_array(pdm_trajectory, future_sampling, initial_ego_state.time_point),
+    reference_states, pred_states = (
+        get_trajectory_as_array(reference_trajectory, future_sampling, initial_ego_state.time_point),
         get_trajectory_as_array(pred_trajectory, future_sampling, initial_ego_state.time_point),
     )
 
-    trajectory_states = np.concatenate([pdm_states[None, ...], pred_states[None, ...]], axis=0)
+    trajectory_states = np.concatenate([reference_states[None, ...], pred_states[None, ...]], axis=0)
 
     simulated_states, simulated_reference_signals = simulator.simulate_proposals(
         trajectory_states,

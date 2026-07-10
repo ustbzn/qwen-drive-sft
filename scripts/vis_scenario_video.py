@@ -20,8 +20,8 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
 os.environ.setdefault("NUPLAN_MAP_VERSION", "nuplan-maps-v1.0")
 
@@ -46,10 +46,10 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 
 CHECKPOINTS = {
     "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt",
-    "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_qwen3_obj_RL/2026.06.30.06.19.52/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt",
+    "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_RL/2026.07.07.13.53.42/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
-DATA_SPLIT = "trainval"
+DATA_SPLIT = "val"
 HYDRA_CONFIG_PATH = "../navsim/planning/script/config/common/train_test_split"
 
 
@@ -303,7 +303,7 @@ def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--dit-type", default="small")
     group.add_argument("--sampling-method", default="ddim")
     # VLM 总开关 / 消融
-    group.add_argument("--use-vlm", action=argparse.BooleanOptionalAction, default=True,
+    group.add_argument("--use-vlm", action=argparse.BooleanOptionalAction, default=False,
                        help="False=不加载/不前向 VLM，DiT 只用 obj/hdmap/img token（更小更省）")
     group.add_argument("--vlm-ablation", default="zero", choices=["none", "zero"],
                        help="zero=加载 VLM 但投影后置零（区别于 --no-use-vlm 的完全不用）")
@@ -327,8 +327,8 @@ def main():
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为视频")
     parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
     parser.add_argument("--token", nargs="+", default=None, help="anchor scenario token（可传多个）")
-    parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
-    parser.add_argument("--output-dir", default="vis_output/videos/ego_hdmap_obj_shworldsim3", help="视频输出目录")
+    parser.add_argument("--model", choices=["il", "rl", "both"], default="rl", help="IL / RL / 两者")
+    parser.add_argument("--output-dir", default="vis_output/videos/ego_SDE_obj_hdmap_10case", help="视频输出目录")
     parser.add_argument("--frames-dir", default="vis_output/video_frames", help="中间帧目录")
     parser.add_argument("--window", type=int, default=30, help="anchor 前后各取多少帧")
     parser.add_argument("--full-log", action="store_true", help="渲染整条 log（较慢）")
@@ -336,7 +336,7 @@ def main():
     parser.add_argument("--keep-frames", action="store_true", help="保留中间 PNG 帧")
     parser.add_argument("--gpu", type=int, default=None, help="指定 GPU")
     parser.add_argument("--mogo-map-sqlite-path", default="", help="MOGO sqlite 地图路径；默认使用 OPENSCENE_DATA_ROOT/maps 下第一个 .sqlite")
-    parser.add_argument("--mogo-map-utm-zone", type=int, default=51, help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致")
+    parser.add_argument("--mogo-map-utm-zone", type=int, default=50, help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致")
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
     _add_model_arch_args(parser)
     args = parser.parse_args()
@@ -359,9 +359,19 @@ def main():
     scene_filter: SceneFilter = instantiate(cfg.scene_filter)
     
     default_token_list = [
-        "6778f89b398dee3ddde0156b2079e356",
-        "8ec9b77adeaa5c6aae500334f321f1c2",
-        "ec6788598cc3fa0b2ea7a667f03f7346",
+        # "6778f89b398dee3ddde0156b2079e356",
+        # "8ec9b77adeaa5c6aae500334f321f1c2",
+        # "ec6788598cc3fa0b2ea7a667f03f7346",
+        "506ef5edffa5ddd9acf8e72a9c78f86c",
+        "9fdf107997923ef7bd7207e4618b6a6b",
+        "efc7652bed3fd9c35799cc12dc5f183b",
+        "b48a61ac392670f1a2296c5ef118d58a",
+        "c545657ea85751ad9a6c35bc2515bd4e",
+        "37227caebfdda3257c46f3314816c52a",
+        "45b0c353a00f3faa12ce7d46bef5dcf6",
+        "26a0a7d4da89cd5b6175b4bb6a3dbbd7",
+        "15b734feb8f2b64e0032fafb34e91c6d",
+        "a3879c14d1c1a07f70cdb7bb5c07e9f1",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:

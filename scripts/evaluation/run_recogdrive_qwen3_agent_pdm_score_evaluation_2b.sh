@@ -16,7 +16,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
-export USE_OBJECT_VECTOR=false
+export USE_OBJECT_VECTOR=true
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。eval 走在线 backbone
 # (cache_hidden_state=False)，图像由 FrontImageFeatureBuilder 从当前帧 cam_f0 现场读取，
 # 不依赖缓存。类型/分辨率须与训练一致，CHECKPOINT 必须来自带 image_encoder 的 IL/RL 训练，
@@ -30,15 +30,26 @@ export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 # CHECKPOINT 必须来自 use_vlm=false 的 IL/RL 训练（否则 vl 投影层被 initialize() strict=False
 # 静默丢弃，其余共享层按有-VLM 训练的权重加载，结果错配）。
 # 用法：USE_VLM=false CHECKPOINT=<novlm ckpt> bash scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh
-export USE_VLM="${USE_VLM:-true}"
+export USE_VLM="${USE_VLM:-false}"
 if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 
+# --- badcase 评测模式开关（默认关闭）。开启后仅评测指定 token 列表中的样本。---
+export BADCASE_MODE="${BADCASE_MODE:-true}"
+export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/0312_0319_10case.txt}"
+
+# --- GT 进度参考开关（默认开启）。模型始终推理，仅用 GT 归一化模型轨迹的 EP。---
+# 兼容旧环境变量 USE_GT_TRAJECTORY；新调用请使用语义更明确的 USE_GT_PROGRESS_REFERENCE。
+export USE_GT_PROGRESS_REFERENCE="${USE_GT_PROGRESS_REFERENCE:-${USE_GT_TRAJECTORY:-true}}"
+
+# --- 变道场景中心线收敛满分模式（默认关闭）。开启后变道场景的 centerline_convergence 给满分 1.0。---
+export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-true}"
+
 # Update CHECKPOINT to the HDMap RL run after training completes.
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_RL/2026.07.08.04.59.48/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_obj_hdmap_novlm_RL/2026.07.07.13.53.42/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
-GPUS="${GPUS:-8}"
+GPUS="${GPUS:-1}"
 MASTER_PORT="${MASTER_PORT:-9676}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
@@ -90,12 +101,16 @@ torchrun \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.sampling_method=ddim \
-  agent.use_hdmap_vector=false \
-  agent.use_lane_boundaries=false \
+  agent.use_hdmap_vector=true \
+  agent.use_lane_boundaries=true \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
-  experiment_name=recogdrive_ego_SDE${VLM_TAG}_RL_eval \
+  +badcase_mode="${BADCASE_MODE}" \
+  +badcase_token_list="${BADCASE_TOKEN_LIST}" \
+  +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
+  +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
+  experiment_name=recogdrive_ego_SDE_obj_hdmap${VLM_TAG}_RL_badcase_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

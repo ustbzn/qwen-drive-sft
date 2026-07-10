@@ -187,7 +187,7 @@ def plot_bev_and_camera_with_agent(
     frame = scene.frames[frame_idx]
 
     # BEV 视野半径(米): 默认 ±32m 会截断 4 秒高速轨迹(>40m)，放大到 ±50m
-    bev_half_range = 60.0
+    bev_half_range = 80.0
 
     # 创建 figure 和 gridspec 布局，左右两列
     fig = plt.figure(figsize=(18, 9)) # 调整figure大小以适应左右布局
