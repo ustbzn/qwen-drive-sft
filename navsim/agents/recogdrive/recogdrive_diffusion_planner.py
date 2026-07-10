@@ -381,7 +381,7 @@ class GRPOConfig:
     metric_cache_path: str = "/path/to/metric_cache_train"
     reference_policy_checkpoint: str = "/path/to/IL_Model.ckpt"
     scorer_config: PDMScorerConfig = field(default_factory=lambda: PDMScorerConfig(
-        progress_weight=10.0, ttc_weight=5.0, comfortable_weight=2.0
+        progress_weight=5.0, ttc_weight=5.0, comfortable_weight=2.0
     ))
     vehicle_parameters: Any = field(default_factory=get_mogo_vehicle_parameters)
     # --- Step 3 (optional BC-tightening switch; defaults reproduce Step 1+2) ---

@@ -44,7 +44,7 @@ from navsim.planning.metric_caching.metric_cache import MetricCache
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer_utils import get_collision_type
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
-from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import EgoAreaIndex, StateIndex
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import BBCoordsIndex, EgoAreaIndex, StateIndex
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
     convert_absolute_to_relative_se2_array,
 )
@@ -171,6 +171,7 @@ def load_saved_trajectory(path_value: object) -> Trajectory | None:
 PRIMARY_METRIC_FIELDS = [
     ("no_at_fault_collisions", "NC"),
     ("drivable_area_compliance", "DAC"),
+    ("no_reverse_driving", "NRD"),
 ]
 
 OTHER_METRIC_FIELDS = [
@@ -191,18 +192,20 @@ def _build_overlay_text(token: str, metrics: dict[str, object], debug_notes: lis
     # 第一行：token + 总 score
     lines.append(f"token: {token} | score: {_fmt_metric(metrics.get('score'))}")
 
-    # 第二行：NC + DAC
-    nc_dac = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in PRIMARY_METRIC_FIELDS)
-    lines.append(nc_dac)
+    # 第二行：乘性指标（NC / DAC / NRD）
+    multi_metrics = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in PRIMARY_METRIC_FIELDS)
+    lines.append(multi_metrics)
 
     # 第三行：其余指标
     other = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in OTHER_METRIC_FIELDS)
     lines.append(other)
 
-    # 最后一行：NC hard collision 或 DAC hard off-road 时显示碰撞/越界诊断
+    # 最后一行：NC / DAC / NRD 失败时显示诊断
     if debug_notes and (
-        _metric_is_hard_collision(metrics.get("no_at_fault_collisions"))
-        or _metric_is_hard_offroad(metrics.get("drivable_area_compliance"))
+        _metric_is_nc_failed(metrics.get("no_at_fault_collisions"))
+        or _metric_is_dac_hard_failed(metrics.get("drivable_area_compliance"))
+        or _metric_is_nrd_failed(metrics.get("no_reverse_driving"))
+
     ):
         lines.append(" | ".join(debug_notes))
 
@@ -243,6 +246,15 @@ DEBUG_OFFROAD_EGO_BOX_CONFIG = {
     "line_style": "-",
     "zorder": 9,
 }
+DEBUG_REVERSE_EGO_BOX_CONFIG = {
+    "fill_color": "#00CED1",
+    "fill_color_alpha": 0.35,
+    "line_color": "#00CED1",
+    "line_color_alpha": 1.0,
+    "line_width": 4,
+    "line_style": "-",
+    "zorder": 9,
+}
 
 
 @dataclass
@@ -257,6 +269,9 @@ class PDMFailureDiagnostics:
     collision_object_polygon_global: Polygon | None = None
     offroad_time_s: float | None = None
     offroad_ego_polygon_global: Polygon | None = None
+    reverse_driving_time_s: float | None = None
+    reverse_driving_ego_polygon_global: Polygon | None = None
+
 
 
 def build_pdm_simulator_scorer() -> tuple[PDMSimulator, PDMScorer]:
@@ -266,6 +281,38 @@ def build_pdm_simulator_scorer() -> tuple[PDMSimulator, PDMScorer]:
     simulator: PDMSimulator = instantiate(cfg.simulator)
     scorer: PDMScorer = instantiate(cfg.scorer)
     return simulator, scorer
+
+_METRIC_PERFECT = 1.0
+_METRIC_EPS = 1e-6
+_DAC_HARD_SCORE = 0.05  # 与 pdm_scorer drivable_area_hard_score 一致
+
+
+def _metric_float(value: object) -> float | None:
+    try:
+        f = float(value)
+        if math.isfinite(f):
+            return f
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _metric_is_nc_failed(value: object) -> bool:
+    """NC 低于 1 表示发生了 at-fault 碰撞（agent→0.05，非 agent→0.5）。"""
+    f = _metric_float(value)
+    return f is not None and f < _METRIC_PERFECT - _METRIC_EPS
+
+
+def _metric_is_dac_hard_failed(value: object) -> bool:
+    """DAC 等于 hard 地板分 0.05，表示 ego footprint 离开 drivable area。"""
+    f = _metric_float(value)
+    return f is not None and f <= _DAC_HARD_SCORE + _METRIC_EPS
+
+
+def _metric_is_nrd_failed(value: object) -> bool:
+    """NRD 低于 1 表示检测到倒车（score floor = 0.05）。"""
+    f = _metric_float(value)
+    return f is not None and f < _METRIC_PERFECT - _METRIC_EPS
 
 
 # Aligns with PDMScorerConfig.at_fault_collision_score_floor / drivable_area_hard_score.
@@ -287,7 +334,11 @@ def _should_debug_failures(metrics: dict[str, object], debug_failures: bool) -> 
         return False
     nc = metrics.get("no_at_fault_collisions")
     dac = metrics.get("drivable_area_compliance")
-    return _metric_is_hard_collision(nc) or _metric_is_hard_offroad(dac)
+    return (
+        _metric_is_nc_failed(metrics.get("no_at_fault_collisions"))
+        or _metric_is_dac_hard_failed(metrics.get("drivable_area_compliance"))
+        or _metric_is_nrd_failed(metrics.get("no_reverse_driving"))
+    )
 
 
 def _global_polygon_to_ego_local(polygon: Polygon, origin: StateSE2) -> np.ndarray:
@@ -397,6 +448,28 @@ def _find_first_hard_offroad(scorer: PDMScorer, pred_idx: int) -> dict[str, Any]
         "time_s": time_idx * scorer.proposal_sampling.interval_length,
         "ego_polygon": scorer._ego_polygons[pred_idx, time_idx],
     }
+    
+def _find_first_reverse_driving(scorer: PDMScorer, pred_idx: int) -> dict[str, Any] | None:
+    from shapely import Point
+
+    center_coordinates = scorer._ego_coords[pred_idx, :, BBCoordsIndex.CENTER]
+    points = [Point(*xy) for xy in center_coordinates]
+    centerline_progress = np.asarray(scorer._centerline.project(points), dtype=np.float64)
+    progress_delta = centerline_progress[1:] - centerline_progress[:-1]
+    min_delta = getattr(scorer._config, "reverse_driving_min_delta", 0.0)
+    interval = scorer.proposal_sampling.interval_length
+
+    for step_idx, delta in enumerate(progress_delta):
+        if delta < -min_delta:
+            time_idx = step_idx + 1
+            return {
+                "time_idx": time_idx,
+                "time_s": time_idx * interval,
+                "centerline_progress_delta_m": float(delta),
+                "ego_polygon": scorer._ego_polygons[pred_idx, time_idx],
+                "mode": "centerline",
+            }
+    return None
 
 
 def run_pdm_failure_diagnostics(
@@ -468,6 +541,21 @@ def run_pdm_failure_diagnostics(
             diagnostics.offroad_time_s = offroad["time_s"]
             diagnostics.offroad_ego_polygon_global = offroad["ego_polygon"]
             diagnostics.debug_notes.append(f"DAC hard off-road @ {offroad['time_s']:.1f}s")
+    
+    if _metric_is_nrd_failed(metrics.get("no_reverse_driving")):
+        reverse = _find_first_reverse_driving(scorer, pred_idx)
+        if reverse is not None:
+            diagnostics.reverse_driving_time_s = reverse["time_s"]
+            diagnostics.reverse_driving_ego_polygon_global = reverse["ego_polygon"]
+            diagnostics.debug_notes.append(
+                f"NRD reverse @ {reverse['time_s']:.1f}s | "
+                f"ds={reverse['centerline_progress_delta_m']:.3f}m"
+            )
+        else:
+            diagnostics.debug_notes.append(
+                f"NRD failed ({_fmt_metric(metrics.get('no_reverse_driving'))}), "
+                "reverse event not found in re-sim"
+            )
 
     return diagnostics
 
@@ -508,6 +596,20 @@ def add_failure_debug_overlays(
             marker="x",
             zorder=10,
         )
+    
+    if diagnostics.reverse_driving_ego_polygon_global is not None:
+        reverse_local = _global_polygon_to_ego_local(diagnostics.reverse_driving_ego_polygon_global, origin)
+        _plot_local_polygon_on_bev(bev_ax, reverse_local, DEBUG_REVERSE_EGO_BOX_CONFIG)
+        center = reverse_local[:-1].mean(axis=0)
+        bev_ax.scatter(
+            [center[1]],
+            [center[0]],
+            s=80,
+            c=DEBUG_REVERSE_EGO_BOX_CONFIG["line_color"],
+            marker="x",
+            zorder=10,
+        )
+
 
 
 def build_scene_filter(scene_filter_name: str) -> SceneFilter:

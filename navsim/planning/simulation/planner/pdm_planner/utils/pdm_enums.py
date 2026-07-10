@@ -165,6 +165,7 @@ class MultiMetricIndex(IntEnum):
 
     NO_COLLISION = 0
     DRIVABLE_AREA = 1
+    NO_REVERSE_DRIVING = 2
 
 
 class WeightedMetricIndex(IntEnum):

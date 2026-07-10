@@ -32,6 +32,8 @@ scorer:
     driving_direction_violation_threshold: 6.0  # [m] (driving direction)
     stopped_speed_threshold: 5e-03  # [m/s] (ttc)
     at_fault_collision_score_floor: 0.05  # (no at-fault collision)
+    reverse_driving_score_floor: 0.05  # (no reverse driving)
+    reverse_driving_min_delta: 0.01  # [m] (no reverse driving)
     ttc_horizon: 2.0  # [s] (ttc)
     ttc_full_weight_time: 1.0  # [s] (ttc)
     ttc_transition_center: 1.5  # [s] (ttc)

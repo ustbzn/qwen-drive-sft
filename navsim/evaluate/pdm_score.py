@@ -151,6 +151,7 @@ def pdm_score(
 
     no_at_fault_collisions = scorer._multi_metrics[MultiMetricIndex.NO_COLLISION, pred_idx]
     drivable_area_compliance = scorer._multi_metrics[MultiMetricIndex.DRIVABLE_AREA, pred_idx]
+    no_reverse_driving = scorer._multi_metrics[MultiMetricIndex.NO_REVERSE_DRIVING, pred_idx]
 
     ego_progress = scorer._weighted_metrics[WeightedMetricIndex.PROGRESS, pred_idx]
     time_to_collision_within_bound = scorer._weighted_metrics[WeightedMetricIndex.TTC, pred_idx]
@@ -170,6 +171,7 @@ def pdm_score(
         time_to_collision_within_bound,
         comfort,
         driving_direction_compliance,
+        no_reverse_driving,
         obstacle_clearance,
         following_safety,
         centerline_convergence,

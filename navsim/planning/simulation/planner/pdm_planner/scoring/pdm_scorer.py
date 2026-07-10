@@ -65,6 +65,8 @@ class PDMScorerConfig:
     drivable_area_soft_margin: float = 0.5  # [m] (drivable area)
     drivable_area_soft_score: float = 0.618  # score when only the safety margin leaves drivable area
     drivable_area_hard_score: float = 0.05  # score when the ego footprint leaves drivable area
+    reverse_driving_score_floor: float = 0.05  # score when reverse driving is detected
+    reverse_driving_min_delta: float = 0.01  # [m] ignore tiny Frenet-s projection jitter
     obstacle_clearance_base_margin: float = 0.3  # [m] (obstacle clearance)
     obstacle_clearance_time_headway: float = 0.3  # [s] (obstacle clearance)
     obstacle_clearance_max_margin: float = 1.0  # [m] (obstacle clearance)
@@ -86,7 +88,7 @@ class PDMScorerConfig:
     start_anchor_comfort_horizon: float = 1.0  # [s] (start anchor comfort)
     start_anchor_comfort_interval_length: float = 0.5  # [s] (start anchor comfort)
     start_anchor_history_horizon: float = 1.5  # [s] (start anchor comfort)
-    start_anchor_comfort_strict_ratio: float = 0.618  # stricter near current state, relaxed over anchor horizon
+    start_anchor_comfort_strict_ratio: float = 1.0  # stricter near current state, relaxed over anchor horizon
     start_anchor_jerk_penalty: float = 1e-4  # same default as BatchLQRTracker
     start_anchor_curvature_rate_penalty: float = 1e-2  # same default as BatchLQRTracker
 
@@ -197,6 +199,7 @@ class PDMScorer:
         # 1. multiplicative metrics
         self._calculate_no_at_fault_collision()
         self._calculate_drivable_area_compliance()
+        self._calculate_no_reverse_driving()
 
         # 2. weighted metrics
         self._calculate_progress()
@@ -470,6 +473,26 @@ class PDMScorer:
         drivable_area_compliance_scores = 1.0 - weighted_soft_penalties.max(axis=-1)
         drivable_area_compliance_scores[hard_off_road_mask] = self._config.drivable_area_hard_score
         self._multi_metrics[MultiMetricIndex.DRIVABLE_AREA] = drivable_area_compliance_scores
+        
+    def _calculate_no_reverse_driving(self) -> None:
+        """
+        Multiplicative metric: penalizes trajectories with backward motion along the route centerline.
+        Projects trajectory points onto the centerline (Frenet s), then flags steps where s decreases.
+        Any reverse driving step sets the score to reverse_driving_score_floor.
+        """
+        no_reverse_scores = np.ones(self._num_proposals, dtype=np.float64)
+        center_coordinates = self._ego_coords[:, :, BBCoordsIndex.CENTER]
+
+        violated = np.zeros(self._num_proposals, dtype=np.bool_)
+        for proposal_idx in range(self._num_proposals):
+            points = [Point(*xy) for xy in center_coordinates[proposal_idx]]
+            centerline_progress = np.asarray(self._centerline.project(points), dtype=np.float64)
+            progress_delta = centerline_progress[1:] - centerline_progress[:-1]
+            violated[proposal_idx] = (progress_delta < -self._config.reverse_driving_min_delta).any()
+
+        no_reverse_scores[violated] = np.clip(self._config.reverse_driving_score_floor, 0.0, 1.0)
+
+        self._multi_metrics[MultiMetricIndex.NO_REVERSE_DRIVING] = no_reverse_scores
 
     def _calculate_driving_direction_compliance(self) -> None:
         """
