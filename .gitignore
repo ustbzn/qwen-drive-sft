@@ -58,3 +58,4 @@ navsim/planning/script/run_select_data_from_csv.py
 docs
 *.md
 *.pdf
+.claude/
