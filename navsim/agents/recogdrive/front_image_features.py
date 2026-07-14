@@ -13,7 +13,7 @@
 
 关键前提：当前 IL/RL 走 CacheOnlyDataset，缓存里没有像素。启用 use_image_encoder 需在
 全链路（缓存 / IL / RL / eval）一致开启，并重跑 hidden-state 缓存补出本 builder 的 .gz
-（VLM 不重算）。CacheOnlyDataset 缺该 .gz 会静默丢样本。
+（VLM 不重算）。CacheOnlyDataset 缺该 .gz 会报告缺失并过滤不完整样本。
 """
 
 from typing import Dict, Optional

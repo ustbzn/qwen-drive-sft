@@ -29,14 +29,10 @@ class CacheSampleKey:
     token: str
 
 
-# VLM 隐状态特征键。use_vlm=False 时 planner 完全不引用这两个键（见
-# recogdrive_agent.compute_features 的 not self.use_vlm 分支 与 planner 的
-# _build_context_tokens_no_vlm），但它们和 use_vlm=False 仍需要的
-# history_trajectory/high_command_one_hot/status_feature 同存于一个 qwen3_feature.gz。
-# 缓存里单样本 first+last≈16MB，若随样本流入 DataLoader worker 会在 batch 级
-# 累积并被 collate 的 pad_sequence(...).clone() 放大，成为高 batch 训练 OOM(SIGKILL)
-# 的峰值来源。drop_hidden_state=True 时在 __getitem__ 就 pop 掉，从源头消除累积。
-# 仅 use_vlm=False 才丢；use_vlm=True / vlm_ablation=zero 都保留（zero 仍需读后置零）。
+# VLM 隐状态特征键。正常 no-VLM 路径只注册独立的 recogdrive_ego_feature_v1
+# builder，因此不会检查、读取或解压 full VLM cache。drop_hidden_state 保留为兼容兜底：
+# 若其他调用方仍显式加载旧的合并缓存，则在样本进入 collate 前移除两个大 tensor。
+# use_vlm=True / vlm_ablation=zero 不丢弃（zero 仍需读取后再置零）。
 VLM_HIDDEN_STATE_KEYS = ("first_hidden_state", "last_hidden_state")
 
 
@@ -46,6 +42,36 @@ def _maybe_drop_hidden_state(features: Dict[str, torch.Tensor], drop: bool) -> N
         return
     for key in VLM_HIDDEN_STATE_KEYS:
         features.pop(key, None)
+
+
+def _required_cache_file_names(
+    feature_builders: List[AbstractFeatureBuilder],
+    target_builders: List[AbstractTargetBuilder],
+) -> List[str]:
+    """返回一个样本必须具备的缓存文件名。"""
+    return [builder.get_unique_name() + ".gz" for builder in feature_builders + target_builders]
+
+
+def _report_cache_coverage(
+    cache_path: Path,
+    scanned_count: int,
+    valid_count: int,
+    missing_counts: Dict[str, int],
+) -> None:
+    """报告缓存缺失情况，避免配置不匹配时静默丢弃整个 cache root。"""
+    if scanned_count == 0 or valid_count == scanned_count:
+        return
+
+    missing_summary = ", ".join(
+        f"{name}={count}" for name, count in sorted(missing_counts.items()) if count
+    )
+    message = (
+        f"Cache coverage mismatch for {cache_path}: valid={valid_count}/{scanned_count}; "
+        f"missing required files: {missing_summary or 'unknown'}"
+    )
+    if valid_count == 0:
+        raise RuntimeError(message)
+    logger.warning(message)
 
 
 def load_feature_target_from_pickle(path: Path) -> Dict[str, torch.Tensor]:
@@ -81,7 +107,7 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         :param target_builders: list of target builders
         :param log_names: optional list of log folder to consider, defaults to None
         :param tokens: optional list of sample tokens to consider, defaults to None
-        :param drop_hidden_state: drop VLM hidden-state keys on load (use_vlm=False), defaults to False
+        :param drop_hidden_state: legacy fallback that drops VLM hidden-state keys after load, defaults to False
         """
         super().__init__()
         assert Path(cache_path).is_dir(), f"Cache path {cache_path} does not exist!"
@@ -92,7 +118,7 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         if log_names is not None:
             self.log_names = [Path(log_name) for log_name in log_names if (self._cache_path / log_name).is_dir()]
         else:
-            self.log_names = [log_name for log_name in self._cache_path.iterdir()]
+            self.log_names = [log_name for log_name in self._cache_path.iterdir() if log_name.is_dir()]
 
         self._feature_builders = feature_builders
         self._target_builders = target_builders
@@ -138,19 +164,27 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         """
 
         valid_cache_paths: Dict[str, Path] = {}
+        required_names = _required_cache_file_names(feature_builders, target_builders)
+        missing_counts = {name: 0 for name in required_names}
+        scanned_count = 0
+        valid_count = 0
 
         for log_name in tqdm(log_names, desc="Loading Valid Caches"):
             log_path = cache_path / log_name
             for token_path in log_path.iterdir():
+                if not token_path.is_dir():
+                    continue
                 if tokens is not None and token_path.name not in tokens:
                     continue
-                found_caches: List[bool] = []
-                for builder in feature_builders + target_builders:
-                    data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-                    found_caches.append(data_dict_path.is_file())
-                if all(found_caches):
+                scanned_count += 1
+                missing_names = [name for name in required_names if not (token_path / name).is_file()]
+                for name in missing_names:
+                    missing_counts[name] += 1
+                if not missing_names:
                     valid_cache_paths[token_path.name] = token_path
+                    valid_count += 1
 
+        _report_cache_coverage(cache_path, scanned_count, valid_count, missing_counts)
         return valid_cache_paths
 
     def _load_scene_with_token(self, token: str) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
@@ -198,7 +232,7 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         :param target_builders: list of target builders
         :param log_names: optional list of log folders to consider in each cache root
         :param tokens: optional list of sample tokens to consider
-        :param drop_hidden_state: drop VLM hidden-state keys on load (use_vlm=False), defaults to False
+        :param drop_hidden_state: legacy fallback that drops VLM hidden-state keys after load, defaults to False
         """
         super().__init__()
         assert cache_paths, "At least one cache path must be provided!"
@@ -260,8 +294,12 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         """
 
         valid_cache_paths: Dict[CacheSampleKey, Path] = {}
+        required_names = _required_cache_file_names(feature_builders, target_builders)
 
         for cache_index, cache_path in enumerate(cache_paths):
+            missing_counts = {name: 0 for name in required_names}
+            scanned_count = 0
+            valid_count = 0
             log_paths = MultiCacheOnlyDataset._iter_log_paths(cache_path, log_names)
             for log_path in tqdm(log_paths, desc=f"Loading Valid Caches ({cache_path.name})"):
                 for token_path in log_path.iterdir():
@@ -269,17 +307,20 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
                         continue
                     if tokens is not None and token_path.name not in tokens:
                         continue
-                    found_caches: List[bool] = []
-                    for builder in feature_builders + target_builders:
-                        data_dict_path = token_path / (builder.get_unique_name() + ".gz")
-                        found_caches.append(data_dict_path.is_file())
-                    if all(found_caches):
+                    scanned_count += 1
+                    missing_names = [name for name in required_names if not (token_path / name).is_file()]
+                    for name in missing_names:
+                        missing_counts[name] += 1
+                    if not missing_names:
                         key = CacheSampleKey(
                             cache_index=cache_index,
                             log_name=log_path.name,
                             token=token_path.name,
                         )
                         valid_cache_paths[key] = token_path
+                        valid_count += 1
+
+            _report_cache_coverage(cache_path, scanned_count, valid_count, missing_counts)
 
         return valid_cache_paths
 
@@ -489,6 +530,8 @@ class Dataset(torch.utils.data.Dataset):
 
         for builder in self._target_builders:
             data_dict_path = token_path / (builder.get_unique_name() + ".gz")
+            if data_dict_path.exists():
+                continue
             data_dict = builder.compute_targets(scene)
             dump_feature_target_to_pickle(data_dict_path, data_dict)
 

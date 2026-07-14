@@ -11,7 +11,7 @@ vlm_path: ''
 cam_type: 'single'
 # --- 多视角 / 多帧时序输入（默认全关，等价当前单视角单帧 Qwen3 流程，零影响）---
 # 视角数 = len(view_list)；多视角 / 多帧需在脚本里显式 override 开启，并保证缓存与
-# 训练 / eval 用相同配置（否则 get_unique_name 对不上、CacheOnlyDataset 静默丢样本）。
+# 训练 / eval 用相同配置（否则 get_unique_name 对不上、CacheOnlyDataset 会报告缺失并过滤不完整样本）。
 # mogo 多视角推荐用真实有数据的视角 ['cam_f0','cam_l0','cam_r0','cam_l1','cam_r1','cam_b0']，
 # 避免选空的 cam_l2/cam_r2（否则 edge-pad 会用前视图冒充后侧视图）。
 view_list: ['cam_f0']
@@ -39,8 +39,8 @@ vlm_ablation: none
 #   vl_*_projector/gate/fusion_projector（模型更小），DiT 的 cross-attention context 仅由
 #   obj/hdmap/img token 组成（三者都关则退化为纯 ego+action self-attention）。
 # 与 vlm_ablation 区别：zero 仍加载 VLM 并投影后置零（不省参数/算力）；use_vlm=false 直接不构造、
-#   不前向（更小更省，在线 eval 省一次 2B 前向）。低风险变体：缓存/collate 不变，训练仍读现有
-#   qwen3_feature.gz 里的 ego/history/command，只是忽略其中的 hidden state。
+#   不前向（更小更省，在线 eval 省一次 2B 前向）。缓存训练只读取
+#   recogdrive_ego_feature_v1.gz，不检查或解压 qwen3_feature.gz；旧缓存须先补写 slim sidecar。
 # ckpt 不可与 use_vlm=true 互移植（投影层集合不同，会被 initialize() 的 strict=False 静默丢弃），
 #   须重训 IL 并重派生 RL reference；全链路（缓存/IL/RL/eval/可视化）须一致设 use_vlm。
 use_vlm: true
@@ -54,7 +54,7 @@ last_hidden_state_index: -1
 #   逼模型少走"外推当前自车运动学"的捷径；eval 时不丢弃、用全量状态(故开集 L2 会变差，须看闭环 PDM)。
 # 与 vlm_ablation 正交：none/zero 下均生效。切换 encoder 类型会改变权重结构，须重训 IL，且
 # RL/eval 必须与 IL 用同一类型(否则 ckpt 加载时 attention 层被 initialize() 的 strict=False 丢成随机初始化)。
-# 缓存无需重跑：status_feature 已在缓存里，改动只在模型侧。
+# status_feature 数值无需重算；尚无 slim sidecar 的旧缓存需先执行一次回填。
 ego_status_encoder_type: mlp
 ego_state_dropout: 0.75      # SDE 运动学量遮蔽概率(0~1)，仅 attention 生效
 ego_num_command_states: 4    # status_feature 前 N 维为永久可见的导航命令(cmd_0..cmd_3)
@@ -62,7 +62,7 @@ ego_num_command_states: 4    # status_feature 前 N 维为永久可见的导航�
 # 开启后 agent.requires_scene=True：缓存 / eval 从 Scene 当前帧 GT annotations 取障碍物，
 # 编码成 context token 拼到 vl_context_tokens 后进 DiT cross-attention。
 # 开启需在全链路（缓存 / IL / RL / eval）一致设 use_object_vector=true，并重跑 hidden-state
-# 缓存补出 object_vector_feature_v1.gz（CacheOnlyDataset 缺该 .gz 会静默丢样本）。
+# 缓存补出 object_vector_feature_v1.gz（CacheOnlyDataset 缺该 .gz 会报告缺失并过滤不完整样本）。
 use_object_vector: false
 max_obj_tokens: 64
 obj_range_x: [-20.0, 100.0]
@@ -99,7 +99,7 @@ hdmap_input_norm: false
 # 前视图像视觉信息。图像从 agent_input 当前帧 cam_f0 取，编成空间 token 拼到 vl_context_tokens
 # 后进 DiT cross-attention（与 obj/hdmap token 并列）。与 vlm_ablation 正交（zero 下图像 token 保留）。
 # 开启需在全链路（缓存/IL/RL/eval）一致设 use_image_encoder=true，并重跑 hidden-state 缓存补出
-# front_image_feature_v1_cam_f0_{H}x{W}.gz（VLM 不重算；CacheOnlyDataset 缺该 .gz 会静默丢样本）。
+# front_image_feature_v1_cam_f0_{H}x{W}.gz（VLM 不重算；CacheOnlyDataset 缺该 .gz 会报告缺失并过滤不完整样本）。
 # ckpt 不可移植：旧 IL ckpt 无 ResNet，加载进带 encoder 的 agent 时该层被 strict=False 丢成随机
 # 初始化，故须重训 IL，RL/eval 用新 IL 产物。缓存 uint8 图像，磁盘按 token 数量级增长（见评估）。
 use_image_encoder: false

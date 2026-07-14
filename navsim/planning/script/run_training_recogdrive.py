@@ -45,7 +45,7 @@ def custom_collate_fn(
         'status_feature': status_feature
     }
 
-    # VLM 隐状态（变长，需 pad）。use_vlm=False 时 dataset 已在 __getitem__ pop 掉这两个键，
+    # VLM 隐状态（变长，需 pad）。use_vlm=False 时 agent 只注册 slim builder，dataset 不会加载这两个键，
     # planner 也不引用，故此处成对判定：仅当 first 与 last 同时存在才 pad；缺失（或脏 cache 半缺失）
     # 一律整体跳过，避免 KeyError。
     f0 = features_list[0]

@@ -16,7 +16,12 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 
 from .utils.lr_scheduler import WarmupCosLR
 from .utils.utils import format_number, build_from_configs
-from .recogdrive_features import ReCogDriveFeatureBuilder, TrajectoryTargetBuilder, select_hidden_state
+from .recogdrive_features import (
+    ReCogDriveEgoFeatureBuilder,
+    ReCogDriveFeatureBuilder,
+    TrajectoryTargetBuilder,
+    select_hidden_state,
+)
 from .hdmap_vector_features import (
     HDMAP_VECTOR_BOOL_KEYS,
     HDMAP_VECTOR_FLOAT_KEYS,
@@ -296,25 +301,35 @@ class ReCogDriveAgent(AbstractAgent):
             self.load_state_dict(filtered_ckpt, strict=False)
 
     def get_sensor_config(self) -> SensorConfig:    # 获取传感器配置，声明这个 agent 需要哪些传感器。
+        if not self.use_vlm and not self.use_image_encoder:
+            return SensorConfig.build_no_sensors()
         return SensorConfig.build_all_sensors(include=[0, 1, 2, 3])
 
     def get_target_builders(self) -> List[AbstractTargetBuilder]:
         return [TrajectoryTargetBuilder(trajectory_sampling=self._trajectory_sampling)]  # 声明训练时要算哪些"目标"，这里只做轨迹预测
 
     def get_feature_builders(self) -> List[AbstractFeatureBuilder]:     # 声明怎么从原始数据变成模型输入
-        builders: List[AbstractFeatureBuilder] = [ReCogDriveFeatureBuilder(
-            cache_hidden_state=self.cache_hidden_state,
-            model_type=self.vlm_type,
-            checkpoint_path=self.vlm_path,
-            device=self.device,
-            cache_mode=self.cache_mode,
-            first_hidden_state_index=self.first_hidden_state_index,
-            last_hidden_state_index=self.last_hidden_state_index,
-            view_list=self.view_list,
-            num_frames=self.num_frames,
-            use_video_input=self.use_video_input,
-            video_fps=self.video_fps,
-        )]
+        builders: List[AbstractFeatureBuilder] = []
+        if self.use_vlm:
+            builders.append(ReCogDriveFeatureBuilder(
+                cache_hidden_state=self.cache_hidden_state,
+                model_type=self.vlm_type,
+                checkpoint_path=self.vlm_path,
+                device=self.device,
+                cache_mode=self.cache_mode,
+                first_hidden_state_index=self.first_hidden_state_index,
+                last_hidden_state_index=self.last_hidden_state_index,
+                view_list=self.view_list,
+                num_frames=self.num_frames,
+                use_video_input=self.use_video_input,
+                video_fps=self.video_fps,
+            ))
+
+        # 缓存生产同时写 full + slim；no-VLM 训练/推理只注册 slim，从缓存扫描阶段
+        # 就不再要求或打开 qwen3_feature.gz。VLM 训练继续只读 full，兼容旧缓存。
+        if self.cache_mode or not self.use_vlm:
+            builders.append(ReCogDriveEgoFeatureBuilder())
+
         if self.use_hdmap_vector:
             builders.append(
                 HDMapVectorFeatureBuilder(
@@ -500,7 +515,7 @@ class ReCogDriveAgent(AbstractAgent):
 
     def _is_online_backbone(self) -> bool:
         """在线 backbone 模式：eval / 可视化时每样本现跑 VLM（非缓存读、非 cache_mode 写）。"""
-        return (not self.cache_hidden_state) and (not self.cache_mode)
+        return self.use_vlm and (not self.cache_hidden_state) and (not self.cache_mode)
 
     def _needs_view_encoding(self) -> bool:
         """是否需要走 _encode_views（多视角或多帧）。单视角单帧时保持旧 image_path_tensor

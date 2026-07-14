@@ -120,7 +120,7 @@ def custom_collate_fn(
             padding_value=0,   # long 型 0
         )
         features["image_path_tensor"] = image_path_tensor.cpu()
-    # else: use_vlm=False —— dataset 已在 __getitem__ pop 掉 hidden state，且缓存模式无
+    # else: use_vlm=False —— agent 只注册 slim builder，缓存中没有 hidden state 或
     # image_path_tensor。planner 走无 VLM 分支（_build_context_tokens_no_vlm）不需要任何
     # VLM 输入，故这里不再 raise，静默跳过（与 IL/RL/EMA collate 缺失即跳过的行为一致）。
 

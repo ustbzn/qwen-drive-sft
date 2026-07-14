@@ -40,10 +40,63 @@ EGO_STATUS_FEATURE_NAMES = (
     "steering_wheel_rate",
 )
 
+RECOGDRIVE_EGO_FEATURE_CACHE_NAME = "recogdrive_ego_feature_v1"
+RECOGDRIVE_EGO_FEATURE_KEYS = (
+    "history_trajectory",
+    "high_command_one_hot",
+    "status_feature",
+)
+
 
 def select_hidden_state(hidden_states, layer_index: int) -> torch.Tensor:
     """Select a hidden-state layer by index while preserving Python negative-index semantics."""
     return hidden_states[int(layer_index)]
+
+
+def build_recogdrive_ego_features(agent_input: AgentInput) -> Dict[str, torch.Tensor]:
+    """构造与 VLM 配置无关的自车历史、导航命令和当前运动学特征。"""
+    ego_statuses = agent_input.ego_statuses
+    history_trajectory = torch.tensor(
+        [[float(e.ego_pose[0]), float(e.ego_pose[1]), float(e.ego_pose[2])] for e in ego_statuses[:4]],
+        dtype=torch.float32,
+    )
+    current_ego_status = ego_statuses[-1]
+    high_command_one_hot = torch.tensor(current_ego_status.driving_command, dtype=torch.float32)
+    status_feature = torch.cat(
+        [
+            high_command_one_hot.clone(),
+            torch.tensor(current_ego_status.ego_velocity, dtype=torch.float32),
+            torch.tensor(current_ego_status.ego_acceleration, dtype=torch.float32),
+            torch.tensor(
+                [
+                    current_ego_status.ego_yaw_rate,
+                    current_ego_status.ego_curvature,
+                    current_ego_status.ego_curvature_rate,
+                    current_ego_status.ego_steering_wheel_angle,
+                    current_ego_status.ego_steering_wheel_rate,
+                ],
+                dtype=torch.float32,
+            ),
+        ],
+        dim=-1,
+    )
+    assert status_feature.shape[-1] == len(EGO_STATUS_FEATURE_NAMES)
+
+    return {
+        "history_trajectory": history_trajectory.cpu(),
+        "high_command_one_hot": high_command_one_hot.cpu(),
+        "status_feature": status_feature.cpu(),
+    }
+
+
+class ReCogDriveEgoFeatureBuilder(AbstractFeatureBuilder):
+    """将 no-VLM 仍需使用的小型自车特征存为独立 sidecar。"""
+
+    def get_unique_name(self) -> str:
+        return RECOGDRIVE_EGO_FEATURE_CACHE_NAME
+
+    def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
+        return build_recogdrive_ego_features(agent_input)
 
 
 class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
@@ -112,33 +165,10 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
         return "internvl_feature"
 
     def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
-
-        ego_statuses = agent_input.ego_statuses
+        ego_features = build_recogdrive_ego_features(agent_input)
         cameras = agent_input.cameras
-
-        history_trajectory = torch.tensor(
-            [[float(e.ego_pose[0]), float(e.ego_pose[1]), float(e.ego_pose[2])] for e in ego_statuses[:4]],
-            dtype=torch.float32
-        )
-        current_ego_status = ego_statuses[-1]
-        high_command_one_hot = torch.tensor(current_ego_status.driving_command, dtype=torch.float32)  # ego_statuses[-1]表示当前时刻
-        status_feature = torch.cat([
-            high_command_one_hot.clone(),
-            torch.tensor(current_ego_status.ego_velocity, dtype=torch.float32),
-            torch.tensor(current_ego_status.ego_acceleration, dtype=torch.float32),
-            torch.tensor(
-                [
-                    current_ego_status.ego_yaw_rate,
-                    current_ego_status.ego_curvature,
-                    current_ego_status.ego_curvature_rate,
-                    current_ego_status.ego_steering_wheel_angle,
-                    current_ego_status.ego_steering_wheel_rate,
-                ],
-                dtype=torch.float32,
-            ),
-        ], dim=-1)
-        assert status_feature.shape[-1] == len(EGO_STATUS_FEATURE_NAMES)
-
+        history_trajectory = ego_features["history_trajectory"]
+        high_command_one_hot = ego_features["high_command_one_hot"]
 
         if not self.cache_hidden_state:
             # 离线 / 在线 backbone 模式：只缓存单条前视路径。多视角 / 多帧的在线 eval
@@ -153,9 +183,7 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             path_tensor = torch.tensor(path_as_ordinals, dtype=torch.long)
 
             return {
-                "history_trajectory": history_trajectory.cpu(),
-                "high_command_one_hot": high_command_one_hot.cpu(),
-                "status_feature": status_feature.cpu(),
+                **ego_features,
                 "image_path_tensor": path_tensor.cpu(),
                 "vlm_image_missing": torch.tensor(vlm_image_missing, dtype=torch.bool).cpu(),
             }
@@ -187,11 +215,9 @@ class ReCogDriveFeatureBuilder(AbstractFeatureBuilder):
             last_hidden_state = select_hidden_state(outputs.hidden_states, self.last_hidden_state_index)
 
             return {
-                "history_trajectory": history_trajectory.cpu(),
-                "high_command_one_hot": high_command_one_hot.cpu(),
+                **ego_features,
                 "first_hidden_state": first_hidden_state.squeeze(0).float().cpu(),
                 "last_hidden_state": last_hidden_state.squeeze(0).float().cpu(),
-                "status_feature": status_feature.cpu(),
                 "vlm_image_missing": torch.tensor(vlm_image_missing, dtype=torch.bool).cpu(),
             }
 

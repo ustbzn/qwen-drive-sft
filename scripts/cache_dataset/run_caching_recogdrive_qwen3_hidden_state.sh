@@ -7,7 +7,7 @@ set -euo pipefail
 # + common/train_test_split/scene_filter/all_scenes.yaml
 # + common/agent/recogdrive_agent.yaml
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0320-0325new}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
@@ -20,24 +20,34 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export USE_OBJECT_VECTOR=true
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。USE_IMAGE_ENCODER=true 时
 # 本阶段额外补出 front_image_feature_v1_<view>_<H>x<W>.gz（VLM 不重算，只多写图像 .gz）。
-# 须与 IL/RL/eval 保持一致，否则 get_unique_name 对不上、CacheOnlyDataset 静默丢样本。
+# 须与 IL/RL/eval 保持一致，否则 get_unique_name 对不上、CacheOnlyDataset 会报告缺失并过滤不完整样本。
 export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
-SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
-MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
+SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
+MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
 MOGO_UTM_SOUTH="${MOGO_UTM_SOUTH:-false}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9675}"
+SLIM_CACHE_ONLY="${SLIM_CACHE_ONLY:-false}"
+
+CACHE_USE_VLM=true
+CACHE_USE_HDMAP=true
+CACHE_SQLITE_PATH="${SQLITE_PATH}"
+if [ "${SLIM_CACHE_ONLY}" = "true" ]; then
+  CACHE_USE_VLM=false
+  CACHE_USE_HDMAP=false
+  CACHE_SQLITE_PATH=""
+fi
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。USE_OBJECT_VECTOR=true 时补出 obj 缓存。
 # object_encoder_type=temporal -> 生成 object_temporal_feature_v1.gz（差分+时序FPN，动态运动意图/
 #   静态几何约束，需 IL/RL/eval 同设 object_encoder_type=temporal）；
 # object_encoder_type=mlp      -> 生成单帧 object_vector_feature_v1.gz（旧行为）。
-# 指向已有 CACHE_PATH 重跑时：token 目录里已存在的 qwen3_feature*.gz / hdmap*.gz 会按 builder
-# 逐个跳过（不重算 VLM，省数小时），只新增缺失的 object_temporal_feature_v1.gz。旧的
-# object_vector_feature_v1.gz（若曾生成）残留无害、不被 temporal 读取。---
-if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
+# 正常模式同时写 qwen3_feature*.gz 与 recogdrive_ego_feature_v1.gz。指向已有 CACHE_PATH
+# 重跑时，已存在文件按 builder 逐个跳过，不重算 VLM；SLIM_CACHE_ONLY=true 时只补 ego
+# sidecar，并关闭 Qwen、HDMap、object、image 与地图加载。旧 object 缓存残留无害。---
+if [ "${SLIM_CACHE_ONLY}" != "true" ] && [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   set -- \
     agent.use_object_vector=true \
     agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" \
@@ -49,7 +59,7 @@ if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
 fi
 
 # --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。开启补出前视图 uint8 缓存。---
-if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+if [ "${SLIM_CACHE_ONLY}" != "true" ] && [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
   set -- \
     agent.use_image_encoder=true \
     agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}" \
@@ -72,14 +82,15 @@ torchrun \
   agent.cam_type=single \
   agent.cache_hidden_state=True \
   agent.cache_mode=True \
+  agent.use_vlm="${CACHE_USE_VLM}" \
   agent.vlm_type=qwen3 \
   agent.vlm_path="${QWEN3_VL_PATH}" \
   agent.vl_hidden_dim=2048 \
   agent.dit_type=small \
   agent.vlm_size=small \
-  agent.use_hdmap_vector=true \
-  agent.use_lane_boundaries=true \
-  mogo_map.sqlite_path="${SQLITE_PATH}" \
+  agent.use_hdmap_vector="${CACHE_USE_HDMAP}" \
+  agent.use_lane_boundaries="${CACHE_USE_HDMAP}" \
+  mogo_map.sqlite_path="${CACHE_SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
   mogo_map.utm_south="${MOGO_UTM_SOUTH}" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
@@ -90,4 +101,6 @@ torchrun \
 # "agent.view_list=[cam_f0]" \
 #   agent.use_video_input=True \
 #   agent.num_frames=4 \
-python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
+if [ "${SLIM_CACHE_ONLY}" != "true" ]; then
+  python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
+fi

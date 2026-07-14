@@ -53,6 +53,8 @@ def run_dataset(dataset: Any, args: argparse.Namespace, index: int) -> None:
             "MASTER_PORT": str(args.master_port_start + index),
         }
     )
+    if args.slim_only:
+        env["SLIM_CACHE_ONLY"] = "true"
     if args.qwen3_vl_path:
         env["QWEN3_VL_PATH"] = args.qwen3_vl_path
     if args.gpus:
@@ -62,6 +64,7 @@ def run_dataset(dataset: Any, args: argparse.Namespace, index: int) -> None:
     print(f"[{dataset.name}] DATA_ROOT={env['DATA_ROOT']}")
     print(f"[{dataset.name}] CACHE_PATH={env['CACHE_PATH']}")
     print(f"[{dataset.name}] SQLITE_PATH={env['SQLITE_PATH']} UTM={env['MOGO_UTM_ZONE']}")
+    print(f"[{dataset.name}] MODE={'slim-only' if args.slim_only else 'full'}")
     print(" ".join(cmd))
     if not args.dry_run:
         subprocess.run(cmd, check=True, env=env, cwd=REPO_ROOT)
@@ -75,6 +78,11 @@ def main() -> None:
     parser.add_argument("--train-test-split", default="mogo_trainval")
     parser.add_argument("--qwen3-vl-path", default="")
     parser.add_argument("--gpus", default="")
+    parser.add_argument(
+        "--slim-only",
+        action="store_true",
+        help="Backfill only recogdrive_ego_feature_v1.gz without loading Qwen, map, or other features",
+    )
     parser.add_argument("--master-port-start", type=int, default=9675)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("overrides", nargs=argparse.REMAINDER, help="Extra Hydra overrides forwarded to the cache script")
