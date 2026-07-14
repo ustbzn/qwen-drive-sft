@@ -601,6 +601,12 @@ class MetricCacheProcessor:
         )
         if boundary_profile is not None:
             self._pdm_closed._centerline.set_boundary_profile(boundary_profile)
+        traffic_light_states: List[Any] = []
+        driving_command = None
+        if hasattr(scenario, "get_traffic_light_states_at_iteration"):
+            traffic_light_states = list(scenario.get_traffic_light_states_at_iteration(0))
+        if hasattr(scenario, "get_driving_command_at_iteration"):
+            driving_command = scenario.get_driving_command_at_iteration(0)
 
         # save and dump features
         MetricCache(
@@ -612,6 +618,8 @@ class MetricCacheProcessor:
             list(self._pdm_closed._route_lane_dict.keys()),
             self._pdm_closed._drivable_area_map,
             history_states,
+            traffic_light_states=traffic_light_states,
+            driving_command=driving_command,
         ).dump()
 
         # return metadata
