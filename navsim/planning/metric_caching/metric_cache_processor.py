@@ -4,6 +4,7 @@ import pathlib
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import numpy.typing as npt
 from shapely.geometry import Point
 
 from nuplan.common.actor_state.agent import Agent
