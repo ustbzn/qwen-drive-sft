@@ -20,8 +20,8 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
 os.environ.setdefault("NUPLAN_MAP_VERSION", "nuplan-maps-v1.0")
 
@@ -45,11 +45,11 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_IL/2026.07.05.02.56.27/lightning_logs/version_0/checkpoints/epoch=196-step=5319.ckpt",
+    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/all_exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.10.13.46.03/lightning_logs/version_0/checkpoints/epoch=99-step=10400.ckpt",
     "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_RL/2026.07.07.13.53.42/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
-DATA_SPLIT = "val"
+DATA_SPLIT = "trainval"
 HYDRA_CONFIG_PATH = "../navsim/planning/script/config/common/train_test_split"
 
 
@@ -313,7 +313,7 @@ def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--use-object-vector", action=argparse.BooleanOptionalAction, default=True)
     group.add_argument("--object-encoder-type", default="temporal", choices=["mlp", "temporal"])
     group.add_argument("--max-obj-tokens", type=int, default=64)
-    group.add_argument("--include-static-objects", action=argparse.BooleanOptionalAction, default=False)
+    group.add_argument("--include-static-objects", action=argparse.BooleanOptionalAction, default=True)
     group.add_argument("--object-token-dropout", type=float, default=0.1)
     group.add_argument("--static-speed-threshold", type=float, default=0.5)
     # hdmap 向量 token
@@ -327,8 +327,8 @@ def main():
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为视频")
     parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
     parser.add_argument("--token", nargs="+", default=None, help="anchor scenario token（可传多个）")
-    parser.add_argument("--model", choices=["il", "rl", "both"], default="rl", help="IL / RL / 两者")
-    parser.add_argument("--output-dir", default="vis_output/videos/ego_SDE_obj_hdmap_10case", help="视频输出目录")
+    parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
+    parser.add_argument("--output-dir", default="vis_output/videos/alldata_ego_SDE_obj_hdmap_novlm_shworldsim", help="视频输出目录")
     parser.add_argument("--frames-dir", default="vis_output/video_frames", help="中间帧目录")
     parser.add_argument("--window", type=int, default=30, help="anchor 前后各取多少帧")
     parser.add_argument("--full-log", action="store_true", help="渲染整条 log（较慢）")
@@ -336,7 +336,7 @@ def main():
     parser.add_argument("--keep-frames", action="store_true", help="保留中间 PNG 帧")
     parser.add_argument("--gpu", type=int, default=None, help="指定 GPU")
     parser.add_argument("--mogo-map-sqlite-path", default="", help="MOGO sqlite 地图路径；默认使用 OPENSCENE_DATA_ROOT/maps 下第一个 .sqlite")
-    parser.add_argument("--mogo-map-utm-zone", type=int, default=50, help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致")
+    parser.add_argument("--mogo-map-utm-zone", type=int, default=51, help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致")
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
     _add_model_arch_args(parser)
     args = parser.parse_args()
@@ -359,9 +359,15 @@ def main():
     scene_filter: SceneFilter = instantiate(cfg.scene_filter)
     
     default_token_list = [
+        # 上海case
         # "6778f89b398dee3ddde0156b2079e356",
         # "8ec9b77adeaa5c6aae500334f321f1c2",
         # "ec6788598cc3fa0b2ea7a667f03f7346",
+        "7a8525b11fea08e4187b4afe77ef9117",
+        "1e223bdaeed2f9c46bb351de8e712168",
+        "99bba5e74abb2261fa0c4a6328c1c611",
+        "f7dc542d3e1bf2c84c429f859b70ecbf",
+        # val case
         "506ef5edffa5ddd9acf8e72a9c78f86c",
         "9fdf107997923ef7bd7207e4618b6a6b",
         "efc7652bed3fd9c35799cc12dc5f183b",
