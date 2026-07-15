@@ -38,7 +38,7 @@ export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export USE_OBJECT_VECTOR=true
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。开启需与缓存端一致，且
-# CACHE_PATH 必须已带 front_image_feature_*.gz，否则 CacheOnlyDataset 静默丢样本。
+# CACHE_PATH 必须已带 front_image_feature_*.gz，否则 CacheOnlyDataset 会报告缺失并过滤不完整样本。
 # 典型实验：与 agent.vlm_ablation=zero 组合 —— 屏蔽 VLM 语义、保留前视图像视觉信息。
 export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 # 自车状态编码器：mlp(默认，零影响) | attention(SDE，训练时随机遮蔽运动学量以抑制外推捷径)。
@@ -47,8 +47,8 @@ export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 # VLM 总开关：true(默认，加载并使用 VLM，与历史一致) | false(完全不用 VLM：planner 不建 VLM
 # 投影层、DiT cross-attention context 仅由 obj/hdmap/img token 组成、agent 不加载 Qwen3；模型更小)。
-# 低风险变体：训练仍读现有 CACHE_PATH 里的 ego/history/command，只忽略其中的 hidden state，故
-# 无需重跑 hidden-state 缓存。use_vlm=false 下 vlm_ablation 为 no-op。ckpt 不可跨 use_vlm 移植，
+# use_vlm=false 时训练只读 recogdrive_ego_feature_v1.gz，不再检查或解压 qwen3_feature.gz；
+# 旧 CACHE_PATH 须先用 --slim-only 补写 sidecar。vlm_ablation 为 no-op，ckpt 不可跨 use_vlm 移植，
 # RL/eval 的 CHECKPOINT 必须来自 use_vlm=false 的上游（否则 vl 投影层缺失，行为错配）。
 # 用法：USE_VLM=false bash scripts/training/run_recogdrive_qwen3_train_multi_node_2b.sh
 export USE_VLM="${USE_VLM:-false}"
@@ -59,6 +59,7 @@ GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
 BATCH_SIZE="${BATCH_SIZE:-1280}"
 MAX_EPOCHS="${MAX_EPOCHS:-100}"
+PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.10.13.46.03/lightning_logs/version_0/checkpoints/epoch=85-step=8944.ckpt}"
 
 CACHE_ARGS=(cache_path="${CACHE_PATH}")
 if [ -n "${CACHE_PATHS:-}" ]; then
@@ -75,14 +76,14 @@ if [ -n "${CACHE_PATHS:-}" ]; then
 fi
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启需与缓存端用同样的 obj 配置，
-# 且 CACHE_PATH 必须已带 object_vector_feature_v1.gz，否则 CacheOnlyDataset 静默丢样本。---
+# 且 CACHE_PATH 必须已带 object_vector_feature_v1.gz，否则 CacheOnlyDataset 会报告缺失并过滤不完整样本。---
 if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
   set -- \
     agent.use_object_vector=true \
     agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" \
     agent.static_speed_threshold="${STATIC_SPEED_THRESHOLD:-0.5}" \
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
-    agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
+    agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-true}" \
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
     "$@"
 fi
@@ -112,6 +113,7 @@ torchrun \
   agent=recogdrive_agent \
   agent.lr=1e-4 \
   agent.grpo=False \
+  agent.checkpoint_path=\"${PRETRAINED_CKPT}\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
   agent.cam_type=single \
   agent.cache_hidden_state=True \
@@ -125,7 +127,7 @@ torchrun \
   agent.use_lane_boundaries=true \
   agent.hdmap_input_norm=false \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
-  agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.3}" \
+  agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.75}" \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
