@@ -45,8 +45,8 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/all_exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.10.13.46.03/lightning_logs/version_0/checkpoints/epoch=99-step=10400.ckpt",
-    "rl": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_RL/2026.07.07.13.53.42/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt",
+    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/all_exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.15.03.36.07/lightning_logs/version_0/checkpoints/epoch=99-step=900.ckpt",
+    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319_old/exp/training_alldata_ego_SDE_obj_hdmap_novlm_RL/2026.07.13.06.23.56/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"

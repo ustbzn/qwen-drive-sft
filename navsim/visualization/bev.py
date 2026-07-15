@@ -166,7 +166,10 @@ def add_trajectory_to_bev_ax(ax: plt.Axes, trajectory: Trajectory, config: Dict[
     :param config: dictionary with plot parameters
     :return: ax with plot
     """
-    poses = np.concatenate([np.array([[0, 0]]), trajectory.poses[:8, :2]])
+    # 可视化统一覆盖 4 秒；2 Hz 轨迹为 8 点，PDM/LQR 的 10 Hz rollout 为 40 点。
+    interval_length = trajectory.trajectory_sampling.interval_length
+    num_poses = min(len(trajectory.poses), int(round(4.0 / interval_length)))
+    poses = np.concatenate([np.array([[0, 0]]), trajectory.poses[:num_poses, :2]])
     ax.plot(
         poses[:, 1],
         poses[:, 0],

@@ -8,6 +8,9 @@
 
 默认保证每个 GIF 不超过 5 MB（5,000,000 字节）。超过限制时，脚本会依次降低分辨率、色数和帧率，
 直到输出满足大小限制；可通过 --max-size-mb 调整上限。
+
+每个场景分别输出原始模型预测与 GT、LQR rollout 与 GT 两个 GIF。LQR rollout 使用与 PDM
+评测一致的 10 Hz BatchLQRTracker 和运动学自行车模型，覆盖 4 秒预测时域。
 """
 from __future__ import annotations
 
@@ -25,11 +28,23 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 import hydra
+import numpy as np
 from hydra.utils import instantiate
 from PIL import Image
 from tqdm import tqdm
 
 from scripts import vis_scenario_video as video
+from navsim.common.dataclasses import Trajectory
+from navsim.evaluate.pdm_score import get_trajectory_as_array, transform_trajectory
+from navsim.planning.scenario_builder.mogo_vehicle_parameters import get_mogo_vehicle_parameters
+from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import StateIndex
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
+    convert_absolute_to_relative_se2_array,
+)
+from nuplan.common.actor_state.ego_state import EgoState
+from nuplan.common.actor_state.state_representation import StateSE2, StateVector2D, TimePoint
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 DEFAULT_MAX_SIZE_MB = 5.0
 BYTES_PER_MB = 1_000_000
@@ -40,6 +55,7 @@ MIN_PRIMARY_WIDTH = 480
 MIN_FALLBACK_WIDTH = 160
 MIN_PRIMARY_COLORS = 32
 MIN_FALLBACK_COLORS = 8
+LQR_ROLLOUT_SAMPLING = TrajectorySampling(num_poses=40, interval_length=0.1)
 
 
 @dataclass(frozen=True)
@@ -52,41 +68,153 @@ class GifEncodingResult:
     frame_count: int
 
 
+@dataclass(frozen=True)
+class RenderedFramePaths:
+    prediction: list[Path]
+    lqr_rollout: list[Path]
+
+
+def build_lqr_rollout_trajectory(
+    scene,
+    frame_idx: int,
+    model_trajectory: Trajectory,
+    simulator: PDMSimulator,
+) -> Trajectory:
+    """用当前真实自车状态对模型轨迹执行 LQR + 运动学自行车模型 rollout。"""
+    frame = scene.frames[frame_idx]
+    ego_status = frame.ego_status
+    initial_ego_state = EgoState.build_from_rear_axle(
+        rear_axle_pose=StateSE2(*ego_status.ego_pose),
+        tire_steering_angle=0.0,
+        vehicle_parameters=get_mogo_vehicle_parameters(),
+        time_point=TimePoint(int(frame.timestamp)),
+        rear_axle_velocity_2d=StateVector2D(*ego_status.ego_velocity),
+        rear_axle_acceleration_2d=StateVector2D(*ego_status.ego_acceleration),
+    )
+
+    global_trajectory = transform_trajectory(model_trajectory, initial_ego_state)
+    reference_states = get_trajectory_as_array(
+        global_trajectory,
+        simulator.proposal_sampling,
+        initial_ego_state.time_point,
+    )
+    simulated_states, _ = simulator.simulate_proposals(
+        reference_states[None, ...],
+        initial_ego_state,
+    )
+
+    origin = StateSE2(*initial_ego_state.rear_axle.serialize())
+    simulated_local_poses = convert_absolute_to_relative_se2_array(
+        origin,
+        simulated_states[0, :, StateIndex.STATE_SE2],
+    )
+    return Trajectory(
+        poses=simulated_local_poses[1:].astype(np.float32),
+        trajectory_sampling=simulator.proposal_sampling,
+    )
+
+
+def _save_trajectory_frame(
+    *,
+    scene,
+    scene_traj,
+    center_idx: int,
+    agent: video.ReCogDriveAgent,
+    trajectory: Trajectory,
+    trajectory_name: str,
+    frame_path: Path,
+    render_dpi: int,
+    bev_only: bool,
+) -> None:
+    fig, bev_ax, camera_ax = video.plot_bev_and_camera_with_agent(
+        scene,
+        scene_traj,
+        center_idx,
+        agent,
+        agent_trajectory=trajectory,
+    )
+    label_ax = bev_ax if bev_only else camera_ax
+    label_ax.text(
+        0.99,
+        0.99,
+        f"GT: green | {trajectory_name}: red",
+        transform=label_ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=12,
+        color="white",
+        bbox=dict(facecolor="black", alpha=0.55, edgecolor="none", pad=3),
+        zorder=10,
+    )
+    if bev_only:
+        camera_ax.remove()
+        fig.set_size_inches(9, 9, forward=True)
+        bev_ax.set_position([0.03, 0.03, 0.94, 0.94])
+    fig.savefig(frame_path, bbox_inches="tight", dpi=render_dpi)
+    video.plt.close(fig)
+
+
 def render_frames(
     tokens: list[str],
     agent: video.ReCogDriveAgent,
     scene_loader: video.SceneLoader,
     scene_loader_traj: video.SceneLoader,
-    frame_dir: Path,
+    prediction_frame_dir: Path,
+    lqr_frame_dir: Path,
     render_dpi: int,
     bev_only: bool,
-) -> list[Path]:
-    """沿用视频脚本的绘图流程，以适合 GIF 的 DPI 保存中间帧。"""
-    frame_dir.mkdir(parents=True, exist_ok=True)
+    simulator: PDMSimulator,
+) -> RenderedFramePaths:
+    """一次模型推理同时渲染原始预测和 LQR rollout 两套 GIF 帧。"""
+    prediction_frame_dir.mkdir(parents=True, exist_ok=True)
+    lqr_frame_dir.mkdir(parents=True, exist_ok=True)
     center_idx = scene_loader._scene_filter.num_history_frames - 1
-    frame_paths: list[Path] = []
+    prediction_frame_paths: list[Path] = []
+    lqr_frame_paths: list[Path] = []
 
-    for i, token in enumerate(tqdm(tokens, desc=f"渲染帧 -> {frame_dir.name}")):
+    description = f"渲染预测与 LQR 帧 -> {prediction_frame_dir.parent.name}"
+    for i, token in enumerate(tqdm(tokens, desc=description)):
         scene = scene_loader.get_scene_from_token(token)
         scene_traj = scene_loader_traj.get_scene_from_token(token)
         agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input(), scene_traj)
-        fig, bev_ax, camera_ax = video.plot_bev_and_camera_with_agent(
+        lqr_trajectory = build_lqr_rollout_trajectory(
             scene,
-            scene_traj,
             center_idx,
-            agent,
-            agent_trajectory=agent_trajectory,
+            agent_trajectory,
+            simulator,
         )
-        if bev_only:
-            camera_ax.remove()
-            fig.set_size_inches(9, 9, forward=True)
-            bev_ax.set_position([0.03, 0.03, 0.94, 0.94])
-        frame_path = frame_dir / f"{i:05d}_{token}.png"
-        fig.savefig(frame_path, bbox_inches="tight", dpi=render_dpi)
-        video.plt.close(fig)
-        frame_paths.append(frame_path)
 
-    return frame_paths
+        prediction_frame_path = prediction_frame_dir / f"{i:05d}_{token}.png"
+        lqr_frame_path = lqr_frame_dir / f"{i:05d}_{token}.png"
+        _save_trajectory_frame(
+            scene=scene,
+            scene_traj=scene_traj,
+            center_idx=center_idx,
+            agent=agent,
+            trajectory=agent_trajectory,
+            trajectory_name="Prediction",
+            frame_path=prediction_frame_path,
+            render_dpi=render_dpi,
+            bev_only=bev_only,
+        )
+        _save_trajectory_frame(
+            scene=scene,
+            scene_traj=scene_traj,
+            center_idx=center_idx,
+            agent=agent,
+            trajectory=lqr_trajectory,
+            trajectory_name="LQR rollout",
+            frame_path=lqr_frame_path,
+            render_dpi=render_dpi,
+            bev_only=bev_only,
+        )
+        prediction_frame_paths.append(prediction_frame_path)
+        lqr_frame_paths.append(lqr_frame_path)
+
+    return RenderedFramePaths(
+        prediction=prediction_frame_paths,
+        lqr_rollout=lqr_frame_paths,
+    )
 
 
 def _resample_filter():
@@ -306,51 +434,68 @@ def generate_gifs_for_tokens(
     )
     log_to_tokens = video.build_log_token_sequences(scene_loader)
     frames_root.mkdir(parents=True, exist_ok=True)
+    simulator = PDMSimulator(proposal_sampling=LQR_ROLLOUT_SAMPLING)
 
     for model in models:
         agent = _build_agent(model, args)
         for anchor in anchor_tokens:
             log_name = token_to_log[anchor]
             tokens = video.slice_tokens(log_to_tokens[log_name], anchor, args.window, args.full_log)
-            output_name = f"{anchor}_{model}_bev.gif" if args.bev_only else f"{anchor}_{model}.gif"
-            frame_name = f"{anchor}_bev" if args.bev_only else anchor
+            if args.bev_only:
+                prediction_output_name = f"{anchor}_{model}_bev.gif"
+                lqr_output_name = f"{anchor}_{model}_lqr_bev.gif"
+                frame_name = f"{anchor}_bev"
+            else:
+                prediction_output_name = f"{anchor}_{model}.gif"
+                lqr_output_name = f"{anchor}_{model}_lqr.gif"
+                frame_name = anchor
+
             temporary_frames = None
             if args.keep_frames:
-                frame_dir = frames_root / model / frame_name
+                frame_root = frames_root / model / frame_name
             else:
                 temporary_frames = tempfile.TemporaryDirectory(
                     prefix=f"{model}_{frame_name}_",
                     dir=frames_root,
                 )
-                frame_dir = Path(temporary_frames.name)
+                frame_root = Path(temporary_frames.name)
+            prediction_frame_dir = frame_root / "prediction"
+            lqr_frame_dir = frame_root / "lqr_rollout"
 
             try:
-                frame_paths = render_frames(
+                rendered_frames = render_frames(
                     tokens,
                     agent,
                     scene_loader,
                     scene_loader_traj,
-                    frame_dir,
+                    prediction_frame_dir,
+                    lqr_frame_dir,
                     args.render_dpi,
                     args.bev_only,
+                    simulator,
                 )
-                gif_path = output_dir / output_name
-                result = frames_to_gif(
-                    frame_paths,
-                    gif_path,
-                    args.fps,
-                    args.max_size_mb,
-                    args.max_width,
-                    args.colors,
-                    preserve_colors=args.bev_only,
+                gif_jobs = (
+                    (rendered_frames.prediction, prediction_output_name),
+                    (rendered_frames.lqr_rollout, lqr_output_name),
                 )
-                size_mb = result.size_bytes / BYTES_PER_MB
-                print(
-                    f"已保存 GIF: {gif_path.resolve()} "
-                    f"({size_mb:.2f} MB, {result.frame_count} 帧, "
-                    f"{result.width}x{result.height}, {result.colors} 色, "
-                    f"抽帧步长 {result.frame_step})"
-                )
+                for frame_paths, output_name in gif_jobs:
+                    gif_path = output_dir / output_name
+                    result = frames_to_gif(
+                        frame_paths,
+                        gif_path,
+                        args.fps,
+                        args.max_size_mb,
+                        args.max_width,
+                        args.colors,
+                        preserve_colors=args.bev_only,
+                    )
+                    size_mb = result.size_bytes / BYTES_PER_MB
+                    print(
+                        f"已保存 GIF: {gif_path.resolve()} "
+                        f"({size_mb:.2f} MB, {result.frame_count} 帧, "
+                        f"{result.width}x{result.height}, {result.colors} 色, "
+                        f"抽帧步长 {result.frame_step})"
+                    )
             finally:
                 if temporary_frames is not None:
                     temporary_frames.cleanup()
@@ -363,7 +508,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/alldata_ego_SDE0.75_obj_hdmap_novlm_shworldsim_bev",
+        default="vis_output/gifs/2603_ego_SDE0.75_obj_hdmap_novlm_il_shworldsim",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -412,13 +557,13 @@ def main() -> None:
         parser.error(f"--colors 必须在 {MIN_FALLBACK_COLORS}-256 之间")
 
     default_token_list = [
-        # "6778f89b398dee3ddde0156b2079e356",
-        # "8ec9b77adeaa5c6aae500334f321f1c2",
-        # "ec6788598cc3fa0b2ea7a667f03f7346",
+        "6778f89b398dee3ddde0156b2079e356",
+        "8ec9b77adeaa5c6aae500334f321f1c2",
+        "ec6788598cc3fa0b2ea7a667f03f7346",
         "7a8525b11fea08e4187b4afe77ef9117",
-        # "1e223bdaeed2f9c46bb351de8e712168",
-        # "99bba5e74abb2261fa0c4a6328c1c611",
-        # "f7dc542d3e1bf2c84c429f859b70ecbf",
+        "1e223bdaeed2f9c46bb351de8e712168",
+        "99bba5e74abb2261fa0c4a6328c1c611",
+        "f7dc542d3e1bf2c84c429f859b70ecbf",
         # val case
         # "506ef5edffa5ddd9acf8e72a9c78f86c",
         # "9fdf107997923ef7bd7207e4618b6a6b",
