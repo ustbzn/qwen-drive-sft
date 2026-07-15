@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import copy
 
@@ -56,6 +56,9 @@ class PDMScorerConfig:
     driving_direction_violation_threshold: float = 6.0  # [m] (driving direction)
     stopped_speed_threshold: float = 5e-03  # [m/s] (ttc)
     at_fault_collision_score_floor: float = 0.05  # (no at-fault collision)
+    traffic_light_violation_score: float = 0.05  # (traffic light compliance)
+    traffic_light_yellow_duration: float = 3.0  # [s] (traffic light compliance)
+    traffic_light_green_flash_duration: float = 3.0  # [s] (traffic light compliance)
     ttc_horizon: float = 2.0  # [s] (ttc)
     ttc_full_weight_time: float = 1.0  # [s] (ttc)
     ttc_transition_center: float = 1.5  # [s] (ttc)
@@ -133,6 +136,7 @@ class PDMScorer:
         self._states: Optional[npt.NDArray[np.float64]] = None
         self._reference_signal: Optional[npt.NDArray[np.float64]] = None
         self._history_states: Optional[npt.NDArray[np.float64]] = None
+        self._traffic_light_states: Optional[List[Dict[str, Any]]] = None
         self._ego_coords: Optional[npt.NDArray[np.float64]] = None
         self._ego_polygons: Optional[npt.NDArray[np.object_]] = None
 
@@ -171,6 +175,7 @@ class PDMScorer:
         route_lane_ids: List[str],
         drivable_area_map: PDMDrivableMap,
         history_states: Optional[npt.NDArray[np.float64]] = None,
+        traffic_light_states: Optional[List[Dict[str, Any]]] = None,
     ) -> npt.NDArray[np.float64]:
         """
         Scores proposal similar to nuPlan's closed-loop metrics
@@ -179,6 +184,7 @@ class PDMScorer:
         :param centerline: path of the centerline
         :param route_lane_ids: list containing on-route lane ids
         :param drivable_area_map: Occupancy map of drivable are polygons
+        :param traffic_light_states: optional MOGO traffic-light records for the current frame
         :return: array containing score of each proposal
         """
 
@@ -191,6 +197,7 @@ class PDMScorer:
             route_lane_ids,
             drivable_area_map,
             history_states,
+            traffic_light_states,
         )
 
         # fill value ego-area array (used in multiple metrics)
@@ -200,6 +207,7 @@ class PDMScorer:
         self._calculate_no_at_fault_collision()
         self._calculate_drivable_area_compliance()
         self._calculate_no_reverse_driving()
+        self._calculate_traffic_light_compliance()
 
         # 2. weighted metrics
         self._calculate_progress()
@@ -253,6 +261,7 @@ class PDMScorer:
         route_lane_ids: List[str],
         drivable_area_map: PDMDrivableMap,
         history_states: Optional[npt.NDArray[np.float64]] = None,
+        traffic_light_states: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         Resets metric values and lazy loads input classes.
@@ -285,6 +294,7 @@ class PDMScorer:
         self._states = states
         self._reference_signal = reference_signal
         self._history_states = history_states
+        self._traffic_light_states = traffic_light_states or []
         self._start_anchor_comfort_available = False
 
         # calculate coordinates of ego corners and center
@@ -493,6 +503,156 @@ class PDMScorer:
         no_reverse_scores[violated] = np.clip(self._config.reverse_driving_score_floor, 0.0, 1.0)
 
         self._multi_metrics[MultiMetricIndex.NO_REVERSE_DRIVING] = no_reverse_scores
+
+    @staticmethod
+    def _normalize_traffic_light_state(traffic_light_state: Dict[str, Any]) -> Optional[str]:
+        """Normalize numeric or string MOGO light states to the supported state names."""
+        raw_state = traffic_light_state.get("state")
+        if isinstance(raw_state, (int, float, np.integer, np.floating)) and float(raw_state).is_integer():
+            return {
+                1: "red",
+                2: "yellow",
+                3: "green",
+                4: "flash",
+                5: "green_flash",
+            }.get(int(raw_state))
+
+        state = str(raw_state).strip().lower()
+        return {
+            "red": "red",
+            "state_red_fusion": "red",
+            "yellow": "yellow",
+            "state_yellow_fusion": "yellow",
+            "green": "green",
+            "state_green_fusion": "green",
+            "flash": "flash",
+            "state_flash_fusion": "flash",
+            "green_flash": "green_flash",
+            "gflash": "green_flash",
+            "state_gflash_fusion": "green_flash",
+        }.get(state)
+
+    def _get_traffic_light_blocked_interval(
+        self,
+        traffic_light_state: Dict[str, Any],
+        trajectory_end_time: float,
+    ) -> Optional[Tuple[float, float]]:
+        """Return the future non-passable interval implied by one light state."""
+        state = self._normalize_traffic_light_state(traffic_light_state)
+        if state in (None, "flash"):
+            return None
+
+        try:
+            duration = float(traffic_light_state.get("duration", -1.0))
+        except (TypeError, ValueError):
+            duration = -1.0
+        has_countdown = np.isfinite(duration) and duration >= 0.0
+
+        if state == "red":
+            return 0.0, min(duration, trajectory_end_time) if has_countdown else trajectory_end_time
+        if state == "green" and not has_countdown:
+            return None
+
+        yellow_duration = max(0.0, self._config.traffic_light_yellow_duration)
+        if state == "yellow":
+            red_start_time = duration if has_countdown else yellow_duration
+        elif state == "green":
+            red_start_time = duration + yellow_duration
+        else:  # green_flash
+            green_flash_duration = max(0.0, self._config.traffic_light_green_flash_duration)
+            red_start_time = (duration if has_countdown else green_flash_duration) + yellow_duration
+
+        if red_start_time > trajectory_end_time:
+            return None
+        return red_start_time, trajectory_end_time
+
+    def _get_stop_line_progress(self, traffic_light_state: Dict[str, Any]) -> Optional[float]:
+        """Project a stop line's two UTM endpoints to the centerline and average their progress."""
+        position = traffic_light_state.get("position")
+        if self._centerline is None or not isinstance(position, (list, tuple, np.ndarray)) or len(position) != 2:
+            return None
+
+        try:
+            endpoints = [Point(float(point[0]), float(point[1])) for point in position]
+        except (IndexError, TypeError, ValueError):
+            return None
+        if not all(np.isfinite(point.x) and np.isfinite(point.y) for point in endpoints):
+            return None
+
+        progress = np.asarray(self._centerline.project(endpoints), dtype=np.float64)
+        if progress.shape != (2,) or not np.isfinite(progress).all():
+            return None
+        return float(progress.mean())
+
+    def _get_ego_rear_progress(self) -> npt.NDArray[np.float64]:
+        """Return centerline progress of each proposal's rear edge over time."""
+        rear_coordinates = self._ego_coords[
+            :, :, [BBCoordsIndex.REAR_LEFT, BBCoordsIndex.REAR_RIGHT]
+        ]
+        rear_points = [Point(*point) for point in rear_coordinates.reshape(-1, 2)]
+        rear_progress = np.asarray(self._centerline.project(rear_points), dtype=np.float64)
+        rear_progress = rear_progress.reshape(self._num_proposals, rear_coordinates.shape[1], 2)
+        return rear_progress.min(axis=-1)
+
+    @staticmethod
+    def _violates_stop_line_interval(
+        rear_progress: npt.NDArray[np.float64],
+        trajectory_times: npt.NDArray[np.float64],
+        stop_line_progress: float,
+        blocked_start_time: float,
+        blocked_end_time: float,
+    ) -> bool:
+        """Check a non-passable interval using the sample immediately before its start time."""
+        if blocked_start_time > blocked_end_time:
+            return False
+
+        # The floor index is deliberately conservative when the proposal sampling is coarse.
+        check_start_idx = int(np.searchsorted(trajectory_times, blocked_start_time, side="right") - 1)
+        check_start_idx = int(np.clip(check_start_idx, 0, len(trajectory_times) - 1))
+        if rear_progress[check_start_idx] > stop_line_progress:
+            return False
+
+        interval_mask = (trajectory_times >= blocked_start_time) & (trajectory_times <= blocked_end_time)
+        return bool(np.any(rear_progress[interval_mask] > stop_line_progress))
+
+    def _calculate_traffic_light_compliance(self) -> None:
+        """Multiplicative metric that checks MOGO stop-line compliance for non-right-turn movements."""
+        traffic_light_scores = np.ones(self._num_proposals, dtype=np.float64)
+        if not self._traffic_light_states:
+            self._multi_metrics[MultiMetricIndex.TRAFFIC_LIGHT_COMPLIANCE] = traffic_light_scores
+            return
+
+        trajectory_times = np.arange(self.proposal_sampling.num_poses + 1, dtype=np.float64)
+        trajectory_times *= self.proposal_sampling.interval_length
+        ego_rear_progress = self._get_ego_rear_progress()
+        violation_score = np.clip(self._config.traffic_light_violation_score, 0.0, 1.0)
+
+        for traffic_light_state in self._traffic_light_states:
+            if not isinstance(traffic_light_state, dict):
+                continue
+            if str(traffic_light_state.get("direction", "")).strip().lower() == "right":
+                continue
+
+            stop_line_progress = self._get_stop_line_progress(traffic_light_state)
+            blocked_interval = self._get_traffic_light_blocked_interval(
+                traffic_light_state,
+                trajectory_times[-1],
+            )
+            if stop_line_progress is None or blocked_interval is None:
+                continue
+
+            blocked_start_time, blocked_end_time = blocked_interval
+            for proposal_idx in range(self._num_proposals):
+                if self._violates_stop_line_interval(
+                    ego_rear_progress[proposal_idx],
+                    trajectory_times,
+                    stop_line_progress,
+                    blocked_start_time,
+                    blocked_end_time,
+                ):
+                    traffic_light_scores[proposal_idx] = violation_score
+
+        self._multi_metrics[MultiMetricIndex.TRAFFIC_LIGHT_COMPLIANCE] = traffic_light_scores
 
     def _calculate_driving_direction_compliance(self) -> None:
         """

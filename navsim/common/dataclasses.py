@@ -737,6 +737,7 @@ class PDMResults:
     no_at_fault_collisions: float
     drivable_area_compliance: float
     no_reverse_driving: float
+    traffic_light_compliance: float
 
     ego_progress: float
     time_to_collision_within_bound: float
