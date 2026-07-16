@@ -569,11 +569,11 @@ class PDMScorer:
     def _get_stop_line_progress(self, traffic_light_state: Dict[str, Any]) -> Optional[float]:
         """Project a stop line's two UTM endpoints to the centerline and average their progress."""
         position = traffic_light_state.get("position")
-        if self._centerline is None or not isinstance(position, (list, tuple, np.ndarray)) or len(position) != 2:
+        if self._centerline is None or not isinstance(position, (list, tuple, np.ndarray)) or len(position) < 2:
             return None
 
         try:
-            endpoints = [Point(float(point[0]), float(point[1])) for point in position]
+            endpoints = [Point(float(point[0]), float(point[1])) for point in position[:2]]
         except (IndexError, TypeError, ValueError):
             return None
         if not all(np.isfinite(point.x) and np.isfinite(point.y) for point in endpoints):
@@ -627,7 +627,7 @@ class PDMScorer:
         ego_rear_progress = self._get_ego_rear_progress()
         violation_score = np.clip(self._config.traffic_light_violation_score, 0.0, 1.0)
 
-        for traffic_light_state in self._traffic_light_states:
+        for traffic_light_state in self._traffic_light_states[:2]:
             if not isinstance(traffic_light_state, dict):
                 continue
             if str(traffic_light_state.get("direction", "")).strip().lower() == "right":
