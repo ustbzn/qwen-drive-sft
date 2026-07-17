@@ -20,6 +20,8 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
+# os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset")
+# os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp")
 os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
 os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
@@ -45,8 +47,8 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/all_exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.15.03.36.07/lightning_logs/version_0/checkpoints/epoch=99-step=900.ckpt",
-    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319_old/exp/training_alldata_ego_SDE_obj_hdmap_novlm_RL/2026.07.13.06.23.56/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt",
+    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/all_exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.10.13.46.03/lightning_logs/version_0/checkpoints/epoch=99-step=10400.ckpt",
+    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"

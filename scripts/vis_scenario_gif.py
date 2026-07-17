@@ -56,6 +56,7 @@ MIN_FALLBACK_WIDTH = 160
 MIN_PRIMARY_COLORS = 32
 MIN_FALLBACK_COLORS = 8
 LQR_ROLLOUT_SAMPLING = TrajectorySampling(num_poses=40, interval_length=0.1)
+LQR_TRAJECTORY_CONFIG = {"line_style": "-", "marker": None}
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ def _save_trajectory_frame(
     frame_path: Path,
     render_dpi: int,
     bev_only: bool,
+    trajectory_config: dict[str, object] | None = None,
 ) -> None:
     fig, bev_ax, camera_ax = video.plot_bev_and_camera_with_agent(
         scene,
@@ -132,6 +134,7 @@ def _save_trajectory_frame(
         center_idx,
         agent,
         agent_trajectory=trajectory,
+        agent_trajectory_config=trajectory_config,
     )
     label_ax = bev_ax if bev_only else camera_ax
     label_ax.text(
@@ -207,6 +210,7 @@ def render_frames(
             frame_path=lqr_frame_path,
             render_dpi=render_dpi,
             bev_only=bev_only,
+            trajectory_config=LQR_TRAJECTORY_CONFIG,
         )
         prediction_frame_paths.append(prediction_frame_path)
         lqr_frame_paths.append(lqr_frame_path)
@@ -508,7 +512,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/2603_ego_SDE0.75_obj_hdmap_novlm_il_shworldsim",
+        default="vis_output/gifs/alldata_ego_SDE0.75_obj_hdmap_novlm_il_shworldsim",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -575,6 +579,12 @@ def main() -> None:
         # "26a0a7d4da89cd5b6175b4bb6a3dbbd7",
         # "15b734feb8f2b64e0032fafb34e91c6d",
         # "a3879c14d1c1a07f70cdb7bb5c07e9f1",
+        # "1d9efa9752fff8fe4c01d170964f635f",
+        # "37ad798b2faabb0e60426aef42ffcd3a",
+        # "32e1c3140db74ec058c785f77193712a",
+        # "1dd6b4cb40661650a0e62a81fe5506fc",
+        # "5afd8ce7ff7defc319ef16920788f801",
+        # "6dee9f3ef67a08bee0ae2c211f1383e4",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:

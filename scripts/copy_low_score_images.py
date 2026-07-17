@@ -13,10 +13,10 @@ from pathlib import Path
 
 
 DEFAULT_CSV = Path(
-    "exp/recogdrive_qwen3_hdmap_ddim_IL_eval/2026.06.25.10.01.35/2026.06.25.10.12.38.csv"
+    "exp/2603_ego_SDE_obj_hdmap_novlm_RL_eval/2026.07.15.10.06.26/2026.07.15.10.13.16.csv"
 )
-DEFAULT_IMAGE_DIR = Path("vis_output/eval/2026.06.25.10.01.35_qwen3_hdmap_RL")
-DEFAULT_OUTPUT_DIR = Path("vis_output/eval/2026.06.25.10.01.35_qwen3_hdmap_RL_low_score")
+DEFAULT_IMAGE_DIR = Path("vis_output/eval/2603_ego_SDE_obj_hdmap_RL")
+DEFAULT_OUTPUT_DIR = Path("vis_output/eval/2603_ego_SDE_obj_hdmap_RL_low_score")
 DEFAULT_MANIFEST = "manifest.csv"
 IMAGE_SCORE_RE = re.compile(
     r"_score(?P<score>[-+]?(?:\d+(?:\.\d*)?|\.\d+|nan|NaN|NA))\.png$"

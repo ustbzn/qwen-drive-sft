@@ -174,6 +174,7 @@ def plot_bev_and_camera_with_agent(
     frame_idx: int,
     agent: AbstractAgent,
     agent_trajectory: Optional[Trajectory] = None,
+    agent_trajectory_config: Optional[dict[str, Any]] = None,
 ) -> Tuple[plt.Figure, plt.Axes, plt.Axes]:
     """
     融合函数: 左侧可视化前视摄像头 (cam_f0) 和轨迹，右侧可视化鸟瞰图 (BEV) 和轨迹。
@@ -182,6 +183,7 @@ def plot_bev_and_camera_with_agent(
     :param scene_traj: scene trajectory dataclass
     :param frame_idx: index of selected frame
     :param agent: navsim agent
+    :param agent_trajectory_config: optional style overrides for the agent trajectory
     :return: (figure, bev axis, camera axis)
     """
     frame = scene.frames[frame_idx]
@@ -206,6 +208,8 @@ def plot_bev_and_camera_with_agent(
     # 预测(agent)轨迹在 BEV 上使用红色实线，和橙色 PDM rollout 虚线区分。
     bev_agent_config = dict(TRAJECTORY_CONFIG["agent"])
     bev_agent_config.update({"line_style": "-", "line_color_alpha": 1.0, "zorder": 4})
+    if agent_trajectory_config:
+        bev_agent_config.update(agent_trajectory_config)
     add_trajectory_to_bev_ax(bev_ax, agent_trajectory, bev_agent_config)
 
     configure_bev_ax(bev_ax, half_range=bev_half_range) # 配置BEV坐标轴(±50m)
@@ -232,6 +236,8 @@ def plot_bev_and_camera_with_agent(
         "arrow_alpha": 1.0,
         "arrow_line_width": 1.5,
     }
+    if agent_trajectory_config:
+        trajectory_config.update(agent_trajectory_config)
     camera_trajectory_config = trajectory_config # 复制人类轨迹配置
 
     add_trajectory_to_camera_ax(camera_ax, frame.cameras.cam_f0, agent_trajectory, camera_trajectory_config)

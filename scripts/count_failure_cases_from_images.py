@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 DEFAULT_CSV = Path(
-    "exp/recogdrive_qwen3_hdmap_ddim_IL_eval/2026.06.25.10.01.35/2026.06.25.10.12.38.csv"
+    "exp/2603_ego_SDE_obj_hdmap_novlm_RL_eval/2026.07.15.10.06.26/2026.07.15.10.13.16.csv"
 )
 DEFAULT_TOKEN_REPORT = "failure_case_token_report.txt"
 DEFAULT_OPENSCENE_DATA_ROOT = Path(
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-dir",
         type=Path,
-        default=Path("vis_output/eval/2026.06.25.10.01.35_qwen3_hdmap_RL_low_score"),
+        default=Path("vis_output/eval/2603_ego_SDE_obj_hdmap_RL_low_score"),
         help="Directory containing token-named PNG files. Default: current directory.",
     )
     parser.add_argument(
