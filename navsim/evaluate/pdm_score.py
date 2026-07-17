@@ -167,11 +167,11 @@ def pdm_score(
     return PDMResults(
         no_at_fault_collisions,
         drivable_area_compliance,
+        no_reverse_driving,
         ego_progress,
         time_to_collision_within_bound,
         comfort,
         driving_direction_compliance,
-        no_reverse_driving,
         obstacle_clearance,
         following_safety,
         centerline_convergence,

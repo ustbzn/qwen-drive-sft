@@ -42,15 +42,16 @@ export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_confi
 export USE_GT_PROGRESS_REFERENCE="${USE_GT_PROGRESS_REFERENCE:-${USE_GT_TRAJECTORY:-true}}"
 
 # --- 变道场景中心线收敛满分模式（默认开启）。按场景 CSV 的 scene_merge=lane_change 识别。---
-export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-true}"
+export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-false}"
 SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_logs/val_scenario_type_token_map.csv}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
-CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_obj_hdmap_novlm_RL/2026.07.07.13.53.42/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v3}"
+CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
+# CHECKPOINT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/all_exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.15.03.36.07/lightning_logs/version_0/checkpoints/epoch=99-step=900.ckpt"
+METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
-GPUS="${GPUS:-4}"
+GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
@@ -62,7 +63,7 @@ if [ "${USE_OBJECT_VECTOR:-false}" = "true" ]; then
     agent.object_encoder_type="${OBJECT_ENCODER_TYPE:-temporal}" \
     agent.static_speed_threshold="${STATIC_SPEED_THRESHOLD:-0.5}" \
     agent.max_obj_tokens="${MAX_OBJ_TOKENS:-64}" \
-    agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-false}" \
+    agent.include_static_objects="${INCLUDE_STATIC_OBJECTS:-true}" \
     agent.object_token_dropout="${OBJECT_TOKEN_DROPOUT:-0.1}" \
     "$@"
 fi
@@ -87,7 +88,7 @@ torchrun \
   --master_port="${MASTER_PORT}" \
   "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_pdm_score_recogdrive.py" \
   train_test_split="${TRAIN_TEST_SPLIT}" \
-  train_test_split.data_split=val \
+  train_test_split.data_split=trainval \
   agent=recogdrive_agent \
   agent.checkpoint_path=\"${CHECKPOINT}\" \
   agent.vlm_path="${QWEN3_VL_PATH}" \
@@ -112,7 +113,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name=recogdrive_ego_SDE_obj_hdmap${VLM_TAG}_RL_eval \
+  experiment_name="${EXPERIMENT_NAME:-2603_ego_SDE_obj_hdmap${VLM_TAG}_RL_trainval}" \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

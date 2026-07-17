@@ -459,7 +459,7 @@ def main(cfg: DictConfig) -> None:
         average_row = pdm_score_df.drop(columns=average_drop_columns).mean(skipna=True)
         average_row["token"] = "average"
         average_row["valid"] = pdm_score_df["valid"].all()
-        average_row["rank"] = "0"
+        average_row["rank"] = 0
         if "trajectory_path" in pdm_score_df.columns:
             average_row["trajectory_path"] = ""
         if "trajectory_source" in pdm_score_df.columns:
@@ -470,7 +470,7 @@ def main(cfg: DictConfig) -> None:
 
         save_path = Path(cfg.output_dir)
         timestamp = datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
-        pdm_score_df.to_csv(save_path / f"{timestamp}.csv")
+        pdm_score_df.to_csv(save_path / f"{timestamp}.csv", index=False)
 
         logger.info(
             f"""

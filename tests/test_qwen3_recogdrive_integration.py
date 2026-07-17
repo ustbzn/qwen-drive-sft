@@ -1,16 +1,28 @@
 import pickle
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
 from navsim.common.dataclasses import Scene, SensorConfig
 from navsim.agents.recogdrive import recogdrive_features
-from navsim.agents.recogdrive.recogdrive_agent import make_recogdrive_config
+from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent, make_recogdrive_config
 from navsim.agents.recogdrive.recogdrive_backbone import load_qwen3_processor, system_message
 from navsim.agents.recogdrive.hdmap_vector_encoder import MapEncoder
 from navsim.agents.recogdrive.recogdrive_diffusion_planner import ReCogDriveDiffusionPlanner
-from navsim.agents.recogdrive.recogdrive_features import ReCogDriveFeatureBuilder, select_hidden_state
+from navsim.agents.recogdrive.recogdrive_features import (
+    RECOGDRIVE_EGO_FEATURE_KEYS,
+    ReCogDriveEgoFeatureBuilder,
+    ReCogDriveFeatureBuilder,
+    select_hidden_state,
+)
+from navsim.planning.training.dataset import (
+    CacheOnlyDataset,
+    Dataset,
+    dump_feature_target_to_pickle,
+)
 
 
 def test_make_recogdrive_config_accepts_explicit_vl_hidden_dim():
@@ -235,3 +247,221 @@ def test_make_recogdrive_config_accepts_use_lane_boundaries():
     planner = ReCogDriveDiffusionPlanner(config)
     assert planner.map_encoder is not None
     assert planner.map_encoder.centerline_encoder.point_mlp[0].in_features == 13
+
+
+def _make_fake_agent_input():
+    ego_statuses = []
+    for index in range(4):
+        ego_statuses.append(
+            SimpleNamespace(
+                ego_pose=[float(index), float(index + 1), float(index) * 0.1],
+                driving_command=[1.0, 0.0, 0.0, 0.0],
+                ego_velocity=[2.0, 0.5],
+                ego_acceleration=[0.1, -0.2],
+                ego_yaw_rate=0.01,
+                ego_curvature=0.02,
+                ego_curvature_rate=0.03,
+                ego_steering_wheel_angle=0.04,
+                ego_steering_wheel_rate=0.05,
+            )
+        )
+    return SimpleNamespace(ego_statuses=ego_statuses, cameras=object())
+
+
+def _make_agent_shell(use_vlm: bool, cache_mode: bool = False):
+    return SimpleNamespace(
+        use_vlm=use_vlm,
+        cache_mode=cache_mode,
+        cache_hidden_state=False,
+        vlm_type="qwen3",
+        vlm_path=None,
+        device="cpu",
+        first_hidden_state_index=0,
+        last_hidden_state_index=-1,
+        view_list=["cam_f0"],
+        num_frames=1,
+        use_video_input=False,
+        video_fps=2.0,
+        use_hdmap_vector=False,
+        use_object_vector=False,
+        use_image_encoder=False,
+    )
+
+
+def test_slim_ego_builder_matches_full_cache_fields(monkeypatch):
+    class FakeBackbone:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward_from_paths(self, *args, **kwargs):
+            return SimpleNamespace(
+                hidden_states=(
+                    torch.ones(1, 3, 5),
+                    torch.full((1, 3, 5), 2.0),
+                )
+            )
+
+    monkeypatch.setattr(recogdrive_features, "RecogDriveBackbone", FakeBackbone)
+    monkeypatch.setattr(
+        recogdrive_features,
+        "collect_view_frame_paths_with_status",
+        lambda *args, **kwargs: ([["fake.jpg"]], False),
+    )
+
+    agent_input = _make_fake_agent_input()
+    slim_builder = ReCogDriveEgoFeatureBuilder()
+    full_builder = ReCogDriveFeatureBuilder(
+        cache_hidden_state=True,
+        model_type="qwen3",
+        checkpoint_path="/fake/qwen3",
+        cache_mode=True,
+    )
+    slim_features = slim_builder.compute_features(agent_input)
+    full_features = full_builder.compute_features(agent_input)
+
+    assert slim_builder.get_unique_name() == "recogdrive_ego_feature_v1"
+    assert tuple(slim_features) == RECOGDRIVE_EGO_FEATURE_KEYS
+    for key in RECOGDRIVE_EGO_FEATURE_KEYS:
+        assert torch.equal(slim_features[key], full_features[key])
+    assert "first_hidden_state" in full_features
+    assert "last_hidden_state" in full_features
+
+
+def test_agent_selects_full_and_slim_builders_by_mode():
+    no_vlm_builders = ReCogDriveAgent.get_feature_builders(_make_agent_shell(use_vlm=False))
+    vlm_read_builders = ReCogDriveAgent.get_feature_builders(_make_agent_shell(use_vlm=True))
+    cache_write_builders = ReCogDriveAgent.get_feature_builders(
+        _make_agent_shell(use_vlm=True, cache_mode=True)
+    )
+
+    assert [type(builder) for builder in no_vlm_builders] == [ReCogDriveEgoFeatureBuilder]
+    assert [type(builder) for builder in vlm_read_builders] == [ReCogDriveFeatureBuilder]
+    assert [type(builder) for builder in cache_write_builders] == [
+        ReCogDriveFeatureBuilder,
+        ReCogDriveEgoFeatureBuilder,
+    ]
+
+    no_vlm_online_agent = _make_agent_shell(use_vlm=False)
+    no_vlm_online_agent.view_list = ["cam_f0", "cam_l0"]
+    no_vlm_online_agent._is_online_backbone = lambda: ReCogDriveAgent._is_online_backbone(
+        no_vlm_online_agent
+    )
+    assert ReCogDriveAgent._needs_view_encoding(no_vlm_online_agent) is False
+
+
+class _TestTargetBuilder:
+    def __init__(self):
+        self.compute_calls = 0
+
+    def get_unique_name(self):
+        return "trajectory_target"
+
+    def compute_targets(self, scene):
+        self.compute_calls += 1
+        return {"trajectory": torch.zeros(8, 3)}
+
+
+def test_cache_only_no_vlm_reads_slim_without_opening_qwen(tmp_path):
+    token_path = tmp_path / "log" / "token"
+    token_path.mkdir(parents=True)
+    slim_builder = ReCogDriveEgoFeatureBuilder()
+    target_builder = _TestTargetBuilder()
+    dump_feature_target_to_pickle(
+        token_path / "recogdrive_ego_feature_v1.gz",
+        slim_builder.compute_features(_make_fake_agent_input()),
+    )
+    dump_feature_target_to_pickle(
+        token_path / "trajectory_target.gz",
+        {"trajectory": torch.zeros(8, 3)},
+    )
+    (token_path / "qwen3_feature.gz").write_bytes(b"intentionally invalid gzip")
+
+    dataset = CacheOnlyDataset(
+        cache_path=str(tmp_path),
+        feature_builders=[slim_builder],
+        target_builders=[target_builder],
+    )
+    features, targets, token = dataset[0]
+
+    assert token == "token"
+    assert tuple(features) == RECOGDRIVE_EGO_FEATURE_KEYS
+    assert tuple(targets["trajectory"].shape) == (8, 3)
+
+
+def test_cache_only_vlm_keeps_legacy_full_cache_compatible(tmp_path):
+    token_path = tmp_path / "log" / "token"
+    token_path.mkdir(parents=True)
+    full_builder = ReCogDriveFeatureBuilder(
+        cache_hidden_state=True,
+        model_type="qwen3",
+        cache_mode=False,
+    )
+    full_features = ReCogDriveEgoFeatureBuilder().compute_features(_make_fake_agent_input())
+    full_features.update(
+        {
+            "first_hidden_state": torch.zeros(2, 3),
+            "last_hidden_state": torch.ones(2, 3),
+        }
+    )
+    dump_feature_target_to_pickle(token_path / "qwen3_feature.gz", full_features)
+    dump_feature_target_to_pickle(
+        token_path / "trajectory_target.gz",
+        {"trajectory": torch.zeros(8, 3)},
+    )
+
+    dataset = CacheOnlyDataset(
+        cache_path=str(tmp_path),
+        feature_builders=[full_builder],
+        target_builders=[_TestTargetBuilder()],
+    )
+    features, _, token = dataset[0]
+
+    assert token == "token"
+    assert "first_hidden_state" in features
+    assert not (token_path / "recogdrive_ego_feature_v1.gz").exists()
+
+
+def test_cache_only_fails_clearly_when_slim_sidecar_is_missing(tmp_path):
+    token_path = tmp_path / "log" / "token"
+    token_path.mkdir(parents=True)
+    dump_feature_target_to_pickle(
+        token_path / "trajectory_target.gz",
+        {"trajectory": torch.zeros(8, 3)},
+    )
+    dump_feature_target_to_pickle(
+        token_path / "qwen3_feature.gz",
+        {"first_hidden_state": torch.zeros(2, 3), "last_hidden_state": torch.zeros(2, 3)},
+    )
+
+    with pytest.raises(RuntimeError, match="recogdrive_ego_feature_v1.gz=1"):
+        CacheOnlyDataset(
+            cache_path=str(tmp_path),
+            feature_builders=[ReCogDriveEgoFeatureBuilder()],
+            target_builders=[_TestTargetBuilder()],
+        )
+
+
+def test_cache_backfill_does_not_recompute_existing_target(tmp_path):
+    target_builder = _TestTargetBuilder()
+    scene = SimpleNamespace(
+        scene_metadata=SimpleNamespace(log_name="log", initial_token="token"),
+        get_agent_input=lambda: _make_fake_agent_input(),
+    )
+    scene_loader = SimpleNamespace(get_scene_from_token=lambda token: scene)
+    dataset = Dataset.__new__(Dataset)
+    dataset._scene_loader = scene_loader
+    dataset._cache_path = tmp_path
+    dataset._feature_builders = []
+    dataset._target_builders = [target_builder]
+    dataset._valid_cache_paths = {}
+
+    token_path = tmp_path / "log" / "token"
+    token_path.mkdir(parents=True)
+    dump_feature_target_to_pickle(
+        token_path / "trajectory_target.gz",
+        {"trajectory": torch.ones(8, 3)},
+    )
+
+    dataset._cache_scene_with_token("token")
+
+    assert target_builder.compute_calls == 0
