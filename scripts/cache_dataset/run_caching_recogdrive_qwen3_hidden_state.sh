@@ -17,7 +17,7 @@ export NAVSIM_EXP_ROOT="${NAVSIM_EXP_ROOT:-${DATA_ROOT}/exp}"
 export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-export USE_OBJECT_VECTOR=true
+export USE_OBJECT_VECTOR=false
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。USE_IMAGE_ENCODER=true 时
 # 本阶段额外补出 front_image_feature_v1_<view>_<H>x<W>.gz（VLM 不重算，只多写图像 .gz）。
 # 须与 IL/RL/eval 保持一致，否则 get_unique_name 对不上、CacheOnlyDataset 会报告缺失并过滤不完整样本。

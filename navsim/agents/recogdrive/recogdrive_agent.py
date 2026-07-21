@@ -82,6 +82,9 @@ class ReCogDriveAgent(AbstractAgent):
         use_hdmap_vector: bool = False,
         max_map_tokens: int = 128,
         map_sample_points: int = 20,
+        max_control_tokens: int = 8,
+        control_range_x: Optional[List[float]] = None,
+        control_range_y: Optional[List[float]] = None,
         hdmap_radius: float = 120.0,
         strict_hdmap_vector: bool = False,
         use_lane_boundaries: bool = False,
@@ -107,7 +110,7 @@ class ReCogDriveAgent(AbstractAgent):
         image_token_dropout: float = 0.0,
         image_view: str = "cam_f0",
     ):
-        super().__init__(requires_scene=bool(use_object_vector))
+        super().__init__(requires_scene=bool(use_object_vector or use_hdmap_vector))
         self._trajectory_sampling = trajectory_sampling
         self.vlm_path = vlm_path
         self.checkpoint_path = checkpoint_path
@@ -141,6 +144,17 @@ class ReCogDriveAgent(AbstractAgent):
         self.use_hdmap_vector = bool(use_hdmap_vector)
         self.max_map_tokens = int(max_map_tokens)
         self.map_sample_points = int(map_sample_points)
+        self.max_control_tokens = int(max_control_tokens)
+        self.control_range_x = (
+            tuple(float(value) for value in control_range_x)
+            if control_range_x is not None
+            else (-10.0, 160.0)
+        )
+        self.control_range_y = (
+            tuple(float(value) for value in control_range_y)
+            if control_range_y is not None
+            else (-60.0, 60.0)
+        )
         self.hdmap_radius = float(hdmap_radius)
         self.strict_hdmap_vector = bool(strict_hdmap_vector)
         self.use_lane_boundaries = bool(use_lane_boundaries)
@@ -335,6 +349,9 @@ class ReCogDriveAgent(AbstractAgent):
                 HDMapVectorFeatureBuilder(
                     max_map_tokens=self.max_map_tokens,
                     map_sample_points=self.map_sample_points,
+                    max_control_tokens=self.max_control_tokens,
+                    control_range_x=self.control_range_x,
+                    control_range_y=self.control_range_y,
                     radius=self.hdmap_radius,
                     strict=self.strict_hdmap_vector,
                 )

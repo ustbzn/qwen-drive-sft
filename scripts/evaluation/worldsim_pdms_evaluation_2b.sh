@@ -51,7 +51,7 @@ CHECKPOINT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/exp/training_26
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
-GPUS="${GPUS:-1}"
+GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
@@ -113,7 +113,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name=2603_ego_SDE_obj_hdmap${VLM_TAG}_RL_worldsim_eval \
+  experiment_name=v1_alldata_SDE_obj_hdmap${VLM_TAG}_IL_worldsim_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

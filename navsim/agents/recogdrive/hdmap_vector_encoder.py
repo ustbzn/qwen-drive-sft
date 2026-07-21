@@ -33,8 +33,11 @@ class MapEncoder(nn.Module):
     def __init__(
         self,
         hidden_size: int,
-        num_polygon_types: int = 3,
-        num_tl_states: int = 4,
+        num_polygon_types: int = 4,
+        num_route_states: int = 3,
+        num_tl_states: int = 5,
+        num_control_types: int = 3,
+        num_tl_directions: int = 6,
         use_lane_boundaries: bool = False,
         input_norm: bool = False,
     ) -> None:
@@ -53,8 +56,10 @@ class MapEncoder(nn.Module):
         point_input_dim = 13 if self.use_lane_boundaries else 6
         self.centerline_encoder = PointsEncoder(input_dim=point_input_dim, hidden_size=hidden_size)
         self.type_embedding = nn.Embedding(num_polygon_types, hidden_size)
-        self.route_embedding = nn.Embedding(2, hidden_size)
+        self.route_embedding = nn.Embedding(num_route_states, hidden_size)
         self.tl_embedding = nn.Embedding(num_tl_states, hidden_size)
+        self.control_embedding = nn.Embedding(num_control_types, hidden_size)
+        self.direction_embedding = nn.Embedding(num_tl_directions, hidden_size)
         self.speed_mlp = nn.Sequential(
             nn.Linear(2, hidden_size),
             nn.LayerNorm(hidden_size),
@@ -71,6 +76,8 @@ class MapEncoder(nn.Module):
         polygon_type: torch.Tensor,
         polygon_on_route: torch.Tensor,
         polygon_tl_status: torch.Tensor,
+        polygon_control_type: torch.Tensor,
+        polygon_tl_direction: torch.Tensor,
         polygon_has_speed_limit: torch.Tensor,
         polygon_speed_limit: torch.Tensor,
         point_valid_mask: torch.Tensor,
@@ -117,8 +124,18 @@ class MapEncoder(nn.Module):
         polyline_tokens = polyline_tokens.reshape(batch_size, max_map_tokens, -1)
 
         polygon_type = polygon_type.clamp(min=0, max=self.type_embedding.num_embeddings - 1).long()
-        polygon_on_route = polygon_on_route.clamp(min=0, max=1).long()
-        polygon_tl_status = polygon_tl_status.clamp(min=0, max=self.tl_embedding.num_embeddings - 1).long()
+        polygon_on_route = polygon_on_route.clamp(
+            min=0, max=self.route_embedding.num_embeddings - 1
+        ).long()
+        polygon_tl_status = polygon_tl_status.clamp(
+            min=0, max=self.tl_embedding.num_embeddings - 1
+        ).long()
+        polygon_control_type = polygon_control_type.clamp(
+            min=0, max=self.control_embedding.num_embeddings - 1
+        ).long()
+        polygon_tl_direction = polygon_tl_direction.clamp(
+            min=0, max=self.direction_embedding.num_embeddings - 1
+        ).long()
 
         speed_limit = polygon_speed_limit.to(dtype=dtype).unsqueeze(-1)
         has_speed_limit = polygon_has_speed_limit.to(dtype=dtype).unsqueeze(-1)
@@ -129,6 +146,8 @@ class MapEncoder(nn.Module):
             + self.type_embedding(polygon_type)
             + self.route_embedding(polygon_on_route)
             + self.tl_embedding(polygon_tl_status)
+            + self.control_embedding(polygon_control_type)
+            + self.direction_embedding(polygon_tl_direction)
             + self.speed_mlp(speed_features)
         )
         tokens = self.output_norm(tokens)

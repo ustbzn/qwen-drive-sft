@@ -435,8 +435,11 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     # nan_to_num→clamp→scale。仅影响 planner 内 MapEncoder.forward，不改缓存；从头训练效果
     # 一致，但旧 ckpt 不可热启（首层输入尺度变了）。多城市/长训 fp16 数值稳健性用。
     hdmap_input_norm: bool = False
-    num_map_polygon_types: int = 3
-    num_map_tl_states: int = 4
+    num_map_polygon_types: int = 4
+    num_map_route_states: int = 3
+    num_map_tl_states: int = 5
+    num_map_control_types: int = 3
+    num_map_tl_directions: int = 6
 
     # --- VLM 消融开关（默认 none，零影响）---
     # "none": 正常使用 VLM hidden state。
@@ -564,7 +567,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         self.map_encoder = MapEncoder(
             hidden_size=config.input_embedding_dim,
             num_polygon_types=config.num_map_polygon_types,
+            num_route_states=config.num_map_route_states,
             num_tl_states=config.num_map_tl_states,
+            num_control_types=config.num_map_control_types,
+            num_tl_directions=config.num_map_tl_directions,
             use_lane_boundaries=config.use_lane_boundaries,
             input_norm=config.hdmap_input_norm,
         ) if config.use_hdmap_vector else None
@@ -670,6 +676,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             polygon_type=action_input.map_polygon_type,
             polygon_on_route=action_input.map_polygon_on_route,
             polygon_tl_status=action_input.map_polygon_tl_status,
+            polygon_control_type=action_input.map_polygon_control_type,
+            polygon_tl_direction=action_input.map_polygon_tl_direction,
             polygon_has_speed_limit=action_input.map_polygon_has_speed_limit,
             polygon_speed_limit=action_input.map_polygon_speed_limit,
             point_valid_mask=action_input.map_point_valid_mask,

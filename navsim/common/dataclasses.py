@@ -405,6 +405,13 @@ class Frame:
     cameras: Cameras
     route_centerline: Optional[Any] = None
     route_centerline_segments: Optional[Any] = None
+    traffic_light_states: Optional[List[Dict[str, Any]]] = None
+
+    def __post_init__(self) -> None:
+        # Older NAVSIM/Mogo logs do not carry the rich traffic-light field.
+        # Keep a per-frame list instead of sharing a mutable dataclass default.
+        if self.traffic_light_states is None:
+            self.traffic_light_states = []
 
 
 @dataclass
@@ -610,6 +617,7 @@ class Scene:
                 cameras=cameras,
                 route_centerline=scene_dict_list[frame_idx].get("route_centerline"),
                 route_centerline_segments=scene_dict_list[frame_idx].get("route_centerline_segments"),
+                traffic_light_states=list(scene_dict_list[frame_idx].get("traffic_light_states") or []),
             )
             frames.append(frame)
 

@@ -36,7 +36,8 @@ cache, or planner code.
   through metric caching, hidden-state/feature caching, PDM scoring,
   visualization, and scenario construction. The active chain reads cached HDMap
   vectors because `agent.use_hdmap_vector=true`; without a `Scene.map_api`, the
-  non-strict HDMap builder returns all-zero map tokens.
+  non-strict v2 builder omits lane geometry but can still encode PKL control
+  geometry.
 
 ## Project Shape
 
@@ -183,8 +184,9 @@ Current defaults:
 
 This stage writes `qwen3_feature.gz` and `trajectory_target.gz` under
 `cache_path/log_name/token/` for the default single-view/single-frame path, and
-also writes `hdmap_vector_feature.gz` plus `object_vector_feature_v1.gz` in the
-active HDMap/object configuration.
+also writes `hdmap_vector_feature_v2.gz` plus `object_vector_feature_v1.gz` in the
+active HDMap/object configuration. The v2 name is intentional and does not read
+the old lane-only cache.
 If `view_list`, `num_frames`, or `use_video_input` changes,
 `ReCogDriveFeatureBuilder.get_unique_name()` writes
 `qwen3_feature_v{n_views}_f{num_frames}[_vid].gz` instead; re-cache and keep
@@ -466,12 +468,10 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
   Qwen3 backbone can treat frames as multiple images, or as `videos=` when
   `use_video_input=true` and `num_frames>1`; keep that choice consistent across
   cache and online eval.
-- `agent.use_hdmap_vector=true` appends `HDMapVectorFeatureBuilder`. If
-  `scene.map_api` is missing and `strict_hdmap_vector=false`, it returns zero
-  map tokens; with `strict_hdmap_vector=true` it raises. PDM eval only passes a
-  `Scene` when `agent.requires_scene` is true, and the current agent sets that
-  from `use_object_vector`, not `use_hdmap_vector`; HDMap-only eval therefore
-  needs a code/config check before relying on non-zero map tokens.
+- `agent.use_hdmap_vector=true` appends the v2
+  `HDMapVectorFeatureBuilder` and sets `agent.requires_scene=True`. If
+  `scene.map_api` is missing and `strict_hdmap_vector=false`, lane tokens are
+  omitted but PKL control tokens can still be built; strict mode raises.
 - `agent.use_object_vector=true` sets `requires_scene=True`, appends
   `ObjectVectorFeatureBuilder`, and creates `object_vector_feature_v1.gz` in
   cache mode. Missing that file makes `CacheOnlyDataset` drop samples, so rerun
@@ -546,13 +546,13 @@ Checked code path "script flag -> hydra config -> code consumer". Findings:
 
 - `navsim/agents/recogdrive/hdmap_vector_features.py` and
   `navsim/agents/recogdrive/hdmap_vector_encoder.py`
-  - Optional `agent.use_hdmap_vector=true` path. The builder samples nearby
-    lanes/lane-connectors from `Scene.map_api`, encodes centerline/left/right
-    boundary points plus route, traffic-light, and speed-limit metadata, and
-    writes `hdmap_vector_feature.gz`.
-  - Non-strict mode returns all-zero map features when `scene.map_api` is
-    missing or map lookup fails; strict mode raises. `MapEncoder` turns valid
-    map polygons into DiT context tokens.
+  - Optional `agent.use_hdmap_vector=true` v2 path. The builder samples nearby
+    lanes/lane-connectors and consumes PKL `traffic_light_states`, encodes
+    centerline/left/right boundary points plus polygon/route/control/light/direction
+    metadata, and writes `hdmap_vector_feature_v2.gz`.
+  - Non-strict mode omits lane geometry when `scene.map_api` is missing or map
+    lookup fails, while retaining valid PKL control geometry; strict mode raises.
+    `MapEncoder` turns valid map polygons into DiT context tokens.
 
 - `navsim/agents/recogdrive/object_vector_features.py`
   - Optional `agent.use_object_vector=true` path. The agent then sets
@@ -642,10 +642,11 @@ view/frame overrides are provided. Relevant knobs:
 - `view_list`, `num_frames`, `use_video_input`, `video_fps`: control Qwen3 image
   selection. Cache mode and online eval share `recogdrive_view_utils`; the
   single-view/single-frame path keeps the historical prompt and cache name.
-- `use_hdmap_vector`, `max_map_tokens`, `map_sample_points`, `hdmap_radius`,
-  `strict_hdmap_vector`: add structured HDMap context tokens. This path needs a
-  real `Scene.map_api` for non-zero map tokens and writes
-  `hdmap_vector_feature.gz` during cache generation.
+- `use_hdmap_vector`, `max_map_tokens`, `map_sample_points`,
+  `max_control_tokens`, `control_range_x`, `control_range_y`,
+  `hdmap_radius`, `strict_hdmap_vector`: add v2 structured HDMap context tokens
+  and write `hdmap_vector_feature_v2.gz`. A real `Scene.map_api` is needed for
+  lane tokens; PKL controls can be encoded without it.
 - `use_object_vector`, `max_obj_tokens`, `obj_range_x`, `obj_range_y`,
   `include_static_objects`, `object_token_dropout`: add current-frame object
   context tokens from `Scene` annotations. This path writes
@@ -990,6 +991,45 @@ InternVL stack (Stage 1 SFT only):
 - When adding a data adapter, write down the exact source-to-NAVSIM field mapping
   and test at least one scene through `Scene.from_scene_dict_list`,
   `Scene.get_agent_input()`, and `Scene.get_future_trajectory()`.
+
+## Traffic-Control HDMap v2 (2026-07-20)
+
+The current ReCogDrive HDMap path has a versioned feature builder:
+`hdmap_vector_feature_v2`, written as `hdmap_vector_feature_v2.gz`. It consumes
+the optional per-frame PKL field `traffic_light_states`. Each
+`(stop_line_id, direction)` becomes a separate STOP_LINE/TRAFFIC_LIGHT token.
+The builder filters ID 0, UINT64_MAX, empty/degenerate positions, and controls
+outside `x=[-10,160]`m, `y=[-60,60]`m. It keeps at most
+`max_control_tokens=8`, puts controls before lane tokens, and uses geometric
+Shapely distance to assign ON_ROUTE/OFF_ROUTE/UNKNOWN.
+
+Persistent enum semantics:
+
+- polygon: LANE=0, LANE_CONNECTOR=1, UNKNOWN=2, STOP_LINE=3.
+- route: OFF_ROUTE=0, ON_ROUTE=1, UNKNOWN=2.
+- light state: GREEN=0, RED=1, YELLOW=2, UNKNOWN=3, NONE=4.
+- control: NONE=0, TRAFFIC_LIGHT=1, UNKNOWN=2.
+- direction: NONE=0, STRAIGHT=1, LEFT=2, RIGHT=3, U_TURN=4, UNKNOWN=5.
+
+Lane tokens always use `control=NONE/state=NONE/direction=NONE`. Missing
+`traffic_light_states` therefore means “control information not provided”, not
+green/no-red supervision. `off` and unrecognized rich states map to UNKNOWN;
+`green_flash` maps GREEN and `flash` maps RED. `duration` is currently not
+encoded. The Scene loader copies the field and defaults old logs to an empty list.
+
+Enabling HDMap now also sets `agent.requires_scene=True`, which is required for
+scene-aware cache/eval feature construction. Lane geometry still needs the
+injected MOGO SQLite map API; PKL control geometry can be built without it, but
+route relation may be UNKNOWN. Cache, IL, RL, evaluation, and visualization must
+use the same v2 builder/configuration. Old v1 caches and pre-v2 checkpoints are
+not silently compatible; regenerate cache and retrain IL before RL.
+
+The implementation details, data observations, smoke-test results, risks, and
+operator checklist are in
+`docs/traffic_control_map_token_implementation.md`. Do not change the generic
+PDM lane-linked `traffic_lights=(lane_connector_id,is_red)` semantics to match
+MOGO stop-line IDs without a separate evaluator design; those identifiers can
+collide.
 
 ## Known Local State at Creation
 

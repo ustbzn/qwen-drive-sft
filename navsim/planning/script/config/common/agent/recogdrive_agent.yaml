@@ -81,11 +81,20 @@ grpo: False
 bc_coeff: 0.1
 bc_teacher_deterministic: false
 lr: 1e-4
+# HDMap v2 token cache includes lane/lane-connector geometry plus PKL traffic-control
+# stop-line tokens. Keep this false unless the cache was regenerated with the same v2
+# feature builder; v1 cache files are intentionally not read under the v2 name.
 use_hdmap_vector: false
 max_map_tokens: 128
 map_sample_points: 20
+max_control_tokens: 8
+control_range_x: [-10.0, 160.0]
+control_range_y: [-60.0, 60.0]
 hdmap_radius: 120.0
 strict_hdmap_vector: false
+# Missing rich traffic_light_states means no control token (NONE/UNKNOWN), never a
+# synthetic green/no-red label. Checkpoint weights are not shape-compatible with
+# a model trained before the v2 control/direction embeddings were added.
 # 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数不变、缓存无需重跑；
 # 但新增 centerline_encoder 权重，须重训 IL（旧 ckpt 该层随机初始化），RL/eval 换用新 IL 产物。
 use_lane_boundaries: false
