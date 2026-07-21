@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = Path(
     os.environ.get(
         "MOGO_MANIFEST",
-        str(REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml"),
+        str(REPO_ROOT / "navsim/planning/script/config/common/mogo_dataset/vla_multi.yaml"),
     )
 )
 DEFAULT_EVAL_SCRIPT = REPO_ROOT / "scripts/evaluation/run_recogdrive_qwen3_agent_pdm_score_evaluation_2b.sh"
@@ -54,11 +54,56 @@ def latest_csv(data_root: Path, experiment_name: str, previous: set[Path]) -> Pa
     return new_files[-1] if new_files else None
 
 
+def _normalized_checkpoint(checkpoint: Any) -> str:
+    return str(checkpoint).strip().strip("\"'")
+
+
+def find_reusable_csv(data_root: Path, experiment_name: str, checkpoint: str) -> Path | None:
+    exp_dir = data_root / "exp" / experiment_name
+    csv_files = sorted(exp_dir.glob("*/*.csv"), key=lambda path: path.stat().st_mtime)
+    if not csv_files:
+        return None
+
+    csv_path = csv_files[-1]
+    try:
+        tokens = pd.read_csv(csv_path, usecols=["token"])["token"].astype(str)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"Cannot resume with invalid CSV {csv_path}: {error}") from error
+    if not tokens.ne("average").any():
+        raise SystemExit(f"Cannot resume with CSV containing no scenario results: {csv_path}")
+
+    if checkpoint:
+        config_candidates = [
+            csv_path.parent / "code" / "hydra" / "config.yaml",
+            csv_path.parent / ".hydra" / "config.yaml",
+        ]
+        config_path = next((path for path in config_candidates if path.is_file()), None)
+        if config_path is None:
+            raise SystemExit(f"Cannot verify checkpoint for reusable CSV: {csv_path}")
+        cfg = OmegaConf.load(config_path)
+        existing_checkpoint = OmegaConf.select(cfg, "agent.checkpoint_path")
+        if existing_checkpoint is None:
+            raise SystemExit(f"Reusable CSV Hydra config has no agent.checkpoint_path: {config_path}")
+        if _normalized_checkpoint(existing_checkpoint) != _normalized_checkpoint(checkpoint):
+            raise SystemExit(
+                f"Checkpoint mismatch for reusable CSV {csv_path}: "
+                f"expected {checkpoint}, found {existing_checkpoint}"
+            )
+
+    return csv_path
+
+
 def run_dataset(dataset: Any, args: argparse.Namespace, index: int) -> Path | None:
     env = os.environ.copy()
     data_root = Path(str(dataset.data_root))
     experiment_name = f"{args.experiment_name}_{dataset.name}"
     exp_dir = data_root / "exp" / experiment_name
+    if args.resume:
+        reusable_csv = find_reusable_csv(data_root, experiment_name, args.checkpoint)
+        if reusable_csv is not None:
+            print(f"[{dataset.name}] reusing_csv={reusable_csv}")
+            return reusable_csv
+
     previous_csvs = set(exp_dir.glob("*/*.csv")) if exp_dir.is_dir() else set()
     env.update(
         {
@@ -238,6 +283,11 @@ def main() -> None:
     parser.add_argument("--qwen3-vl-path", default="")
     parser.add_argument("--gpus", default="")
     parser.add_argument("--master-port-start", type=int, default=9675)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse the latest complete, checkpoint-matching CSV and evaluate only missing datasets",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("overrides", nargs=argparse.REMAINDER, help="Extra Hydra overrides forwarded to the eval script")
     args = parser.parse_args()
