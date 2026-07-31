@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -14,19 +15,19 @@ from navsim.common.dataloader import SceneLoader
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from enum import IntEnum
 from navsim.common.enums import BoundingBoxIndex, LidarIndex
+from navsim.planning.training.cache_dataset_index import (
+    CacheDatasetIndex,
+    CacheDatasetIndexError,
+    CacheDatasetIndexSpec,
+    CacheSampleKey,
+    load_cache_dataset_index,
+    make_cache_dataset_index_spec,
+    write_cache_dataset_index,
+)
 import numpy as np
 import math
 from navsim.visualization.camera import _transform_points_to_image, _rotation_3d_in_axis, _transform_annotations_to_camera
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class CacheSampleKey:
-    """Unique key for one cached sample across multiple cache roots."""
-
-    cache_index: int
-    log_name: str
-    token: str
 
 
 # VLM 隐状态特征键。正常 no-VLM 路径只注册独立的 recogdrive_ego_feature_v1
@@ -74,6 +75,90 @@ def _report_cache_coverage(
     logger.warning(message)
 
 
+@dataclass(frozen=True)
+class _CacheLogScanResult:
+    """Result of scanning one cache log without loading feature payloads."""
+
+    log_path: Path
+    valid_tokens: List[str]
+    scanned_count: int
+    missing_counts: Dict[str, int]
+
+
+def _scan_valid_cache_log(
+    log_path: Path,
+    required_names: List[str],
+    tokens: Optional[set[str]],
+) -> _CacheLogScanResult:
+    """Scan one log directory and return only metadata needed by the index."""
+    valid_tokens: List[str] = []
+    missing_counts = {name: 0 for name in required_names}
+    scanned_count = 0
+
+    for token_path in log_path.iterdir():
+        if not token_path.is_dir():
+            continue
+        if tokens is not None and token_path.name not in tokens:
+            continue
+        scanned_count += 1
+        missing_names = [
+            name for name in required_names if not (token_path / name).is_file()
+        ]
+        for name in missing_names:
+            missing_counts[name] += 1
+        if not missing_names:
+            valid_tokens.append(token_path.name)
+
+    return _CacheLogScanResult(
+        log_path=log_path,
+        valid_tokens=valid_tokens,
+        scanned_count=scanned_count,
+        missing_counts=missing_counts,
+    )
+
+
+def _scan_cache_logs(
+    log_paths: List[Path],
+    required_names: List[str],
+    tokens: Optional[set[str]],
+    cache_index_workers: int,
+    description: str,
+) -> List[_CacheLogScanResult]:
+    """Scan logs concurrently while returning results in input order."""
+    if cache_index_workers <= 0:
+        raise ValueError("cache_index_workers must be positive")
+    if not log_paths:
+        return []
+
+    worker_count = min(cache_index_workers, len(log_paths))
+    progress_description = f"{description} [workers={worker_count}]"
+    if worker_count == 1:
+        return [
+            _scan_valid_cache_log(log_path, required_names, tokens)
+            for log_path in tqdm(log_paths, desc=progress_description)
+        ]
+
+    ordered_results: List[Optional[_CacheLogScanResult]] = [None] * len(log_paths)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_index = {
+            executor.submit(
+                _scan_valid_cache_log,
+                log_path,
+                required_names,
+                tokens,
+            ): index
+            for index, log_path in enumerate(log_paths)
+        }
+        with tqdm(total=len(log_paths), desc=progress_description) as progress:
+            for future in as_completed(future_to_index):
+                ordered_results[future_to_index[future]] = future.result()
+                progress.update(1)
+
+    if any(result is None for result in ordered_results):
+        raise RuntimeError("Cache log scan completed with missing results")
+    return [result for result in ordered_results if result is not None]
+
+
 def load_feature_target_from_pickle(path: Path) -> Dict[str, torch.Tensor]:
     """Helper function to load pickled feature/target from path."""
     with gzip.open(path, "rb") as f:
@@ -99,6 +184,8 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         log_names: Optional[List[str]] = None,
         tokens: Optional[List[str]] = None,
         drop_hidden_state: bool = False,
+        cache_index_workers: int = 1,
+        cache_samples: Optional[List[CacheSampleKey]] = None,
     ):
         """
         Initializes the dataset module.
@@ -108,6 +195,8 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         :param log_names: optional list of log folder to consider, defaults to None
         :param tokens: optional list of sample tokens to consider, defaults to None
         :param drop_hidden_state: legacy fallback that drops VLM hidden-state keys after load, defaults to False
+        :param cache_index_workers: number of cache-log scan threads, defaults to 1
+        :param cache_samples: optional prebuilt ordered cache index, defaults to None
         """
         super().__init__()
         assert Path(cache_path).is_dir(), f"Cache path {cache_path} does not exist!"
@@ -115,20 +204,40 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         self._tokens = set(tokens) if tokens is not None else None
         self._drop_hidden_state = bool(drop_hidden_state)
 
-        if log_names is not None:
+        if cache_samples is not None:
+            self.log_names = list(
+                dict.fromkeys(Path(sample.log_name) for sample in cache_samples)
+            )
+        elif log_names is not None:
             self.log_names = [Path(log_name) for log_name in log_names if (self._cache_path / log_name).is_dir()]
         else:
             self.log_names = [log_name for log_name in self._cache_path.iterdir() if log_name.is_dir()]
 
         self._feature_builders = feature_builders
         self._target_builders = target_builders
-        self._valid_cache_paths: Dict[str, Path] = self._load_valid_caches(
-            cache_path=self._cache_path,
-            feature_builders=self._feature_builders,
-            target_builders=self._target_builders,
-            log_names=self.log_names,
-            tokens=self._tokens,
-        )
+        if cache_samples is None:
+            self._valid_cache_paths: Dict[str, Path] = self._load_valid_caches(
+                cache_path=self._cache_path,
+                feature_builders=self._feature_builders,
+                target_builders=self._target_builders,
+                log_names=self.log_names,
+                tokens=self._tokens,
+                cache_index_workers=cache_index_workers,
+            )
+        else:
+            self._valid_cache_paths = {}
+            for sample in cache_samples:
+                if sample.cache_index != 0:
+                    raise ValueError(
+                        f"Single-cache dataset received cache_index={sample.cache_index}"
+                    )
+                if sample.token in self._valid_cache_paths:
+                    raise ValueError(
+                        f"Single-cache index contains duplicate token {sample.token!r}"
+                    )
+                self._valid_cache_paths[sample.token] = (
+                    self._cache_path / sample.log_name / sample.token
+                )
         self.tokens = list(self._valid_cache_paths.keys())
 
     def __len__(self) -> int:
@@ -152,6 +261,7 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         target_builders: List[AbstractTargetBuilder],
         log_names: List[Path],
         tokens: Optional[set[str]] = None,
+        cache_index_workers: int = 1,
     ) -> Dict[str, Path]:
         """
         Helper method to load valid cache paths.
@@ -169,20 +279,21 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         scanned_count = 0
         valid_count = 0
 
-        for log_name in tqdm(log_names, desc="Loading Valid Caches"):
-            log_path = cache_path / log_name
-            for token_path in log_path.iterdir():
-                if not token_path.is_dir():
-                    continue
-                if tokens is not None and token_path.name not in tokens:
-                    continue
-                scanned_count += 1
-                missing_names = [name for name in required_names if not (token_path / name).is_file()]
-                for name in missing_names:
-                    missing_counts[name] += 1
-                if not missing_names:
-                    valid_cache_paths[token_path.name] = token_path
-                    valid_count += 1
+        log_paths = [cache_path / log_name for log_name in log_names]
+        scan_results = _scan_cache_logs(
+            log_paths=log_paths,
+            required_names=required_names,
+            tokens=tokens,
+            cache_index_workers=cache_index_workers,
+            description="Loading Valid Caches",
+        )
+        for result in scan_results:
+            for token in result.valid_tokens:
+                valid_cache_paths[token] = result.log_path / token
+            scanned_count += result.scanned_count
+            valid_count += len(result.valid_tokens)
+            for name, count in result.missing_counts.items():
+                missing_counts[name] += count
 
         _report_cache_coverage(cache_path, scanned_count, valid_count, missing_counts)
         return valid_cache_paths
@@ -224,6 +335,8 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         log_names: Optional[List[str]] = None,
         tokens: Optional[List[str]] = None,
         drop_hidden_state: bool = False,
+        cache_index_workers: int = 1,
+        cache_samples: Optional[List[CacheSampleKey]] = None,
     ):
         """
         Initializes the dataset module.
@@ -233,6 +346,8 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         :param log_names: optional list of log folders to consider in each cache root
         :param tokens: optional list of sample tokens to consider
         :param drop_hidden_state: legacy fallback that drops VLM hidden-state keys after load, defaults to False
+        :param cache_index_workers: number of cache-log scan threads, defaults to 1
+        :param cache_samples: optional prebuilt ordered cache index, defaults to None
         """
         super().__init__()
         assert cache_paths, "At least one cache path must be provided!"
@@ -244,16 +359,26 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         self._drop_hidden_state = bool(drop_hidden_state)
         self._feature_builders = feature_builders
         self._target_builders = target_builders
-        self._valid_cache_paths: Dict[CacheSampleKey, Path] = self._load_valid_caches(
-            cache_paths=self._cache_paths,
-            feature_builders=self._feature_builders,
-            target_builders=self._target_builders,
-            log_names=log_names,
-            tokens=self._tokens,
-        )
-        self.samples = list(self._valid_cache_paths.keys())
+        if cache_samples is None:
+            self.samples = self._load_valid_cache_samples(
+                cache_paths=self._cache_paths,
+                feature_builders=self._feature_builders,
+                target_builders=self._target_builders,
+                log_names=log_names,
+                tokens=self._tokens,
+                cache_index_workers=cache_index_workers,
+            )
+        else:
+            self.samples = list(cache_samples)
+            for sample in self.samples:
+                if sample.cache_index < 0 or sample.cache_index >= len(self._cache_paths):
+                    raise ValueError(
+                        f"Invalid cache_index={sample.cache_index} for "
+                        f"{len(self._cache_paths)} cache roots"
+                    )
         self.tokens = [sample.token for sample in self.samples]
-        self._warn_on_duplicate_tokens()
+        if cache_samples is None:
+            self._warn_on_duplicate_tokens()
 
     def __len__(self) -> int:
         """
@@ -276,13 +401,14 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         return [log_path for log_path in cache_path.iterdir() if log_path.is_dir()]
 
     @staticmethod
-    def _load_valid_caches(
+    def _load_valid_cache_samples(
         cache_paths: List[Path],
         feature_builders: List[AbstractFeatureBuilder],
         target_builders: List[AbstractTargetBuilder],
         log_names: Optional[List[str]] = None,
         tokens: Optional[set[str]] = None,
-    ) -> Dict[CacheSampleKey, Path]:
+        cache_index_workers: int = 1,
+    ) -> List[CacheSampleKey]:
         """
         Helper method to load valid cache paths.
         :param cache_paths: directories of training cache folders
@@ -290,10 +416,10 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         :param target_builders: list of target builders
         :param log_names: optional list of log paths to load from each cache root
         :param tokens: optional set of allowed tokens
-        :return: dictionary of unique sample keys and sample paths as keys / values
+        :return: ordered list of unique cache sample keys
         """
 
-        valid_cache_paths: Dict[CacheSampleKey, Path] = {}
+        valid_cache_samples: List[CacheSampleKey] = []
         required_names = _required_cache_file_names(feature_builders, target_builders)
 
         for cache_index, cache_path in enumerate(cache_paths):
@@ -301,28 +427,30 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
             scanned_count = 0
             valid_count = 0
             log_paths = MultiCacheOnlyDataset._iter_log_paths(cache_path, log_names)
-            for log_path in tqdm(log_paths, desc=f"Loading Valid Caches ({cache_path.name})"):
-                for token_path in log_path.iterdir():
-                    if not token_path.is_dir():
-                        continue
-                    if tokens is not None and token_path.name not in tokens:
-                        continue
-                    scanned_count += 1
-                    missing_names = [name for name in required_names if not (token_path / name).is_file()]
-                    for name in missing_names:
-                        missing_counts[name] += 1
-                    if not missing_names:
-                        key = CacheSampleKey(
-                            cache_index=cache_index,
-                            log_name=log_path.name,
-                            token=token_path.name,
-                        )
-                        valid_cache_paths[key] = token_path
-                        valid_count += 1
+            scan_results = _scan_cache_logs(
+                log_paths=log_paths,
+                required_names=required_names,
+                tokens=tokens,
+                cache_index_workers=cache_index_workers,
+                description=f"Loading Valid Caches ({cache_path.name})",
+            )
+            for result in scan_results:
+                valid_cache_samples.extend(
+                    CacheSampleKey(
+                        cache_index=cache_index,
+                        log_name=result.log_path.name,
+                        token=token,
+                    )
+                    for token in result.valid_tokens
+                )
+                scanned_count += result.scanned_count
+                valid_count += len(result.valid_tokens)
+                for name, count in result.missing_counts.items():
+                    missing_counts[name] += count
 
             _report_cache_coverage(cache_path, scanned_count, valid_count, missing_counts)
 
-        return valid_cache_paths
+        return valid_cache_samples
 
     def _warn_on_duplicate_tokens(self) -> None:
         token_counts: Dict[str, int] = {}
@@ -347,7 +475,9 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         :return: tuple of feature dictionary, target dictionary, and original token
         """
 
-        token_path = self._valid_cache_paths[sample]
+        token_path = (
+            self._cache_paths[sample.cache_index] / sample.log_name / sample.token
+        )
 
         features: Dict[str, torch.Tensor] = {}
         for builder in self._feature_builders:
@@ -388,6 +518,25 @@ def normalize_cache_paths(
     return []
 
 
+def make_cache_only_dataset_index_spec(
+    cache_path: Optional[str],
+    feature_builders: List[AbstractFeatureBuilder],
+    target_builders: List[AbstractTargetBuilder],
+    log_names: Optional[List[str]] = None,
+    tokens: Optional[List[str]] = None,
+    cache_paths: Optional[Any] = None,
+) -> CacheDatasetIndexSpec:
+    """Build the exact signature inputs for a cache-only dataset index."""
+    resolved_cache_paths = normalize_cache_paths(cache_path=cache_path, cache_paths=cache_paths)
+    assert resolved_cache_paths, "cache_path or cache_paths must be provided when using cached data"
+    return make_cache_dataset_index_spec(
+        cache_paths=resolved_cache_paths,
+        required_file_names=_required_cache_file_names(feature_builders, target_builders),
+        log_names=log_names,
+        tokens=tokens,
+    )
+
+
 def build_cache_only_dataset(
     cache_path: Optional[str],
     feature_builders: List[AbstractFeatureBuilder],
@@ -396,6 +545,8 @@ def build_cache_only_dataset(
     tokens: Optional[List[str]] = None,
     cache_paths: Optional[Any] = None,
     drop_hidden_state: bool = False,
+    cache_index: Optional[CacheDatasetIndex] = None,
+    cache_index_workers: int = 1,
 ) -> torch.utils.data.Dataset:
     """Build a cache-only dataset from either one cache root or multiple roots.
 
@@ -405,6 +556,19 @@ def build_cache_only_dataset(
     """
     resolved_cache_paths = normalize_cache_paths(cache_path=cache_path, cache_paths=cache_paths)
     assert resolved_cache_paths, "cache_path or cache_paths must be provided when using cached data"
+    if cache_index is not None:
+        expected_spec = make_cache_only_dataset_index_spec(
+            cache_path=cache_path,
+            cache_paths=cache_paths,
+            feature_builders=feature_builders,
+            target_builders=target_builders,
+            log_names=log_names,
+            tokens=tokens,
+        )
+        if cache_index.spec != expected_spec:
+            raise ValueError(
+                "Prebuilt cache index does not match cache roots, split, tokens, or required features"
+            )
 
     if len(resolved_cache_paths) == 1:
         return CacheOnlyDataset(
@@ -414,6 +578,8 @@ def build_cache_only_dataset(
             log_names=log_names,
             tokens=tokens,
             drop_hidden_state=drop_hidden_state,
+            cache_index_workers=cache_index_workers,
+            cache_samples=None if cache_index is None else cache_index.samples,
         )
 
     return MultiCacheOnlyDataset(
@@ -423,7 +589,74 @@ def build_cache_only_dataset(
         log_names=log_names,
         tokens=tokens,
         drop_hidden_state=drop_hidden_state,
+        cache_index_workers=cache_index_workers,
+        cache_samples=None if cache_index is None else cache_index.samples,
     )
+
+
+def build_cache_only_dataset_index(
+    spec: CacheDatasetIndexSpec,
+    feature_builders: List[AbstractFeatureBuilder],
+    target_builders: List[AbstractTargetBuilder],
+    cache_index_workers: int = 1,
+) -> CacheDatasetIndex:
+    """Scan cache metadata once and return the complete ordered sample index."""
+    required_names = tuple(_required_cache_file_names(feature_builders, target_builders))
+    if required_names != spec.required_file_names:
+        raise ValueError(
+            "Cache index specification required files do not match the provided builders"
+        )
+
+    dataset = build_cache_only_dataset(
+        cache_path=spec.cache_paths[0],
+        cache_paths=list(spec.cache_paths) if len(spec.cache_paths) > 1 else None,
+        feature_builders=feature_builders,
+        target_builders=target_builders,
+        log_names=None if spec.log_names is None else list(spec.log_names),
+        tokens=None if spec.tokens is None else list(spec.tokens),
+        cache_index_workers=cache_index_workers,
+    )
+    if isinstance(dataset, MultiCacheOnlyDataset):
+        samples = dataset.samples
+    elif isinstance(dataset, CacheOnlyDataset):
+        samples = [
+            CacheSampleKey(
+                cache_index=0,
+                log_name=token_path.parent.name,
+                token=token,
+            )
+            for token, token_path in dataset._valid_cache_paths.items()
+        ]
+    else:
+        raise TypeError(f"Unsupported cache-only dataset type: {type(dataset)!r}")
+
+    return CacheDatasetIndex(spec=spec, samples=samples)
+
+
+def load_or_build_cache_only_dataset_index(
+    index_path: Path,
+    spec: CacheDatasetIndexSpec,
+    feature_builders: List[AbstractFeatureBuilder],
+    target_builders: List[AbstractTargetBuilder],
+    force_rebuild: bool = False,
+    cache_index_workers: int = 1,
+) -> Tuple[CacheDatasetIndex, bool]:
+    """Load a valid index or rebuild it after a missing/corrupt index file."""
+    index_path = Path(index_path)
+    if not force_rebuild and index_path.is_file():
+        try:
+            return load_cache_dataset_index(index_path, expected_spec=spec), False
+        except CacheDatasetIndexError as error:
+            logger.warning("Rebuilding invalid cache dataset index %s: %s", index_path, error)
+
+    index = build_cache_only_dataset_index(
+        spec=spec,
+        feature_builders=feature_builders,
+        target_builders=target_builders,
+        cache_index_workers=cache_index_workers,
+    )
+    write_cache_dataset_index(index_path, index)
+    return index, True
 
 
 class Dataset(torch.utils.data.Dataset):

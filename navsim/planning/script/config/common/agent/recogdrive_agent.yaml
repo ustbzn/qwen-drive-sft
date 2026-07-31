@@ -95,9 +95,9 @@ strict_hdmap_vector: false
 # Missing rich traffic_light_states means no control token (NONE/UNKNOWN), never a
 # synthetic green/no-red label. Checkpoint weights are not shape-compatible with
 # a model trained before the v2 control/direction embeddings were added.
-# 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数不变、缓存无需重跑；
-# 但新增 centerline_encoder 权重，须重训 IL（旧 ckpt 该层随机初始化），RL/eval 换用新 IL 产物。
-use_lane_boundaries: false
+# MapEncoder 编码左右车道边界几何（per-point 6->13 维），token 数不变、缓存无需重跑；
+# v1/v2 均已缓存 center/left/right 三线。旧 6 维 ckpt 不兼容，须重训 IL，RL/eval 使用同一配置。
+use_lane_boundaries: true
 # fp16 数值加固开关（默认关，字节级零影响）：对进 MapEncoder 的局部米制坐标做 nan_to_num+
 # clamp(±1000)+scale，消除未归一化大坐标(实测<652m)在 fp16 训练下的激活/梯度放大。仅改
 # planner 内 MapEncoder.forward、不改缓存；从头训练效果一致，但旧 ckpt 不可热启（首层输入
