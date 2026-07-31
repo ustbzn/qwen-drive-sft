@@ -323,13 +323,19 @@ it renders a token-centered window.
 
 Hidden-state caching and metric caching consume one split and write a flat
 `cache_path/log_name/token/*.gz` layout. They do not create separate train and
-val cache trees. The current model-facing Mogo split is
-`train_test_split=mogo_trainval`, which resolves to `data_split=trainval` plus
-`scene_filter=mogo_10hz`.
+val cache trees. The base hidden-state config `train_test_split=mogo_trainval`
+resolves to `data_split=trainval` plus `scene_filter=mogo_10hz`. Some prior
+post-March hidden-state and metric-cache invocations explicitly passed
+`train_test_split.data_split=train`. This is optional: it changes only the raw
+roots to `navsim_logs/train` and `sensor_blobs/train` and does not change either
+SceneFilter. Choose `train` or the default `trainval` from the intended directory
+layout, not from collection date, and keep that choice aligned across consumers.
 
-`mogo_10hz` adapts dense 10Hz pkl frames to the model's 2Hz cadence:
+`mogo_10hz` adapts dense 10Hz pkl frames to the model-facing 2Hz cadence:
 `num_history_frames=4`, `num_future_frames=10`, `frame_stride=5`, and
-`frame_interval=5`.
+`frame_interval=5`. The Mogo metric-cache filter uses history/future `16/50`,
+stride `1`, and interval `5`; both filters cover 66 raw frames, use center
+`start + 15`, and therefore select the same tokens on the same split.
 
 Train/val separation happens at training time through top-level `train_logs` and
 `val_logs`. The IL and RL scripts inject:
@@ -1022,7 +1028,56 @@ scene-aware cache/eval feature construction. Lane geometry still needs the
 injected MOGO SQLite map API; PKL control geometry can be built without it, but
 route relation may be UNKNOWN. Cache, IL, RL, evaluation, and visualization must
 use the same v2 builder/configuration. Old v1 caches and pre-v2 checkpoints are
-not silently compatible; regenerate cache and retrain IL before RL.
+not silently compatible; regenerate or safely convert cache and retrain IL before RL.
+
+For a dataset with an existing lane-only v1 cache, use
+`scripts/cache_dataset/convert_hdmap_cache_v1_to_v2.py` only after its built-in
+full raw-PKL audit confirms that every `traffic_light_states` field is absent or
+empty. The converter is threaded, preserves center/left/right lane geometry,
+sets lane control/state/direction to NONE, conservatively maps an all-OFF v1
+route sample to UNKNOWN, never modifies v1, and atomically writes only missing
+v2 sidecars. Any non-empty rich field, unreadable log, unsupported log payload,
+or unaudited cache-log directory blocks that dataset before writes. Audits
+consume sorted PKLs with concurrent prefetch and fail fast; on an `early-stop`,
+`rich_frames_observed` is only the scanned-prefix count, not a dataset-wide total.
+Known rich datasets `0629-0701` and `20260624` must use the real v2 builder. Do
+not infer eligibility from collection date alone.
+
+Use `scripts/cache_dataset/check_recogdrive_cache_products.py` to validate cache
+coverage against the active raw split and SceneFilter. It reports current
+`expected` tokens separately from historical `extra/stale` cache directories;
+only expected missing products fail by default. It checks Qwen, ego, HDMap v2,
+trajectory, auto-detected object features, optional extra required files, and can
+write complete JSON issue lists. Its console and JSON output record the selected
+raw split and full SceneFilter. Post-March jobs that pass
+`train_test_split.data_split=train` must be checked with `--split train`.
+
+For 20260624 with `train + mogo_10hz`, the expected set is 6438/6438 complete
+while 2442 old cache directories are stale and lack v2. An exact set comparison
+found that legacy `all_scenes` selects 2849 tokens: 407 overlap current samples,
+and its other 2442 tokens equal the stale set with no differences. The stale
+directories therefore came from `all_scenes` or equivalent sampling, not from
+the `data_split=train` override. Hidden-state and metric-cache filters both
+select the same 6438 tokens. The `train` and `trainval` token sets also happen
+to match for this dataset, but this must not be assumed for other datasets.
+
+The active v2 training configuration uses `use_lane_boundaries=true`. Both v1
+and v2 caches already store center/left/right polylines, so this encoder switch
+does not require another cache pass, but IL/RL/eval must agree and pre-boundary
+checkpoints are not shape-compatible.
+
+The multi-GPU cache entry is already sharded by `torchrun`. It previously also
+instantiated an unused `cfg.worker` in every rank, launching one complete local Ray
+cluster per rank even though execution directly calls `cache_features(data_points)`.
+Historical jobs, including the 20260624 workflow, often survived these eight
+concurrent Ray startups; the 20260712 run timed out while the node also hosted a
+32-thread Ray metric-cache job and another eight-rank cache job. Treat this as a
+load-sensitive startup failure, not a dataset-content failure. The unused
+initialization has been removed from `run_dataset_caching_multi_node.py` without
+changing token selection, rank sharding, builders, or output format. Do not use
+`ray stop --force`, which can kill unrelated jobs. The 20260712 failure happened
+before any HDMap v2 file was written. Its default `data_split=trainval` is valid;
+`data_split=train` is optional and unrelated to the Ray failure.
 
 The implementation details, data observations, smoke-test results, risks, and
 operator checklist are in
