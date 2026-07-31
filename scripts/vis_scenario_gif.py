@@ -512,7 +512,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/alldata_ego_SDE0.75_obj_hdmap_novlm_il_shworldsim",
+        default="vis_output/gifs/v1.1_alldata_traffic_light_novlm_il_worldsim",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")

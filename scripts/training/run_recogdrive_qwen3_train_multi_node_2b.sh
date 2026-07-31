@@ -57,10 +57,10 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
-BATCH_SIZE="${BATCH_SIZE:-2400}"
+BATCH_SIZE="${BATCH_SIZE:-2400}" #2400
 MAX_EPOCHS="${MAX_EPOCHS:-100}"
 PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-}"
-# PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/training_recogdrive_ego_SDE_obj_hdmap_novlm_IL/2026.07.10.13.46.03/lightning_logs/version_0/checkpoints/epoch=85-step=8944.ckpt}"
+# PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1.1_alldata_traffic_light_novlm_IL/2026.07.24.08.56.05/lightning_logs/version_0/checkpoints/epoch=66-step=6231.ckpt}"
 
 CACHE_ARGS=(cache_path="${CACHE_PATH}")
 if [ -n "${CACHE_PATHS:-}" ]; then
@@ -133,7 +133,7 @@ torchrun \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=v1_alldata_SDE_obj_hdmap${VLM_TAG}_IL \
+  experiment_name=v2_alldata_traffic_light_noPretrain${VLM_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   "+log_split@_global_=${LOG_SPLIT}" \
   "${CACHE_ARGS[@]}" \

@@ -7,7 +7,7 @@ set -euo pipefail
 # + common/train_test_split/scene_filter/all_scenes.yaml
 # + common/agent/recogdrive_agent.yaml
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/20260712}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
@@ -24,14 +24,14 @@ export USE_OBJECT_VECTOR=false
 export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
-SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
-MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
+SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
+MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
 MOGO_UTM_SOUTH="${MOGO_UTM_SOUTH:-false}"
-GPUS="${GPUS:-8}"
-MASTER_PORT="${MASTER_PORT:-9675}"
+GPUS="${GPUS:-4}"
+MASTER_PORT="${MASTER_PORT:-9696}"
 SLIM_CACHE_ONLY="${SLIM_CACHE_ONLY:-false}"
 
-CACHE_USE_VLM=true
+CACHE_USE_VLM=false
 CACHE_USE_HDMAP=true
 CACHE_SQLITE_PATH="${SQLITE_PATH}"
 if [ "${SLIM_CACHE_ONLY}" = "true" ]; then
@@ -101,6 +101,6 @@ torchrun \
 # "agent.view_list=[cam_f0]" \
 #   agent.use_video_input=True \
 #   agent.num_frames=4 \
-if [ "${SLIM_CACHE_ONLY}" != "true" ]; then
-  python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
-fi
+# if [ "${SLIM_CACHE_ONLY}" != "true" ]; then
+#   python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
+# fi
