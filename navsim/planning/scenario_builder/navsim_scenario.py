@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import Any, Generator, List, Optional, Set, Tuple, Type, cast
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple, Type, cast
 
 from nuplan.common.actor_state.ego_state import EgoState
 from nuplan.common.actor_state.state_representation import StateVector2D, StateSE2, TimePoint
@@ -283,6 +283,16 @@ class NavSimScenario(AbstractScenario):
     ) -> Generator[Sensors, None, None]:
         """Inherited, see superclass."""
         raise NotImplementedError
+
+    def get_traffic_light_states_at_iteration(self, iteration: int) -> List[Dict[str, Any]]:
+        """Return MOGO fusion traffic-light records for one scenario iteration."""
+        frame_idx = iteration + self._initial_frame_idx
+        return list(self._scene.frames[frame_idx].traffic_light_states or [])
+
+    def get_driving_command_at_iteration(self, iteration: int) -> Any:
+        """Return the driving command code for one scenario iteration."""
+        frame_idx = iteration + self._initial_frame_idx
+        return self._scene.frames[frame_idx].ego_status.driving_command
 
     def get_traffic_light_status_at_iteration(self, iteration: int) -> Generator[TrafficLightStatusData, None, None]:
         """Inherited, see superclass."""

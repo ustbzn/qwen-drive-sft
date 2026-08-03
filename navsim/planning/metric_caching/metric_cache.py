@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -32,6 +32,14 @@ class MetricCache:
     route_lane_ids: List[str]
     drivable_area_map: PDMDrivableMap
     history_states: Optional[npt.NDArray[np.float64]] = None
+    traffic_light_states: Optional[List[Dict[str, Any]]] = None
+    driving_command: Optional[Any] = None
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        """Backward-compatible unpickle for caches created before traffic-light fields."""
+        self.__dict__.update(state)
+        self.traffic_light_states = self.__dict__.get("traffic_light_states")
+        self.driving_command = self.__dict__.get("driving_command")
 
     def dump(self) -> None:
         """Dump metric cache to pickle with lzma compression."""

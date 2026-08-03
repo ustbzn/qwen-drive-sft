@@ -134,6 +134,7 @@ def pdm_score(
         metric_cache.route_lane_ids,
         metric_cache.drivable_area_map,
         history_states=history_states,
+        traffic_light_states=getattr(metric_cache, "traffic_light_states", None),
     )
 
     # TODO: Refactor & add / modify existing metrics.
@@ -152,6 +153,7 @@ def pdm_score(
     no_at_fault_collisions = scorer._multi_metrics[MultiMetricIndex.NO_COLLISION, pred_idx]
     drivable_area_compliance = scorer._multi_metrics[MultiMetricIndex.DRIVABLE_AREA, pred_idx]
     no_reverse_driving = scorer._multi_metrics[MultiMetricIndex.NO_REVERSE_DRIVING, pred_idx]
+    traffic_light_compliance = scorer._multi_metrics[MultiMetricIndex.TRAFFIC_LIGHT_COMPLIANCE, pred_idx]
 
     ego_progress = scorer._weighted_metrics[WeightedMetricIndex.PROGRESS, pred_idx]
     time_to_collision_within_bound = scorer._weighted_metrics[WeightedMetricIndex.TTC, pred_idx]
@@ -165,16 +167,17 @@ def pdm_score(
     score = scores[pred_idx]
 
     return PDMResults(
-        no_at_fault_collisions,
-        drivable_area_compliance,
-        no_reverse_driving,
-        ego_progress,
-        time_to_collision_within_bound,
-        comfort,
-        driving_direction_compliance,
-        obstacle_clearance,
-        following_safety,
-        centerline_convergence,
-        start_anchor_comfort,
-        score,
+        no_at_fault_collisions=no_at_fault_collisions,
+        drivable_area_compliance=drivable_area_compliance,
+        no_reverse_driving=no_reverse_driving,
+        traffic_light_compliance=traffic_light_compliance,
+        ego_progress=ego_progress,
+        time_to_collision_within_bound=time_to_collision_within_bound,
+        comfort=comfort,
+        driving_direction_compliance=driving_direction_compliance,
+        obstacle_clearance=obstacle_clearance,
+        following_safety=following_safety,
+        centerline_convergence=centerline_convergence,
+        start_anchor_comfort=start_anchor_comfort,
+        score=score,
     )

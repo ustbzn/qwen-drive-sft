@@ -172,6 +172,7 @@ PRIMARY_METRIC_FIELDS = [
     ("no_at_fault_collisions", "NC"),
     ("drivable_area_compliance", "DAC"),
     ("no_reverse_driving", "NRD"),
+    ("traffic_light_compliance", "TLC"),
 ]
 
 OTHER_METRIC_FIELDS = [
@@ -183,6 +184,15 @@ OTHER_METRIC_FIELDS = [
     ("centerline_convergence", "CC"),
     ("start_anchor_comfort", "SAC"),
 ]
+
+TRAFFIC_LIGHT_STATE_COLORS = {
+    "red": "#e53935",
+    "yellow": "#fdd835",
+    "green": "#43a047",
+    "green_flash": "#76ff03",
+    "off": "#9e9e9e",
+    "unknown": "#29b6f6",
+}
 
 
 def _build_overlay_text(token: str, metrics: dict[str, object], debug_notes: list[str] | None = None) -> str:
@@ -200,13 +210,8 @@ def _build_overlay_text(token: str, metrics: dict[str, object], debug_notes: lis
     other = " | ".join(f"{short}: {_fmt_metric(metrics.get(key))}" for key, short in OTHER_METRIC_FIELDS)
     lines.append(other)
 
-    # 最后一行：NC / DAC / NRD 失败时显示诊断
-    if debug_notes and (
-        _metric_is_nc_failed(metrics.get("no_at_fault_collisions"))
-        or _metric_is_dac_hard_failed(metrics.get("drivable_area_compliance"))
-        or _metric_is_nrd_failed(metrics.get("no_reverse_driving"))
-
-    ):
+    # 诊断笔记：失败 debug + 红绿灯摘要
+    if debug_notes:
         lines.append(" | ".join(debug_notes))
 
     return "\n".join(lines)
@@ -383,6 +388,90 @@ def _plot_local_xy_path_on_bev(ax: plt.Axes, local_xy: np.ndarray, config: dict[
         zorder=config["zorder"],
         label="Simulated (PDM)",
     )
+
+
+def _normalize_traffic_light_state_label(raw_state: object) -> str:
+    state = str(raw_state or "unknown").strip().lower()
+    aliases = {
+        "g": "green",
+        "r": "red",
+        "y": "yellow",
+        "greenflash": "green_flash",
+        "green_flashing": "green_flash",
+        "flash_green": "green_flash",
+    }
+    return aliases.get(state, state or "unknown")
+
+
+def _traffic_light_states_from_sources(
+    *,
+    scene_frame_traffic_lights: object,
+    metric_cache: MetricCache | None,
+) -> list[dict[str, Any]]:
+    """Prefer metric-cache lights (same as scoring); fall back to scene frame."""
+    for source in (
+        getattr(metric_cache, "traffic_light_states", None) if metric_cache is not None else None,
+        scene_frame_traffic_lights,
+    ):
+        if not source:
+            continue
+        lights = [item for item in source if isinstance(item, dict)]
+        if lights:
+            return lights
+    return []
+
+
+def add_traffic_lights_to_bev_ax(
+    ax: plt.Axes,
+    origin: StateSE2,
+    traffic_light_states: list[dict[str, Any]],
+) -> list[str]:
+    """Draw stop-line segments + state labels in ego-local BEV. Returns text notes."""
+    notes: list[str] = []
+    for idx, light in enumerate(traffic_light_states):
+        position = light.get("position")
+        if not isinstance(position, (list, tuple)) or len(position) < 2:
+            continue
+        try:
+            global_xy = np.asarray(position, dtype=np.float64)[:, :2]
+        except Exception:
+            continue
+        if global_xy.shape[0] < 2 or not np.isfinite(global_xy).all():
+            continue
+
+        se2 = np.column_stack([global_xy, np.zeros(len(global_xy), dtype=np.float64)])
+        local_xy = convert_absolute_to_relative_se2_array(origin, se2)[:, :2]
+        state = _normalize_traffic_light_state_label(light.get("state"))
+        color = TRAFFIC_LIGHT_STATE_COLORS.get(state, TRAFFIC_LIGHT_STATE_COLORS["unknown"])
+        direction = str(light.get("direction", "?")).strip() or "?"
+        stop_line_id = light.get("stop_line_id", "?")
+
+        ax.plot(
+            local_xy[:, 1],
+            local_xy[:, 0],
+            color=color,
+            linewidth=4.0,
+            linestyle="-",
+            alpha=0.95,
+            zorder=6,
+        )
+        mid = local_xy.mean(axis=0)
+        label = f"{direction}:{state}"
+        ax.scatter([mid[1]], [mid[0]], c=color, s=36, zorder=7, edgecolors="black", linewidths=0.4)
+        ax.text(
+            mid[1],
+            mid[0],
+            f" {label}",
+            color=color,
+            fontsize=9,
+            fontweight="bold",
+            ha="left",
+            va="center",
+            zorder=8,
+            bbox=dict(facecolor="black", alpha=0.35, edgecolor="none", pad=1.5),
+        )
+        notes.append(f"TL{idx}: id={stop_line_id} {direction}/{state}")
+    return notes
 
 
 def _find_first_at_fault_collision(scorer: PDMScorer, pred_idx: int) -> dict[str, Any] | None:
@@ -864,17 +953,21 @@ def save_vis_for_tokens(
                     scene_traj.get_agent_input(), scene=scene_traj
                 )
 
+            metric_cache: MetricCache | None = None
+            if metric_cache_loader is not None and token in metric_cache_loader.tokens:
+                try:
+                    with lzma.open(metric_cache_loader.metric_cache_paths[token], "rb") as f:
+                        metric_cache = pickle.load(f)
+                except Exception as cache_exc:
+                    print(f"[WARN] token={token} 读取 metric cache 失败: {cache_exc}")
+
             diagnostics: PDMFailureDiagnostics | None = None
             debug_notes: list[str] = []
             if _should_debug_failures(metrics, debug_failures):
-                if metric_cache_loader is None or simulator is None or scorer is None:
+                if metric_cache is None or simulator is None or scorer is None:
                     print(f"[WARN] token={token} debug_failures 需要 metric_cache/simulator/scorer，已跳过")
-                elif token not in metric_cache_loader.tokens:
-                    print(f"[WARN] token={token} 无 metric cache，debug 已跳过")
                 else:
                     try:
-                        with lzma.open(metric_cache_loader.metric_cache_paths[token], "rb") as f:
-                            metric_cache: MetricCache = pickle.load(f)
                         diagnostics = run_pdm_failure_diagnostics(
                             metric_cache=metric_cache,
                             model_trajectory=model_trajectory,
@@ -893,9 +986,17 @@ def save_vis_for_tokens(
                 agent,
                 agent_trajectory=model_trajectory,
             )
+            origin = StateSE2(*scene.frames[frame_idx].ego_status.ego_pose)
             if diagnostics is not None:
-                origin = StateSE2(*scene.frames[frame_idx].ego_status.ego_pose)
                 add_failure_debug_overlays(bev_ax, origin, diagnostics)
+
+            traffic_light_states = _traffic_light_states_from_sources(
+                scene_frame_traffic_lights=getattr(scene.frames[frame_idx], "traffic_light_states", None),
+                metric_cache=metric_cache,
+            )
+            tl_notes = add_traffic_lights_to_bev_ax(bev_ax, origin, traffic_light_states)
+            if tl_notes:
+                debug_notes = list(debug_notes) + tl_notes
 
             if camera_ax is not None:
                 overlay = _build_overlay_text(token, metrics, debug_notes)
@@ -912,8 +1013,8 @@ def save_vis_for_tokens(
                     zorder=10,
                 )
 
-                legend_lines = ["GT: green | Planner: red"]
-                if debug_notes:
+                legend_lines = ["GT: green | Planner: red | TL stop-line: state color"]
+                if diagnostics is not None:
                     legend_lines.append(
                         "Sim: orange dash | Collision ego: gold | Collision obj: magenta | Off-road ego: orange-red"
                     )
@@ -1160,14 +1261,21 @@ def main():
     metric_cache_loader = None
     simulator = None
     scorer = None
-    if args.debug_failures:
+    # 传入 --metric_cache_path 时加载 cache：用于画红绿灯；debug_failures 额外建 simulator/scorer
+    if args.metric_cache_path or args.debug_failures:
         metric_cache_path = args.metric_cache_path or str(
             Path(os.getenv("NAVSIM_EXP_ROOT", "/NXT/lst/vla/navsim/exp")) / "metric_cache2"
         )
         if rank == 0:
-            print(f"debug_failures enabled, metric_cache_path={metric_cache_path}")
+            extras = []
+            if args.metric_cache_path:
+                extras.append("traffic-light overlay")
+            if args.debug_failures:
+                extras.append("debug_failures")
+            print(f"metric_cache_path={metric_cache_path} ({', '.join(extras) or 'enabled'})")
         metric_cache_loader = MetricCacheLoader(Path(metric_cache_path))
-        simulator, scorer = build_pdm_simulator_scorer()
+        if args.debug_failures:
+            simulator, scorer = build_pdm_simulator_scorer()
 
     saved = save_vis_for_tokens(
         tokens=tokens,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, BinaryIO, Union
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 import io
 import os
@@ -610,7 +610,8 @@ class Scene:
                 token=scene_dict_list[frame_idx]["token"],
                 timestamp=scene_dict_list[frame_idx]["timestamp"],
                 roadblock_ids=scene_dict_list[frame_idx]["roadblock_ids"],
-                traffic_lights=scene_dict_list[frame_idx]["traffic_lights"],
+                traffic_lights=scene_dict_list[frame_idx].get("traffic_lights", []),
+                traffic_light_states=scene_dict_list[frame_idx].get("traffic_light_states", []),
                 annotations=annotations,
                 ego_status=global_ego_status,
                 lidar=lidar,
@@ -736,6 +737,7 @@ class PDMResults:
     no_at_fault_collisions: float
     drivable_area_compliance: float
     no_reverse_driving: float
+    traffic_light_compliance: float
 
     ego_progress: float
     time_to_collision_within_bound: float
