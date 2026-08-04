@@ -23,9 +23,13 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig
 import pandas as pd
 import numpy as np
+import numpy.typing as npt
 
 from nuplan.planning.script.builders.logging_builder import build_logger
 from nuplan.planning.utils.multithreading.worker_utils import worker_map
+
+from nuplan.common.actor_state.state_representation import StateSE2
+from nuplan.common.geometry.convert import absolute_to_relative_poses
 
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataloader import SceneLoader, SceneFilter, MetricCacheLoader
@@ -38,6 +42,7 @@ from navsim.evaluate.pdm_score import (
 from navsim.planning.script.builders.worker_pool_builder import build_worker
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import StateIndex
 from navsim.planning.metric_caching.metric_cache import MetricCache
 from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 
@@ -57,6 +62,95 @@ def save_predicted_trajectory(output_dir: Path, token: str, trajectory: Trajecto
         interval_length=np.asarray(float(trajectory.trajectory_sampling.interval_length), dtype=np.float32),
     )
     return trajectory_path.resolve()
+
+
+def simulate_lqr_trajectory(
+    metric_cache: MetricCache,
+    model_trajectory: Trajectory,
+    simulator: PDMSimulator,
+) -> npt.NDArray[np.float64]:
+    """复现 pdm_score 内部的 LQR + 运动学自行车模型 rollout，返回模型轨迹对应的仿真状态。
+
+    与 pdm_score 保持完全一致的构造流程（transform_trajectory -> simulate_proposals），
+    只取模型轨迹这一条 proposal 的 rollout 结果。返回全局系 state array，形状
+    (num_poses+1, StateIndex.size())，列含义见 StateIndex（x/y/heading/vx/vy/ax/ay/
+    转向角/转向率/角速度/角加速度），采样为 proposal_sampling（默认 41 点 @ 10Hz / 4s）。
+    """
+    initial_ego_state = metric_cache.ego_state
+    future_sampling = simulator.proposal_sampling
+    pred_trajectory = transform_trajectory(model_trajectory, initial_ego_state)
+    pred_states = get_trajectory_as_array(pred_trajectory, future_sampling, initial_ego_state.time_point)
+
+    # simulate_proposals 支持 batch；这里只放模型轨迹一条 proposal。
+    simulated_states, _ = simulator.simulate_proposals(pred_states[None, ...], initial_ego_state)
+    return simulated_states[0]
+
+
+def global_states_to_ego_poses(
+    simulated_states: npt.NDArray[np.float64],
+    initial_ego_state,
+) -> npt.NDArray[np.float32]:
+    """把 rollout 的全局系 state array 转回自车局部系 (x, y, heading)。
+
+    以初始自车后轴位姿为原点，使得输出与模型 8 点输出、predicted_trajectories 同坐标系，
+    可直接叠加对比。
+    """
+    origin = initial_ego_state.rear_axle
+    absolute_poses = [origin] + [
+        StateSE2(
+            float(state[StateIndex.X]),
+            float(state[StateIndex.Y]),
+            float(state[StateIndex.HEADING]),
+        )
+        for state in simulated_states
+    ]
+    relative_poses = absolute_to_relative_poses(absolute_poses)
+    # 丢掉首个原点（(0,0,0)），只保留 rollout 各步，对齐 simulated_states 的时间轴。
+    ego_poses = np.array(
+        [[pose.x, pose.y, pose.heading] for pose in relative_poses[1:]],
+        dtype=np.float32,
+    )
+    return ego_poses
+
+
+def save_lqr_trajectory(
+    output_dir: Path,
+    token: str,
+    simulated_states: npt.NDArray[np.float64],
+    ego_poses: npt.NDArray[np.float32],
+    interval_length: float,
+) -> Path:
+    """保存 LQR + 自行车模型 rollout 轨迹：全局系完整 state array + 自车局部系 poses。"""
+    trajectory_dir = output_dir / "predicted_trajectories_LQR"
+    trajectory_dir.mkdir(parents=True, exist_ok=True)
+    trajectory_path = trajectory_dir / f"{token}.npz"
+    np.savez_compressed(
+        trajectory_path,
+        # 全局系完整状态（含速度/加速度/转向角等动力学量），列含义见 StateIndex。
+        global_states=np.asarray(simulated_states, dtype=np.float32),
+        # 自车局部系 (x, y, heading)，与模型 8 点输出同坐标系，便于直接对比。
+        ego_poses=np.asarray(ego_poses, dtype=np.float32),
+        interval_length=np.asarray(float(interval_length), dtype=np.float32),
+    )
+    return trajectory_path.resolve()
+
+
+def save_model_inputs(
+    output_dir: Path,
+    token: str,
+    features: Dict[str, "torch.Tensor"],
+) -> Path:
+    """保存模型输入 features（未加 batch 维的单样本张量），供部署端复现推理并对齐输出。
+
+    features 覆盖 ego status / history / command、可选 obj、可选 hdmap，以及启用 VLM 时的
+    first/last_hidden_state。全部转为 numpy 后压缩存为单个 npz。
+    """
+    inputs_dir = output_dir / "model_inputs"
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    inputs_path = inputs_dir / f"{token}.npz"
+    arrays = {key: value.detach().cpu().numpy() for key, value in features.items()}
+    np.savez_compressed(inputs_path, **arrays)
+    return inputs_path.resolve()
 
 
 def compute_trajectory_l2_loss(
@@ -179,9 +273,19 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             "`use_gt_progress_reference` so the model trajectory is still evaluated."
         )
 
+    # 是否额外保存 LQR rollout 轨迹与模型输入（默认开启；见 shell 脚本 SAVE_MODEL_IO）。
+    save_model_io = bool(cfg.get("save_model_io", True))
+
     agent: AbstractAgent = instantiate(cfg.agent)
     agent.initialize()
     sensor_config = agent.get_sensor_config()
+    can_return_features = hasattr(agent, "compute_trajectory_and_features")
+    if save_model_io and not can_return_features:
+        logger.warning(
+            "save_model_io=True but agent %s has no compute_trajectory_and_features; "
+            "model inputs will not be saved.",
+            type(agent).__name__,
+        )
 
     metric_cache_loader = MetricCacheLoader(Path(cfg.metric_cache_path))
     scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
@@ -247,7 +351,13 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 scene = scene_loader.get_scene_from_token(token)
 
             agent_input = scene_loader.get_agent_input_from_token(token)
-            if requires_scene:
+            scene_arg = scene if requires_scene else None
+            input_features: Dict[str, Any] = {}
+            if save_model_io and can_return_features:
+                trajectory, input_features = agent.compute_trajectory_and_features(
+                    agent_input, scene_arg
+                )
+            elif requires_scene:
                 trajectory = agent.compute_trajectory(agent_input, scene)
             else:
                 trajectory = agent.compute_trajectory(agent_input)
@@ -265,6 +375,29 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             )
 
             trajectory_path = save_predicted_trajectory(Path(cfg.output_dir), token, trajectory)
+
+            if save_model_io:
+                # LQR + 运动学自行车模型 rollout：复现打分内部仿真，落盘全局系状态与自车局部系 poses。
+                simulated_states = simulate_lqr_trajectory(
+                    metric_cache=metric_cache,
+                    model_trajectory=trajectory,
+                    simulator=simulator,
+                )
+                lqr_ego_poses = global_states_to_ego_poses(
+                    simulated_states, metric_cache.ego_state
+                )
+                lqr_path = save_lqr_trajectory(
+                    Path(cfg.output_dir),
+                    token,
+                    simulated_states=simulated_states,
+                    ego_poses=lqr_ego_poses,
+                    interval_length=simulator.proposal_sampling.interval_length,
+                )
+                score_row["lqr_trajectory_path"] = str(lqr_path)
+                if input_features:
+                    inputs_path = save_model_inputs(Path(cfg.output_dir), token, input_features)
+                    score_row["model_inputs_path"] = str(inputs_path)
+
             l2_loss = compute_trajectory_l2_loss(
                 metric_cache=metric_cache,
                 model_trajectory=trajectory,
@@ -451,6 +584,8 @@ def main(cfg: DictConfig) -> None:
                 "valid",
                 "rank",
                 "trajectory_path",
+                "lqr_trajectory_path",
+                "model_inputs_path",
                 "trajectory_source",
                 "progress_reference_source",
             ]
@@ -460,8 +595,9 @@ def main(cfg: DictConfig) -> None:
         average_row["token"] = "average"
         average_row["valid"] = pdm_score_df["valid"].all()
         average_row["rank"] = 0
-        if "trajectory_path" in pdm_score_df.columns:
-            average_row["trajectory_path"] = ""
+        for path_column in ("trajectory_path", "lqr_trajectory_path", "model_inputs_path"):
+            if path_column in pdm_score_df.columns:
+                average_row[path_column] = ""
         if "trajectory_source" in pdm_score_df.columns:
             average_row["trajectory_source"] = ""
         if "progress_reference_source" in pdm_score_df.columns:

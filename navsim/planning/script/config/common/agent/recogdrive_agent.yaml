@@ -80,6 +80,10 @@ grpo: False
 #   agent.bc_coeff=0.3 agent.bc_teacher_deterministic=true
 bc_coeff: 0.1
 bc_teacher_deterministic: false
+# 推理确定性采样开关（默认 false，保持历史随机 DDIM 行为）。true：扩散每步 std=0，只剩
+# 初始噪声 init_noise 一个随机源，部署端用 init_noise 作 init_actions 可逐点复现。注意：
+# 改变输出分布，与 false 跑出的分数不可比，须重新跑分。仅影响 eval/可视化，不影响训练。
+eval_deterministic: false
 lr: 1e-4
 # HDMap v2 token cache includes lane/lane-connector geometry plus PKL traffic-control
 # stop-line tokens. Keep this false unless the cache was regenerated with the same v2

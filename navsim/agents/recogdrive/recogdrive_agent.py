@@ -1,4 +1,4 @@
-from typing import Any, List, Dict, Optional, Union
+from typing import Any, List, Dict, Optional, Tuple, Union
 import os
 import torch
 from torch.optim import Optimizer
@@ -75,6 +75,7 @@ class ReCogDriveAgent(AbstractAgent):
         last_hidden_state_index: int = -1,
         bc_coeff: float = 0.1,
         bc_teacher_deterministic: bool = False,
+        eval_deterministic: bool = False,
         view_list: Optional[List[str]] = None,
         num_frames: int = 1,
         use_video_input: bool = False,
@@ -136,6 +137,10 @@ class ReCogDriveAgent(AbstractAgent):
         self.last_hidden_state_index = int(last_hidden_state_index)
         self.bc_coeff = bc_coeff
         self.bc_teacher_deterministic = bc_teacher_deterministic
+        # 推理确定性开关（默认 False，保持历史随机 DDIM 行为）。True：get_action 传
+        # deterministic=True，扩散每步 std=0，只剩初始噪声 init_noise 一个随机源，部署端可
+        # 逐点复现。注意：改变输出分布，与 deterministic=False 跑出的分数不可比，须重新跑分。
+        self.eval_deterministic = bool(eval_deterministic)
         # 多视角 / 多帧配置（默认单视角单帧，零影响）。视角数 = len(view_list)。
         self.view_list = list(view_list) if view_list else ["cam_f0"]
         self.num_frames = int(num_frames)
@@ -528,7 +533,13 @@ class ReCogDriveAgent(AbstractAgent):
                 action_inputs.data.update(obj_data)
             if img_data:
                 action_inputs.data.update(img_data)
-            return self.action_head.get_action(first_hidden_state, last_hidden_state, action_inputs)
+            # return_init_noise=True 额外带出采样起点噪声（[B,8,3]，极小），供部署端复现。
+            # 对 pred_traj 数值零影响；compute_trajectory 只取 pred_traj，忽略 init_noise。
+            # eval_deterministic=True 时扩散每步 std=0，只剩初始噪声，部署端可逐点复现。
+            return self.action_head.get_action(
+                first_hidden_state, last_hidden_state, action_inputs,
+                deterministic=self.eval_deterministic, return_init_noise=True,
+            )
 
     def _is_online_backbone(self) -> bool:
         """在线 backbone 模式：eval / 可视化时每样本现跑 VLM（非缓存读、非 cache_mode 写）。"""
@@ -577,54 +588,75 @@ class ReCogDriveAgent(AbstractAgent):
         last_hs = select_hidden_state(outputs.hidden_states, self.last_hidden_state_index)
         return first_hs.squeeze(0).float().cpu(), last_hs.squeeze(0).float().cpu()
 
-    def compute_trajectory(self, agent_input: AgentInput, scene: Optional[Scene] = None) -> Trajectory:
-        self.eval()
+    def _build_input_features(
+        self, agent_input: AgentInput, scene: Optional[Scene] = None
+    ) -> Dict[str, torch.Tensor]:
+        """构造模型输入 features（未加 batch 维的单样本 CPU 张量）。
+
+        供 compute_trajectory / compute_trajectory_vis / compute_trajectory_and_features
+        共用，保证三条路径的输入构造逻辑完全一致（DRY）。
+        - hdmap/obj builder 在 scene 可用时走 compute_features_from_scene；scene 为 None
+          时退化到 VLM+ego。
+        - 多视角 / 多帧在线 eval：用 _encode_views 算 hidden_state 注入，绕开单路径
+          image_path_tensor。
+        """
         features: Dict[str, torch.Tensor] = {}
-        # build features。hdmap/obj builder 在 scene 可用时走 compute_features_from_scene；
-        # scene 为 None 时返回空对象，模型退化到 VLM+ego。
         for builder in self.get_feature_builders():
             if scene is not None and hasattr(builder, "compute_features_from_scene"):
                 features.update(builder.compute_features_from_scene(scene))
             else:
                 features.update(builder.compute_features(agent_input))
 
-        # 多视角 / 多帧在线 eval：用 _encode_views 算 hidden_state 注入，绕开单路径 image_path_tensor
         if self._needs_view_encoding():
             first_hs, last_hs = self._encode_views(agent_input)
             features["first_hidden_state"] = first_hs
             features["last_hidden_state"] = last_hs
             features.pop("image_path_tensor", None)
+        return features
+
+    def compute_trajectory(self, agent_input: AgentInput, scene: Optional[Scene] = None) -> Trajectory:
+        self.eval()
+        features = self._build_input_features(agent_input, scene)
         # add batch dimension
-        features = {k: v.unsqueeze(0) for k, v in features.items()}
+        batched = {k: v.unsqueeze(0) for k, v in features.items()}
 
         with torch.no_grad():
-            predictions = self.forward(features)
+            predictions = self.forward(batched)
             poses = predictions["pred_traj"].float().cpu().squeeze(0)
 
         return Trajectory(poses)
 
-    def compute_trajectory_vis(self, agent_input: AgentInput, scene: Optional[Scene] = None) -> Trajectory:
+    def compute_trajectory_and_features(
+        self, agent_input: AgentInput, scene: Optional[Scene] = None
+    ) -> Tuple[Trajectory, Dict[str, torch.Tensor]]:
+        """同 compute_trajectory，但额外返回未加 batch 维的输入 features。
+
+        用于评测时把模型输入（ego status / obj / hdmap / 可选 VLM hidden state）落盘，
+        供部署端复现推理并对齐输出。不重复 VLM 前向。
+        """
         self.eval()
-
-        features: Dict[str, torch.Tensor] = {}
-        # build features（同 compute_trajectory 的 scene-aware 逻辑）
-        for builder in self.get_feature_builders():
-            if scene is not None and hasattr(builder, "compute_features_from_scene"):
-                features.update(builder.compute_features_from_scene(scene))
-            else:
-                features.update(builder.compute_features(agent_input))
-
-        if self._needs_view_encoding():
-            first_hs, last_hs = self._encode_views(agent_input)
-            features["first_hidden_state"] = first_hs
-            features["last_hidden_state"] = last_hs
-            features.pop("image_path_tensor", None)
-
-        # add batch dimension
-        features = {k: v.unsqueeze(0) for k, v in features.items()}
+        features = self._build_input_features(agent_input, scene)
+        batched = {k: v.unsqueeze(0) for k, v in features.items()}
 
         with torch.no_grad():
-            predictions = self.forward(features)
+            predictions = self.forward(batched)
+            poses = predictions["pred_traj"].float().cpu().squeeze(0)
+
+        # 采样起点噪声也是复现推理所需的“输入”，随 features 一并落盘（去掉 batch 维）。
+        if "init_noise" in predictions:
+            features = dict(features)
+            features["init_noise"] = predictions["init_noise"].float().cpu().squeeze(0)
+
+        return Trajectory(poses), features
+
+    def compute_trajectory_vis(self, agent_input: AgentInput, scene: Optional[Scene] = None) -> Trajectory:
+        self.eval()
+        features = self._build_input_features(agent_input, scene)
+        # add batch dimension
+        batched = {k: v.unsqueeze(0) for k, v in features.items()}
+
+        with torch.no_grad():
+            predictions = self.forward(batched)
             poses = predictions["pred_traj"].float().cpu().squeeze(0)
         return Trajectory(poses)
 

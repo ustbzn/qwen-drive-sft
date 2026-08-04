@@ -1326,7 +1326,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         last_hidden_state: torch.Tensor,
         action_input: BatchFeature,
         init_actions: Optional[torch.Tensor] = None,
-        deterministic: bool = False
+        deterministic: bool = False,
+        return_init_noise: bool = False,
     ) -> BatchFeature:
         """
         Generates action trajectories via the configured sampling method.
@@ -1341,6 +1342,11 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             init_actions (Optional[torch.Tensor]): An initial trajectory to start
                 the denoising from. If None, starts from pure noise.
             deterministic (bool): If True, DDIM sampling will be deterministic (eta=0).
+            return_init_noise (bool): If True, also return the initial sampling noise
+                (the pure-noise starting point, or the provided init_actions) under
+                the "init_noise" key. Zero impact on the sampled trajectory: the noise
+                is only observed, not altered. Deployment can reuse it as init_actions
+                to reproduce the sampling start point.
 
         Returns:
             BatchFeature: A batch containing the final predicted trajectory.
@@ -1359,6 +1365,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         current_actions = init_actions if init_actions is not None else torch.randn(
             (B, self.config.action_horizon, D), device=device, dtype=dtype
         )
+        # 采样起点快照：在去噪循环覆盖 current_actions 之前保存，供部署端复现推理。
+        init_noise_snapshot = current_actions.clone() if return_init_noise else None
 
         if self.config.sampling_method == 'flow':
             dt = 1.0 / self.config.num_inference_steps
@@ -1458,7 +1466,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
         final_actions = self.denorm_odo(current_actions)
 
-        return BatchFeature(data={"pred_traj": final_actions})
+        data = {"pred_traj": final_actions}
+        if return_init_noise and init_noise_snapshot is not None:
+            data["init_noise"] = init_noise_snapshot
+        return BatchFeature(data=data)
 
     def sample_chain(
         self,

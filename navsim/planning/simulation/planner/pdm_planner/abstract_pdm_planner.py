@@ -1,3 +1,4 @@
+import logging
 from abc import ABC
 from typing import Dict, List, Optional, Tuple
 
@@ -17,6 +18,9 @@ from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils imp
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_path import PDMPath
 from navsim.planning.simulation.planner.pdm_planner.utils.route_utils import route_roadblock_correction
 from navsim.planning.simulation.planner.pdm_planner.observation.pdm_occupancy_map import PDMDrivableMap
+
+
+logger = logging.getLogger(__name__)
 
 
 class AbstractPDMPlanner(AbstractPlanner, ABC):
@@ -56,14 +60,35 @@ class AbstractPDMPlanner(AbstractPlanner, ABC):
         self._route_roadblock_dict = {}
         self._route_lane_dict = {}
 
+        missing_route_roadblock_ids: List[str] = []
         for id_ in route_roadblock_ids:
             block = self._map_api.get_map_object(id_, SemanticMapLayer.ROADBLOCK)
             block = block or self._map_api.get_map_object(id_, SemanticMapLayer.ROADBLOCK_CONNECTOR)
+
+            # Route results can outlive a map revision and contain an ID
+            # that is no longer present in the selected map. Keep the
+            # remaining route usable and report the data mismatch explicitly.
+            if block is None:
+                missing_route_roadblock_ids.append(str(id_))
+                continue
 
             self._route_roadblock_dict[block.id] = block
 
             for lane in block.interior_edges:
                 self._route_lane_dict[lane.id] = lane
+
+        if missing_route_roadblock_ids:
+            logger.warning(
+                "Skipping %d route roadblock IDs missing from the map API: %s",
+                len(missing_route_roadblock_ids),
+                missing_route_roadblock_ids[:20],
+            )
+
+        if not self._route_roadblock_dict:
+            raise ValueError(
+                "No route roadblocks could be resolved from the map API; "
+                "check that the route IDs and map API use the same map revision."
+            )
 
         self._load_route_connector_edges()
 
