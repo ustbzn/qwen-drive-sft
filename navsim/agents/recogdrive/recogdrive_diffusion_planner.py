@@ -1328,6 +1328,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         init_actions: Optional[torch.Tensor] = None,
         deterministic: bool = False,
         return_init_noise: bool = False,
+        return_step_noises: bool = False,
+        step_noises: Optional[torch.Tensor] = None,
     ) -> BatchFeature:
         """
         Generates action trajectories via the configured sampling method.
@@ -1347,6 +1349,19 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 the "init_noise" key. Zero impact on the sampled trajectory: the noise
                 is only observed, not altered. Deployment can reuse it as init_actions
                 to reproduce the sampling start point.
+            return_step_noises (bool): If True (DDIM only), also return every per-step
+                sampling noise (post-clip, exactly as consumed) stacked as
+                [num_steps, B, action_horizon, action_dim] under the "step_noises"
+                key. Pure observation: cloned after the same clamp the update uses,
+                before it multiplies std. Zero impact on pred_traj. Under
+                deterministic=False these per-step noises plus init_noise fully
+                determine the trajectory, so replaying them reproduces it exactly.
+            step_noises (Optional[torch.Tensor]): If provided (DDIM only), inject these
+                per-step noises instead of sampling torch.randn each step. Shape must be
+                [num_steps, B, action_horizon, action_dim] (or broadcastable). Used to
+                reproduce a previously-saved sampling run: pass the saved init_actions
+                and step_noises to replay the exact trajectory. Default None keeps the
+                historical randn behavior unchanged (zero impact).
 
         Returns:
             BatchFeature: A batch containing the final predicted trajectory.
@@ -1367,6 +1382,9 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         )
         # 采样起点快照：在去噪循环覆盖 current_actions 之前保存，供部署端复现推理。
         init_noise_snapshot = current_actions.clone() if return_init_noise else None
+        # 每步噪声观测/注入（仅 DDIM）。观测：累积每步实际消费的 noise_sample（post-clip）。
+        # 注入：外部传入 step_noises 时逐步替代 torch.randn，用于逐点复现已保存的采样过程。
+        step_noise_snapshots = [] if return_step_noises else None
 
         if self.config.sampling_method == 'flow':
             dt = 1.0 / self.config.num_inference_steps
@@ -1447,15 +1465,26 @@ class ReCogDriveDiffusionPlanner(nn.Module):
 
                 std = std.to(dtype)
 
-                noise_sample = torch.randn_like(current_actions)
-                
+                # 注入端：若提供 step_noises，则第 i 步用外部噪声替代 randn，逐点复现已存采样。
+                # 否则保持历史行为，每步现采 randn（默认路径，零影响）。
+                if step_noises is not None:
+                    noise_sample = step_noises[i].to(device=current_actions.device, dtype=dtype)
+                else:
+                    noise_sample = torch.randn_like(current_actions)
+
                 if deterministic:
                     std.zero_()
                 else:
                     std = std.clamp(min=eval_min_sampling_denoising_std)
-                
+
                 noise_sample.clamp_(-eval_randn_clip_value, eval_randn_clip_value)
-                
+
+                # 观测端：clamp 之后、更新之前 clone —— 此刻 noise_sample 正是本步实际消费的值。
+                # 只读不改，对 current_actions 更新零影响；deterministic=True 时 std=0，噪声不参与
+                # 输出但仍如实记录本步随机源。
+                if step_noise_snapshots is not None:
+                    step_noise_snapshots.append(noise_sample.clone())
+
                 current_actions = mean + std * noise_sample
         else:
             raise ValueError(f"Unsupported sampling method: {self.config.sampling_method}")
@@ -1469,6 +1498,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         data = {"pred_traj": final_actions}
         if return_init_noise and init_noise_snapshot is not None:
             data["init_noise"] = init_noise_snapshot
+        # 每步噪声堆叠为 [num_steps, B, action_horizon, action_dim]（仅 DDIM 有值；其它采样器
+        # 未累积则为空列表，不写出该键）。
+        if step_noise_snapshots:
+            data["step_noises"] = torch.stack(step_noise_snapshots, dim=0)
         return BatchFeature(data=data)
 
     def sample_chain(

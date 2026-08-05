@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/zhuhai}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
@@ -25,6 +25,11 @@ export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。eval 时不 dropout(self.training=False)，但类型
 # 必须与训练 ckpt 一致，否则 attention 层被 initialize() strict=False 丢成随机初始化。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
+# 推理确定性采样开关（默认 false=历史随机 DDIM）。true：扩散每步 std=0，只剩初始噪声
+# init_noise 一个随机源，部署端读 model_inputs/<token>.npz 的 init_noise 作 init_actions 可
+# 逐点复现推理。注意：改变输出分布，与 false 的分数不可比，须重新跑分。
+# 用法：EVAL_DETERMINISTIC=true bash scripts/evaluation/worldsim_pdms_evaluation_2b.sh
+export EVAL_DETERMINISTIC="${EVAL_DETERMINISTIC:-false}"
 # VLM 总开关：true(默认) | false(完全不用 VLM)。use_vlm=false 时 eval 不加载 Qwen3（省一次
 # 2B 在线前向），planner 无 vl 投影层、DiT context 仅 obj/hdmap/img；vlm_ablation 为 no-op。
 # CHECKPOINT 必须来自 use_vlm=false 的 IL/RL 训练（否则 vl 投影层被 initialize() strict=False
@@ -33,8 +38,15 @@ export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 export USE_VLM="${USE_VLM:-false}"
 if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 
+# --- 额外落盘开关（默认开启）。开启后在 output_dir 下除 predicted_trajectories 外，还保存：
+#   predicted_trajectories_LQR/<token>.npz：LQR + 运动学自行车模型 rollout 轨迹
+#     （global_states=全局系完整状态含速度/加速度/转向；ego_poses=自车局部系 x,y,heading）。
+#   model_inputs/<token>.npz：模型输入 features（ego status/obj/hdmap，启用 VLM 时含 hidden_state）。
+# 供部署端（如 arm64）按相同输入复现推理并对齐输出。关闭：SAVE_MODEL_IO=false。---
+export SAVE_MODEL_IO="${SAVE_MODEL_IO:-true}"
+
 # --- badcase 评测模式开关（默认关闭）。开启后仅评测指定 token 列表中的样本。---
-export BADCASE_MODE="${BADCASE_MODE:-true}"
+export BADCASE_MODE="${BADCASE_MODE:-false}"
 export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/shanghai_worldsim_case.txt}"
 
 # --- GT 进度参考开关（默认开启）。模型始终推理，仅用 GT 归一化模型轨迹的 EP。---
@@ -47,11 +59,11 @@ SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1.1_alldata_traffic_light_novlm_IL/2026.07.24.08.56.05/lightning_logs/version_0/checkpoints/epoch=66-step=6231.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1_alldata_SDE_obj_hdmap_novlm_RL/2026.07.22.03.44.31/lightning_logs/version_0/checkpoints/epoch=17-step=738.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
-SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
-MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
-GPUS="${GPUS:-1}"
+SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_zhuhai_1.4.2_20260604.sqlite}"
+MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-49}"
+GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
@@ -106,14 +118,16 @@ torchrun \
   agent.use_hdmap_vector=true \
   agent.use_lane_boundaries=true \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
+  agent.eval_deterministic="${EVAL_DETERMINISTIC}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
+  +save_model_io="${SAVE_MODEL_IO}" \
   +badcase_mode="${BADCASE_MODE}" \
   +badcase_token_list="${BADCASE_TOKEN_LIST}" \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name=v1.1_alldata_traffic_light${VLM_TAG}_IL_worldsim_eval \
+  experiment_name=v1_alldata_SDE_obj_hdmap${VLM_TAG}_RL_worldsim_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

@@ -534,11 +534,13 @@ class ReCogDriveAgent(AbstractAgent):
             if img_data:
                 action_inputs.data.update(img_data)
             # return_init_noise=True 额外带出采样起点噪声（[B,8,3]，极小），供部署端复现。
-            # 对 pred_traj 数值零影响；compute_trajectory 只取 pred_traj，忽略 init_noise。
-            # eval_deterministic=True 时扩散每步 std=0，只剩初始噪声，部署端可逐点复现。
+            # return_step_noises=True 额外带出 DDIM 每步噪声（[num_steps,B,8,3]）：
+            #   deterministic=False 时它与 init_noise 一起构成全部随机源，逐点复现须两者兼备。
+            # 二者均为纯观测，对 pred_traj 数值零影响；compute_trajectory 只取 pred_traj。
             return self.action_head.get_action(
                 first_hidden_state, last_hidden_state, action_inputs,
-                deterministic=self.eval_deterministic, return_init_noise=True,
+                deterministic=self.eval_deterministic,
+                return_init_noise=True, return_step_noises=True,
             )
 
     def _is_online_backbone(self) -> bool:
@@ -642,10 +644,16 @@ class ReCogDriveAgent(AbstractAgent):
             predictions = self.forward(batched)
             poses = predictions["pred_traj"].float().cpu().squeeze(0)
 
-        # 采样起点噪声也是复现推理所需的“输入”，随 features 一并落盘（去掉 batch 维）。
-        if "init_noise" in predictions:
+        # 采样噪声也是复现推理所需的“输入”，随 features 一并落盘（去掉 batch 维）。
+        # init_noise: 起点噪声 [8,3]；step_noises: DDIM 每步噪声 [num_steps,8,3]。
+        # deterministic=False 下二者共同决定输出，逐点复现须同时回放。
+        if "init_noise" in predictions or "step_noises" in predictions:
             features = dict(features)
+        if "init_noise" in predictions:
             features["init_noise"] = predictions["init_noise"].float().cpu().squeeze(0)
+        if "step_noises" in predictions:
+            # [num_steps,B,8,3] -> 去掉 batch 维 -> [num_steps,8,3]
+            features["step_noises"] = predictions["step_noises"].float().cpu().squeeze(1)
 
         return Trajectory(poses), features
 
@@ -681,7 +689,7 @@ class ReCogDriveAgent(AbstractAgent):
         if self.grpo:
             scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=0.0, epochs=20, warmup_epochs=0)
         else:
-            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=1e-6, epochs=200, warmup_epochs=3)
+            scheduler = WarmupCosLR(optimizer=optimizer, lr=self._lr, min_lr=1e-6, epochs=200, warmup_epochs=1)
             
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 

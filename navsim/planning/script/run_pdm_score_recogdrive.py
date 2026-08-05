@@ -143,7 +143,9 @@ def save_model_inputs(
     """保存模型输入 features（未加 batch 维的单样本张量），供部署端复现推理并对齐输出。
 
     features 覆盖 ego status / history / command、可选 obj、可选 hdmap，以及启用 VLM 时的
-    first/last_hidden_state。全部转为 numpy 后压缩存为单个 npz。
+    first/last_hidden_state。还包含扩散采样随机源：init_noise [8,3] 起点噪声，以及
+    step_noises [num_steps,8,3] DDIM 每步噪声（deterministic=False 下二者共同决定输出，
+    部署端回放两者即可逐点复现该条轨迹）。全部转为 numpy 后压缩存为单个 npz。
     """
     inputs_dir = output_dir / "model_inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)

@@ -611,7 +611,6 @@ class Scene:
                 timestamp=scene_dict_list[frame_idx]["timestamp"],
                 roadblock_ids=scene_dict_list[frame_idx]["roadblock_ids"],
                 traffic_lights=scene_dict_list[frame_idx].get("traffic_lights", []),
-                traffic_light_states=scene_dict_list[frame_idx].get("traffic_light_states", []),
                 annotations=annotations,
                 ego_status=global_ego_status,
                 lidar=lidar,
