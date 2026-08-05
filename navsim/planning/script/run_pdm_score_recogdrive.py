@@ -39,6 +39,16 @@ from navsim.evaluate.pdm_score import (
     transform_trajectory,
     get_trajectory_as_array,
 )
+from navsim.evaluate.scenario_type_label import (
+    DEFAULT_SCENARIO_TYPE,
+    build_token_scenario_type_map,
+)
+from navsim.evaluate.obstacle_interaction_label import (
+    DEFAULT_HORIZON_S as OBSTACLE_INTERACTION_HORIZON_S,
+    DEFAULT_RANGE_X as OBSTACLE_INTERACTION_RANGE_X,
+    DEFAULT_RANGE_Y as OBSTACLE_INTERACTION_RANGE_Y,
+    build_token_obstacle_interaction_map,
+)
 from navsim.planning.script.builders.worker_pool_builder import build_worker
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
@@ -337,12 +347,60 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             len(tokens_to_evaluate),
         )
 
+    scenario_type_horizon_s = float(cfg.get("scenario_type_horizon_s", 2.0))
+    scenario_type_map = build_token_scenario_type_map(
+        navsim_log_path=Path(cfg.navsim_log_path),
+        token_to_log_name=scene_loader.token_to_log_file,
+        tokens=tokens_to_evaluate,
+        horizon_s=scenario_type_horizon_s,
+    )
+    logger.info(
+        "Resolved scenario_type labels for %d/%d local tokens (horizon=%.2fs).",
+        len(scenario_type_map),
+        len(tokens_to_evaluate),
+        scenario_type_horizon_s,
+    )
+
+    obstacle_horizon_s = float(
+        cfg.get("obstacle_interaction_horizon_s", OBSTACLE_INTERACTION_HORIZON_S)
+    )
+    obstacle_range_x = tuple(
+        cfg.get("obstacle_interaction_range_x", list(OBSTACLE_INTERACTION_RANGE_X))
+    )
+    obstacle_range_y = tuple(
+        cfg.get("obstacle_interaction_range_y", list(OBSTACLE_INTERACTION_RANGE_Y))
+    )
+    obstacle_interaction_map = build_token_obstacle_interaction_map(
+        navsim_log_path=Path(cfg.navsim_log_path),
+        token_to_log_name=scene_loader.token_to_log_file,
+        tokens=tokens_to_evaluate,
+        horizon_s=obstacle_horizon_s,
+        range_x=(float(obstacle_range_x[0]), float(obstacle_range_x[1])),
+        range_y=(float(obstacle_range_y[0]), float(obstacle_range_y[1])),
+    )
+    logger.info(
+        "Resolved obstacle-interaction labels for %d/%d local tokens "
+        "(horizon=%.2fs, range_x=%s, range_y=%s).",
+        len(obstacle_interaction_map),
+        len(tokens_to_evaluate),
+        obstacle_horizon_s,
+        obstacle_range_x,
+        obstacle_range_y,
+    )
+
     pdm_results: List[Dict[str, Any]] = []
     for idx, (token) in enumerate(tokens_to_evaluate):
         if dist.get_rank() == 0:
             logger.info(f"Rank {dist.get_rank()} processing scenario {idx+1} / {len(tokens_to_evaluate)} in thread_id={thread_id}, node_id={node_id}")
 
-        score_row: Dict[str, Any] = {"token": token, "valid": True}
+        score_row: Dict[str, Any] = {
+            "token": token,
+            "valid": True,
+            "scenario_type": scenario_type_map.get(token, DEFAULT_SCENARIO_TYPE),
+            "has_obstacle_interaction": bool(
+                obstacle_interaction_map.get(token, False)
+            ),
+        }
         try:
             metric_cache_path = metric_cache_loader.metric_cache_paths[token]
             with lzma.open(metric_cache_path, "rb") as f:
@@ -590,6 +648,8 @@ def main(cfg: DictConfig) -> None:
                 "model_inputs_path",
                 "trajectory_source",
                 "progress_reference_source",
+                "scenario_type",
+                "has_obstacle_interaction",
             ]
             if column in pdm_score_df.columns
         ]
@@ -604,6 +664,10 @@ def main(cfg: DictConfig) -> None:
             average_row["trajectory_source"] = ""
         if "progress_reference_source" in pdm_score_df.columns:
             average_row["progress_reference_source"] = ""
+        if "scenario_type" in pdm_score_df.columns:
+            average_row["scenario_type"] = ""
+        if "has_obstacle_interaction" in pdm_score_df.columns:
+            average_row["has_obstacle_interaction"] = ""
         pdm_score_df.loc[len(pdm_score_df)] = average_row
 
         save_path = Path(cfg.output_dir)
