@@ -4,7 +4,7 @@ import copy
 
 import numpy as np
 import numpy.typing as npt
-from shapely import Point, creation
+from shapely import Point, creation, LineString
 
 from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.common.actor_state.tracked_objects_types import AGENT_TYPES
@@ -567,7 +567,7 @@ class PDMScorer:
         return red_start_time, trajectory_end_time
 
     def _get_stop_line_progress(self, traffic_light_state: Dict[str, Any]) -> Optional[float]:
-        """Project a stop line's two UTM endpoints to the centerline and average their progress."""
+        """Use stopline ∩ centerline progress; Fall back to stopline endpoint projection mean."""
         position = traffic_light_state.get("position")
         if self._centerline is None or not isinstance(position, (list, tuple, np.ndarray)) or len(position) < 2:
             return None
@@ -578,7 +578,24 @@ class PDMScorer:
             return None
         if not all(np.isfinite(point.x) and np.isfinite(point.y) for point in endpoints):
             return None
+        
+        candidates = []
+        # 优先使用 stopline 与 centerline 交点作为停止点
+        stop_line = LineString([(p.x, p.y) for p in endpoints])
+        intersection = self._centerline.linestring.intersection(stop_line)
+        if not intersection.is_empty:
+            if intersection.geom_type == "Point":
+                candidates = [intersection]
+            elif intersection.geom_type == "MultiPoint":
+                candidates = [g for g in intersection.geoms if g.geom_type == "Point"]
+        
+        if candidates:
+            progress = np.asarray(self._centerline.project(candidates), dtype=np.float64)
+            progress = progress[np.isfinite(progress)]
+            if progress.size:
+                return float(progress.min())
 
+        # Fallback 到 stopline 两端点中点作为停止点
         progress = np.asarray(self._centerline.project(endpoints), dtype=np.float64)
         if progress.shape != (2,) or not np.isfinite(progress).all():
             return None
