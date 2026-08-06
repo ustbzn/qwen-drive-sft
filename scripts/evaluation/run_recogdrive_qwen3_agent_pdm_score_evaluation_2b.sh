@@ -33,6 +33,13 @@ export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 export USE_VLM="${USE_VLM:-false}"
 if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 
+# --- 额外落盘开关（默认开启）。开启后在 output_dir 下除 predicted_trajectories 外，还保存：
+#   predicted_trajectories_LQR/<token>.npz：LQR + 运动学自行车模型 rollout 轨迹
+#     （global_states=全局系完整状态含速度/加速度/转向；ego_poses=自车局部系 x,y,heading）。
+#   model_inputs/<token>.npz：模型输入 features（ego status/obj/hdmap，启用 VLM 时含 hidden_state）。
+# 供部署端（如 arm64）按相同输入复现推理并对齐输出。关闭：SAVE_MODEL_IO=false。---
+export SAVE_MODEL_IO="${SAVE_MODEL_IO:-false}"
+
 # --- badcase 评测模式开关（默认关闭）。开启后仅评测指定 token 列表中的样本。---
 export BADCASE_MODE="${BADCASE_MODE:-false}"
 export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/0312_0319_10case.txt}"
@@ -42,12 +49,12 @@ export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_confi
 export USE_GT_PROGRESS_REFERENCE="${USE_GT_PROGRESS_REFERENCE:-${USE_GT_TRAJECTORY:-true}}"
 
 # --- 变道场景中心线收敛满分模式（默认开启）。按场景 CSV 的 scene_merge=lane_change 识别。---
-export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-true}"
+export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-false}"
 SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_logs/val_scenario_type_token_map.csv}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1.1_alldata_traffic_light_novlm_RL/2026.07.27.07.12.47/lightning_logs/version_0/checkpoints/epoch=13-step=196.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
@@ -108,12 +115,13 @@ torchrun \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   mogo_map.sqlite_path="${SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
+  +save_model_io="${SAVE_MODEL_IO}" \
   +badcase_mode="${BADCASE_MODE}" \
   +badcase_token_list="${BADCASE_TOKEN_LIST}" \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name="${EXPERIMENT_NAME:-v1.1_alldata_traffic_light${VLM_TAG}_RL_eval}" \
+  experiment_name="${EXPERIMENT_NAME:-v3_alldata_traffic_light_Pretrain_lowBS${VLM_TAG}_IL_badcase_eval}" \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

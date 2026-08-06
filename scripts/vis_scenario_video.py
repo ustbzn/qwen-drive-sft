@@ -20,10 +20,10 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-# os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset")
-# os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp")
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp")
+# os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
+# os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
 os.environ.setdefault("NUPLAN_MAP_VERSION", "nuplan-maps-v1.0")
 
@@ -47,7 +47,7 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1.1_alldata_traffic_light_novlm_IL/2026.07.24.08.56.05/lightning_logs/version_0/checkpoints/epoch=66-step=6231.ckpt",
+    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt",
     "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"

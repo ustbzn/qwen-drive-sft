@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/zhuhai}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
@@ -43,10 +43,10 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 #     （global_states=全局系完整状态含速度/加速度/转向；ego_poses=自车局部系 x,y,heading）。
 #   model_inputs/<token>.npz：模型输入 features（ego status/obj/hdmap，启用 VLM 时含 hidden_state）。
 # 供部署端（如 arm64）按相同输入复现推理并对齐输出。关闭：SAVE_MODEL_IO=false。---
-export SAVE_MODEL_IO="${SAVE_MODEL_IO:-true}"
+export SAVE_MODEL_IO="${SAVE_MODEL_IO:-false}"
 
 # --- badcase 评测模式开关（默认关闭）。开启后仅评测指定 token 列表中的样本。---
-export BADCASE_MODE="${BADCASE_MODE:-false}"
+export BADCASE_MODE="${BADCASE_MODE:-true}"
 export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/shanghai_worldsim_case.txt}"
 
 # --- GT 进度参考开关（默认开启）。模型始终推理，仅用 GT 归一化模型轨迹的 EP。---
@@ -59,12 +59,12 @@ SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1_alldata_SDE_obj_hdmap_novlm_RL/2026.07.22.03.44.31/lightning_logs/version_0/checkpoints/epoch=17-step=738.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
-SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_zhuhai_1.4.2_20260604.sqlite}"
-MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-49}"
-GPUS="${GPUS:-8}"
-MASTER_PORT="${MASTER_PORT:-9676}"
+SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
+MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
+GPUS="${GPUS:-1}"
+MASTER_PORT="${MASTER_PORT:-9696}"
 
 # --- 障碍物 obj token 开关（默认关闭，零影响）。开启后 agent.requires_scene=True，
 # eval 从 GT annotations 取障碍物（方案 A privileged 上限）。CHECKPOINT 必须来自带 obj 的
@@ -127,7 +127,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name=v1_alldata_SDE_obj_hdmap${VLM_TAG}_RL_worldsim_eval \
+  experiment_name=v3_alldata_traffic_light_Pretrain_lowBS${VLM_TAG}_IL_worldsim_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

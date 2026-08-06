@@ -1220,7 +1220,8 @@ def main():
     device = torch.device("cuda", local_rank) if torch.cuda.is_available() else torch.device("cpu")
 
     openscene_data_root = _resolve_data_root(args.openscene_data_root, "OPENSCENE_DATA_ROOT")
-    _require_env_paths(openscene_data_root)
+    if not args.openscene_data_root:
+        _require_env_paths(openscene_data_root)
     args.openscene_data_root = openscene_data_root
 
     df, tokens = tokens_from_csv(
@@ -1242,6 +1243,7 @@ def main():
             print(f"No score filter -> {len(tokens)} tokens")
 
     scene_filter = build_scene_filter(args.scene_filter)
+    print("use_vlm:", args.use_vlm)
     agent = build_agent(args, device)
     # 只渲染 + 推理需要前视 cam_f0；为避免某些 history iteration 未加载导致 cam_f0.image=None，
     # 这里显式只加载 cam_f0（所有 history iteration）。

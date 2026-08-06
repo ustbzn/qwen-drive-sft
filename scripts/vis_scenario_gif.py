@@ -512,7 +512,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/v1.1_alldata_traffic_light_novlm_il_worldsim",
+        default="vis_output/gifs/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL_badcase",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -538,7 +538,7 @@ def main() -> None:
     parser.add_argument(
         "--mogo-map-utm-zone",
         type=int,
-        default=51,
+        default=50,
         help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致",
     )
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
@@ -561,30 +561,30 @@ def main() -> None:
         parser.error(f"--colors 必须在 {MIN_FALLBACK_COLORS}-256 之间")
 
     default_token_list = [
-        "6778f89b398dee3ddde0156b2079e356",
-        "8ec9b77adeaa5c6aae500334f321f1c2",
-        "ec6788598cc3fa0b2ea7a667f03f7346",
-        "7a8525b11fea08e4187b4afe77ef9117",
-        "1e223bdaeed2f9c46bb351de8e712168",
-        "99bba5e74abb2261fa0c4a6328c1c611",
-        "f7dc542d3e1bf2c84c429f859b70ecbf",
+        # "6778f89b398dee3ddde0156b2079e356",
+        # "8ec9b77adeaa5c6aae500334f321f1c2",
+        # "ec6788598cc3fa0b2ea7a667f03f7346",
+        # "7a8525b11fea08e4187b4afe77ef9117",
+        # "1e223bdaeed2f9c46bb351de8e712168",
+        # "99bba5e74abb2261fa0c4a6328c1c611",
+        # "f7dc542d3e1bf2c84c429f859b70ecbf",
         # val case
-        # "506ef5edffa5ddd9acf8e72a9c78f86c",
-        # "9fdf107997923ef7bd7207e4618b6a6b",
-        # "efc7652bed3fd9c35799cc12dc5f183b",
-        # "b48a61ac392670f1a2296c5ef118d58a",
-        # "c545657ea85751ad9a6c35bc2515bd4e",
-        # "37227caebfdda3257c46f3314816c52a",
-        # "45b0c353a00f3faa12ce7d46bef5dcf6",
-        # "26a0a7d4da89cd5b6175b4bb6a3dbbd7",
-        # "15b734feb8f2b64e0032fafb34e91c6d",
-        # "a3879c14d1c1a07f70cdb7bb5c07e9f1",
-        # "1d9efa9752fff8fe4c01d170964f635f",
-        # "37ad798b2faabb0e60426aef42ffcd3a",
-        # "32e1c3140db74ec058c785f77193712a",
-        # "1dd6b4cb40661650a0e62a81fe5506fc",
-        # "5afd8ce7ff7defc319ef16920788f801",
-        # "6dee9f3ef67a08bee0ae2c211f1383e4",
+        "506ef5edffa5ddd9acf8e72a9c78f86c",
+        "9fdf107997923ef7bd7207e4618b6a6b",
+        "efc7652bed3fd9c35799cc12dc5f183b",
+        "b48a61ac392670f1a2296c5ef118d58a",
+        "c545657ea85751ad9a6c35bc2515bd4e",
+        "37227caebfdda3257c46f3314816c52a",
+        "45b0c353a00f3faa12ce7d46bef5dcf6",
+        "26a0a7d4da89cd5b6175b4bb6a3dbbd7",
+        "15b734feb8f2b64e0032fafb34e91c6d",
+        "a3879c14d1c1a07f70cdb7bb5c07e9f1",
+        "1d9efa9752fff8fe4c01d170964f635f",
+        "37ad798b2faabb0e60426aef42ffcd3a",
+        "32e1c3140db74ec058c785f77193712a",
+        "1dd6b4cb40661650a0e62a81fe5506fc",
+        "5afd8ce7ff7defc319ef16920788f801",
+        "6dee9f3ef67a08bee0ae2c211f1383e4",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:
