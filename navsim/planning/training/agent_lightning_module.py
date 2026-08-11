@@ -30,8 +30,30 @@ class AgentLightningModule(pl.LightningModule):
         prediction = self.agent.forward(features,targets,tokens_list)
         #prediction = self.agent.forward(features,targets)
         loss = self.agent.compute_loss(features, targets, prediction)
-        self.log(f"{logging_prefix}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        
+        self.log(
+            f"{logging_prefix}/loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
+        for metric_name in (
+            "diffusion_loss",
+            "collision_loss",
+            "offroad_loss",
+            "route_loss",
+        ):
+            if metric_name in prediction:
+                self.log(
+                    f"{logging_prefix}/{metric_name}",
+                    prediction[metric_name],
+                    on_step=True,
+                    on_epoch=True,
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+
         return loss
     
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:

@@ -35,6 +35,13 @@ from .object_vector_features import (
 )
 from .object_temporal_features import ObjectTemporalFeatureBuilder
 from .front_image_features import FrontImageFeatureBuilder
+from .safety_targets import (
+    DEFAULT_SDF_RESOLUTION,
+    DEFAULT_SDF_X_RANGE,
+    DEFAULT_SDF_Y_RANGE,
+    SAFETY_TARGET_KEYS,
+    ReCogDriveSafetyTargetBuilder,
+)
 from .recogdrive_backbone import RecogDriveBackbone
 from .recogdrive_view_utils import (
     collect_view_frame_paths,
@@ -101,6 +108,21 @@ class ReCogDriveAgent(AbstractAgent):
         ego_status_encoder_type: str = 'mlp',
         ego_state_dropout: float = 0.75,
         ego_num_command_states: int = 4,
+        use_explicit_safety_loss: bool = False,
+        lambda_collision: float = 0.1,
+        lambda_offroad: float = 0.05,
+        lambda_route: float = 0.02,
+        collision_margin: float = 0.5,
+        offroad_margin: float = 0.5,
+        route_lateral_margin: float = 1.5,
+        route_heading_weight: float = 0.5,
+        safety_smooth_beta: float = 10.0,
+        safety_snr_weighting: bool = True,
+        route_loss_batch_chunk_size: int = 128,
+        max_future_objects: int = 64,
+        safety_sdf_x_range: Optional[List[float]] = None,
+        safety_sdf_y_range: Optional[List[float]] = None,
+        safety_sdf_resolution: float = DEFAULT_SDF_RESOLUTION,
         use_image_encoder: bool = False,
         image_encoder_arch: str = "resnet34",
         image_encoder_pretrained: bool = True,
@@ -182,6 +204,32 @@ class ReCogDriveAgent(AbstractAgent):
         self.ego_status_encoder_type = str(ego_status_encoder_type)
         self.ego_state_dropout = float(ego_state_dropout)
         self.ego_num_command_states = int(ego_num_command_states)
+        # 显式安全监督只注册 target builder，不改变模型 context 输入。
+        self.use_explicit_safety_loss = bool(use_explicit_safety_loss)
+        self.lambda_collision = float(lambda_collision)
+        self.lambda_offroad = float(lambda_offroad)
+        self.lambda_route = float(lambda_route)
+        self.collision_margin = float(collision_margin)
+        self.offroad_margin = float(offroad_margin)
+        self.route_lateral_margin = float(route_lateral_margin)
+        self.route_heading_weight = float(route_heading_weight)
+        self.safety_smooth_beta = float(safety_smooth_beta)
+        self.safety_snr_weighting = bool(safety_snr_weighting)
+        self.route_loss_batch_chunk_size = int(route_loss_batch_chunk_size)
+        self.max_future_objects = int(max_future_objects)
+        self.safety_sdf_x_range = tuple(
+            safety_sdf_x_range if safety_sdf_x_range is not None else DEFAULT_SDF_X_RANGE
+        )
+        self.safety_sdf_y_range = tuple(
+            safety_sdf_y_range if safety_sdf_y_range is not None else DEFAULT_SDF_Y_RANGE
+        )
+        self.safety_sdf_resolution = float(safety_sdf_resolution)
+        if (
+            self.use_explicit_safety_loss
+            and self.lambda_route > 0.0
+            and not self.use_hdmap_vector
+        ):
+            raise ValueError("lambda_route > 0 requires use_hdmap_vector=True")
         # 前视图像 ResNet encoder（默认关闭，零影响；实验用）。图像从 agent_input.cameras
         # 当前帧取，不依赖 Scene，故不改 requires_scene。开启需全链路（缓存/IL/RL/eval）一致，
         # 并重跑 hidden-state 缓存补出 front_image_feature_*.gz（VLM 不重算）。
@@ -294,6 +342,17 @@ class ReCogDriveAgent(AbstractAgent):
         cfg.vlm_size = self.vlm_size
         cfg.vlm_ablation = self.vlm_ablation
         cfg.use_vlm = self.use_vlm
+        cfg.use_explicit_safety_loss = self.use_explicit_safety_loss
+        cfg.lambda_collision = self.lambda_collision
+        cfg.lambda_offroad = self.lambda_offroad
+        cfg.lambda_route = self.lambda_route
+        cfg.collision_margin = self.collision_margin
+        cfg.offroad_margin = self.offroad_margin
+        cfg.route_lateral_margin = self.route_lateral_margin
+        cfg.route_heading_weight = self.route_heading_weight
+        cfg.safety_smooth_beta = self.safety_smooth_beta
+        cfg.safety_snr_weighting = self.safety_snr_weighting
+        cfg.route_loss_batch_chunk_size = self.route_loss_batch_chunk_size
 
         if self.grpo:
             cfg.grpo_cfg.metric_cache_path = self.metric_cache_path
@@ -325,7 +384,21 @@ class ReCogDriveAgent(AbstractAgent):
         return SensorConfig.build_all_sensors(include=[0, 1, 2, 3])
 
     def get_target_builders(self) -> List[AbstractTargetBuilder]:
-        return [TrajectoryTargetBuilder(trajectory_sampling=self._trajectory_sampling)]  # 声明训练时要算哪些"目标"，这里只做轨迹预测
+        builders: List[AbstractTargetBuilder] = [
+            TrajectoryTargetBuilder(trajectory_sampling=self._trajectory_sampling)
+        ]
+        if self.use_explicit_safety_loss:
+            builders.append(
+                ReCogDriveSafetyTargetBuilder(
+                    trajectory_sampling=self._trajectory_sampling,
+                    max_future_objects=self.max_future_objects,
+                    sdf_x_range=self.safety_sdf_x_range,
+                    sdf_y_range=self.safety_sdf_y_range,
+                    sdf_resolution=self.safety_sdf_resolution,
+                    map_radius=self.hdmap_radius,
+                )
+            )
+        return builders
 
     def get_feature_builders(self) -> List[AbstractFeatureBuilder]:     # 声明怎么从原始数据变成模型输入
         builders: List[AbstractFeatureBuilder] = []
@@ -408,6 +481,25 @@ class ReCogDriveAgent(AbstractAgent):
                 if key in features:
                     action_data[key] = features[key].bool()
         return BatchFeature(data=action_data)
+
+    def _build_safety_targets(
+        self, targets: Optional[Dict[str, torch.Tensor]]
+    ) -> Optional[BatchFeature]:
+        if not self.use_explicit_safety_loss:
+            return None
+        if targets is None:
+            raise ValueError("Explicit safety loss requires training targets")
+        missing = [key for key in SAFETY_TARGET_KEYS if key not in targets]
+        if missing:
+            raise KeyError(f"Missing cached explicit safety targets: {missing}")
+        device = next(self.action_head.parameters()).device
+        return BatchFeature(
+            data={
+                key: targets[key].to(device=device, non_blocking=True)
+                for key in SAFETY_TARGET_KEYS
+            }
+        )
+
     # 从 features 拿到或算出 VLM 的 first/last hidden states，拼好 action inputs，交给 Diffusion Planner 做轨迹预测。
     def forward(self, features: Dict[str, torch.Tensor], targets=None, tokens_list=None) -> Dict[str, torch.Tensor]:
         for key, tensor in features.items():
@@ -510,14 +602,21 @@ class ReCogDriveAgent(AbstractAgent):
                 "front_image_valid": features["front_image_valid"].bool(),
             }
 
-        if self.training and not self.grpo:    # Planner.forward 训练
-            action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
-            # 合并 obj_data 到 action_inputs
+        if targets is not None and not self.grpo:  # IL train/validation objective
+            action_inputs = self._build_action_inputs(
+                features, status_feature, model_dtype, targets["trajectory"]
+            )
             if obj_data:
                 action_inputs.data.update(obj_data)
             if img_data:
                 action_inputs.data.update(img_data)
-            return self.action_head(first_hidden_state, last_hidden_state, action_inputs)
+            safety_targets = self._build_safety_targets(targets)
+            return self.action_head(
+                first_hidden_state,
+                last_hidden_state,
+                action_inputs,
+                safety_targets=safety_targets,
+            )
         elif self.training and self.grpo: # GRPO 训练
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype, targets["trajectory"])
             # 合并 obj_data 到 action_inputs
@@ -672,10 +771,11 @@ class ReCogDriveAgent(AbstractAgent):
     def compute_loss(self, features: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor], predictions: Dict[str, torch.Tensor]) -> torch.Tensor:
         if self.training and self.grpo:
             return predictions
-        elif self.training:
+        if "loss" in predictions:
             return predictions.loss
-        else:
-            return torch.nn.functional.l1_loss(predictions["pred_traj"], targets["trajectory"])
+        return torch.nn.functional.l1_loss(
+            predictions["pred_traj"], targets["trajectory"]
+        )
 
     def get_optimizers(self) -> Union[Optimizer, Dict[str, LRScheduler]]:
         optimizer_cfg = DictConfig(dict(type="AdamW", lr=self._lr, weight_decay=1e-4, betas=(0.9, 0.95)))
@@ -743,6 +843,17 @@ def make_recogdrive_config(
     ego_status_encoder_type: str = 'mlp',
     ego_state_dropout: float = 0.75,
     ego_num_command_states: int = 4,
+    use_explicit_safety_loss: bool = False,
+    lambda_collision: float = 0.1,
+    lambda_offroad: float = 0.05,
+    lambda_route: float = 0.02,
+    collision_margin: float = 0.5,
+    offroad_margin: float = 0.5,
+    route_lateral_margin: float = 1.5,
+    route_heading_weight: float = 0.5,
+    safety_smooth_beta: float = 10.0,
+    safety_snr_weighting: bool = True,
+    route_loss_batch_chunk_size: int = 128,
     use_image_encoder: bool = False,
     image_encoder_arch: str = "resnet34",
     image_encoder_pretrained: bool = True,
@@ -816,6 +927,17 @@ def make_recogdrive_config(
         ego_status_encoder_type=ego_status_encoder_type,
         ego_state_dropout=ego_state_dropout,
         ego_num_command_states=ego_num_command_states,
+        use_explicit_safety_loss=use_explicit_safety_loss,
+        lambda_collision=lambda_collision,
+        lambda_offroad=lambda_offroad,
+        lambda_route=lambda_route,
+        collision_margin=collision_margin,
+        offroad_margin=offroad_margin,
+        route_lateral_margin=route_lateral_margin,
+        route_heading_weight=route_heading_weight,
+        safety_smooth_beta=safety_smooth_beta,
+        safety_snr_weighting=safety_snr_weighting,
+        route_loss_batch_chunk_size=route_loss_batch_chunk_size,
         use_image_encoder=use_image_encoder,
         image_encoder_arch=image_encoder_arch,
         image_encoder_pretrained=image_encoder_pretrained,

@@ -41,7 +41,7 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 export SAVE_MODEL_IO="${SAVE_MODEL_IO:-false}"
 
 # --- badcase 评测模式开关（默认关闭）。开启后仅评测指定 token 列表中的样本。---
-export BADCASE_MODE="${BADCASE_MODE:-false}"
+export BADCASE_MODE="${BADCASE_MODE:-true}"
 export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/0312_0319_10case.txt}"
 
 # --- GT 进度参考开关（默认开启）。模型始终推理，仅用 GT 归一化模型轨迹的 EP。---
@@ -49,12 +49,12 @@ export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_confi
 export USE_GT_PROGRESS_REFERENCE="${USE_GT_PROGRESS_REFERENCE:-${USE_GT_TRAJECTORY:-true}}"
 
 # --- 变道场景中心线收敛满分模式（默认开启）。按场景 CSV 的 scene_merge=lane_change 识别。---
-export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-false}"
+export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-true}"
 SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_logs/val_scenario_type_token_map.csv}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_RL/2026.08.06.08.00.28/lightning_logs/version_0/checkpoints/epoch=19-step=320.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
@@ -121,7 +121,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name="${EXPERIMENT_NAME:-v3_alldata_traffic_light_Pretrain_lowBS${VLM_TAG}_IL_badcase_eval}" \
+  experiment_name="${EXPERIMENT_NAME:-v2_alldata_traffic_light${VLM_TAG}_RL_badcase_eval}" \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

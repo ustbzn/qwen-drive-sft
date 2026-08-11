@@ -55,6 +55,12 @@ from .blocks.encoder import (
 from .recogdrive_dit import LightningDiT
 from .hdmap_vector_features import HDMAP_VECTOR_BATCH_KEYS
 from .hdmap_vector_encoder import MapEncoder
+from .safety_loss import (
+    collision_clearance_loss,
+    drivable_sdf_loss,
+    route_alignment_loss,
+)
+from .safety_targets import SAFETY_TARGET_KEYS
 
 
 class ObjectEncoder(nn.Module):
@@ -494,6 +500,23 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     image_grid_w: int = 16                 # 网格宽；token 数 = grid_h*grid_w（默认 128）
     image_token_dropout: float = 0.0       # 训练期图像 token 随机丢弃概率（GRPO 时强制 eval 关闭）
 
+    # --- 显式安全损失（默认关闭，保持旧训练行为）---
+    use_explicit_safety_loss: bool = False
+    lambda_collision: float = 0.1
+    lambda_offroad: float = 0.05
+    lambda_route: float = 0.02
+    collision_margin: float = 0.5
+    offroad_margin: float = 0.5
+    route_lateral_margin: float = 1.5
+    route_heading_weight: float = 0.5
+    safety_smooth_beta: float = 10.0
+    safety_snr_weighting: bool = True
+    route_loss_batch_chunk_size: int = 128
+    # Mogo 轨迹 pose 位于后轴中心；碰撞和越界 box 必须换算到几何中心。
+    ego_front_length: float = 4.868
+    ego_rear_length: float = 1.127
+    ego_width: float = 2.100
+
     tune_projector: bool = True
     tune_diffusion_model: bool = True
     
@@ -509,7 +532,16 @@ class ReCogDriveDiffusionPlanner(nn.Module):
     def __init__(self, config: ReCogDriveDiffusionPlannerConfig):
         super().__init__()
         self.config = config
-        
+        if (
+            min(config.lambda_collision, config.lambda_offroad, config.lambda_route)
+            < 0.0
+        ):
+            raise ValueError("Safety loss weights must be non-negative")
+        if config.safety_smooth_beta <= 0.0:
+            raise ValueError("safety_smooth_beta must be positive")
+        if config.route_loss_batch_chunk_size <= 0:
+            raise ValueError("route_loss_batch_chunk_size must be positive")
+
         self.model = LightningDiT(**config.diffusion_model_cfg)
 
         if config.ego_status_encoder_type == 'attention':
@@ -1248,41 +1280,30 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             model_log_variance = torch.log(sigma**2 + 1e-20)
 
         return model_mean, model_log_variance, x_recon
-    # 只做扩散训练，输入是 VLM hidden states + conditioning；内部只做编码、加噪、DiT 预测、算 loss，不处理图像、不跑 VLM。
+    # 只做扩散训练，输入是 VLM hidden states + conditioning；安全监督单独传入。
     def forward(
         self,
-        first_hidden_state: torch.Tensor,
-        last_hidden_state: torch.Tensor,
+        first_hidden_state: Optional[torch.Tensor],
+        last_hidden_state: Optional[torch.Tensor],
         action_input: BatchFeature,
+        safety_targets: Optional[BatchFeature] = None,
     ) -> BatchFeature:
-        """
-        Computes the training loss for a given batch.
-
-        Args:
-            first_hidden_state (torch.Tensor): Early vision-language hidden states from the backbone.
-            last_hidden_state (torch.Tensor): Final vision-language hidden states from the backbone.
-            action_input (BatchFeature): A batch containing ground truth actions and other conditioning.
-
-        Returns:
-            BatchFeature: A batch containing the computed loss.
-        """
-
+        """Compute diffusion and optional explicit safety losses."""
         vl_summary_tokens, vl_context_tokens, ctx_mask = self.build_context_tokens(
             first_hidden_state, last_hidden_state, action_input
         )
         ego_status_features = self.ego_status_encoder(action_input.status_feature)
-
         gt_actions = self.norm_odo(action_input.action)
 
-        if self.config.sampling_method == 'flow':
+        if self.config.sampling_method == "flow":
             noise = torch.randn_like(gt_actions)
-            t_cont = self.sample_time(gt_actions.shape[0], device=gt_actions.device, dtype=gt_actions.dtype)
+            t_cont = self.sample_time(
+                gt_actions.shape[0], device=gt_actions.device, dtype=gt_actions.dtype
+            )
             t_cont_reshaped = t_cont[:, None, None]
-
             noisy_actions = (1 - t_cont_reshaped) * noise + t_cont_reshaped * gt_actions
             velocity_target = gt_actions - noise
             t_discrete = (t_cont * self.num_timestep_buckets).long()
-
             pred_velocity = self._predict_flow(
                 noisy_actions,
                 t_discrete,
@@ -1291,23 +1312,27 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 ego_status_features,
                 context_key_padding_mask=ctx_mask,
             )
-            loss = F.mse_loss(pred_velocity, velocity_target, reduction='mean')
-        else: 
+            diffusion_loss = F.mse_loss(pred_velocity, velocity_target, reduction="mean")
+            x0_hat = noisy_actions + (1.0 - t_cont_reshaped) * pred_velocity
+            safety_sample_weight = t_cont.square()
+        else:
             noise = torch.randn_like(gt_actions)
-            t_discrete = self.sample_time(gt_actions.shape[0], device=gt_actions.device, dtype=gt_actions.dtype)
-            
-            noisy_actions = (
-                self.extract(self.ddpm_sqrt_alphas_cumprod, t_discrete, gt_actions.shape) * gt_actions +
-                self.extract(self.ddpm_sqrt_one_minus_alphas_cumprod, t_discrete, gt_actions.shape) * noise
+            t_discrete = self.sample_time(
+                gt_actions.shape[0], device=gt_actions.device, dtype=gt_actions.dtype
             )
-            
+            sqrt_alpha = self.extract(
+                self.ddpm_sqrt_alphas_cumprod, t_discrete, gt_actions.shape
+            )
+            sqrt_one_minus_alpha = self.extract(
+                self.ddpm_sqrt_one_minus_alphas_cumprod, t_discrete, gt_actions.shape
+            )
+            noisy_actions = sqrt_alpha * gt_actions + sqrt_one_minus_alpha * noise
+
             action_features = self.action_encoder(noisy_actions, t_discrete)
-            if hasattr(self, 'position_embedding'):
+            if hasattr(self, "position_embedding"):
                 pos_ids = torch.arange(action_features.shape[1], device=gt_actions.device)
                 action_features += self.position_embedding(pos_ids)
-            
             action_latents = self.build_action_latents(vl_summary_tokens, action_features)
-            
             model_output = self.model(
                 action_latents=action_latents,
                 context_tokens=vl_context_tokens,
@@ -1316,9 +1341,46 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                 context_key_padding_mask=ctx_mask,
             )
             pred_noise = self.action_decoder(model_output)
-            loss = F.mse_loss(pred_noise, noise, reduction='mean')
+            diffusion_loss = F.mse_loss(pred_noise, noise, reduction="mean")
+            # epsilon parameterization: reconstruct normalized clean trajectory.
+            x0_hat = (noisy_actions - sqrt_one_minus_alpha * pred_noise) / sqrt_alpha
+            safety_sample_weight = sqrt_alpha.square().reshape(gt_actions.shape[0])
 
-        return BatchFeature(data={"loss": loss})
+        if not self.config.safety_snr_weighting:
+            safety_sample_weight = torch.ones_like(safety_sample_weight)
+
+        zero = diffusion_loss.new_zeros(())
+        auxiliary_losses = {
+            "collision_loss": zero,
+            "offroad_loss": zero,
+            "route_loss": zero,
+        }
+        if self.config.use_explicit_safety_loss:
+            if safety_targets is None:
+                raise ValueError(
+                    "Explicit safety loss requires a separate safety_targets batch"
+                )
+            missing = [key for key in SAFETY_TARGET_KEYS if key not in safety_targets]
+            if missing:
+                raise KeyError(f"Missing explicit safety target keys: {missing}")
+            x0_phys = self.denorm_odo(x0_hat)
+            auxiliary_losses = self._compute_auxiliary_losses(
+                x0_phys, action_input, safety_targets, safety_sample_weight
+            )
+
+        total_loss = (
+            diffusion_loss
+            + self.config.lambda_collision * auxiliary_losses["collision_loss"]
+            + self.config.lambda_offroad * auxiliary_losses["offroad_loss"]
+            + self.config.lambda_route * auxiliary_losses["route_loss"]
+        )
+        return BatchFeature(
+            data={
+                "loss": total_loss,
+                "diffusion_loss": diffusion_loss,
+                **auxiliary_losses,
+            }
+        )
 
     def get_action(
         self,
@@ -1886,6 +1948,81 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             "logprob_clamp_hit_rate": logprob_clamp_hit_rate,
             "flow_std": flow_std,
         })
+
+    # ------------------------------------------------------------------ #
+    # Explicit safety losses: future OBB, drivable SDF, and route alignment.
+    # ------------------------------------------------------------------ #
+
+    def _compute_auxiliary_losses(
+        self,
+        pred_traj_phys: torch.Tensor,
+        action_input: BatchFeature,
+        safety_targets: BatchFeature,
+        sample_weight: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        zero = pred_traj_phys.sum() * 0.0
+        losses = {
+            "collision_loss": zero,
+            "offroad_loss": zero,
+            "route_loss": zero,
+        }
+
+        if self.config.lambda_collision > 0.0:
+            losses["collision_loss"] = collision_clearance_loss(
+                pred_traj_phys,
+                safety_targets.future_obj_boxes,
+                safety_targets.future_obj_valid_mask,
+                front_length=self.config.ego_front_length,
+                rear_length=self.config.ego_rear_length,
+                ego_width=self.config.ego_width,
+                safety_margin=self.config.collision_margin,
+                smooth_beta=self.config.safety_smooth_beta,
+                sample_weight=sample_weight,
+            )
+
+        if self.config.lambda_offroad > 0.0:
+            losses["offroad_loss"] = drivable_sdf_loss(
+                pred_traj_phys,
+                safety_targets.drivable_sdf,
+                safety_targets.drivable_sdf_origin,
+                safety_targets.drivable_sdf_resolution,
+                safety_targets.drivable_sdf_valid,
+                front_length=self.config.ego_front_length,
+                rear_length=self.config.ego_rear_length,
+                ego_width=self.config.ego_width,
+                safety_margin=self.config.offroad_margin,
+                smooth_beta=self.config.safety_smooth_beta,
+                sample_weight=sample_weight,
+            )
+
+        if self.config.lambda_route > 0.0:
+            required_map_keys = (
+                "map_point_position",
+                "map_point_vector",
+                "map_polygon_type",
+                "map_polygon_on_route",
+                "map_point_valid_mask",
+                "map_valid_mask",
+            )
+            missing = [key for key in required_map_keys if key not in action_input]
+            if missing:
+                raise KeyError(f"Route safety loss requires HDMap keys: {missing}")
+            losses["route_loss"] = route_alignment_loss(
+                pred_traj_phys,
+                action_input.map_point_position,
+                action_input.map_point_vector,
+                action_input.map_polygon_type,
+                action_input.map_polygon_on_route,
+                action_input.map_point_valid_mask,
+                action_input.map_valid_mask,
+                lateral_margin=self.config.route_lateral_margin,
+                heading_weight=self.config.route_heading_weight,
+                smooth_beta=self.config.safety_smooth_beta,
+                sample_weight=sample_weight,
+                batch_chunk_size=self.config.route_loss_batch_chunk_size,
+            )
+
+        return losses
 
     def norm_odo(self, trajectory: torch.Tensor) -> torch.Tensor:
         """Normalizes trajectory coordinates and heading to the range [-1, 1]."""

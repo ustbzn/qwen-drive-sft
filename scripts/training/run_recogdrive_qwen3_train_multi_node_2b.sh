@@ -11,7 +11,7 @@ TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 # 自动派生 CACHE_PATHS、LOG_SPLIT(=manifest 文件名 stem)、NAVSIM_EXP_ROOT(=顶层 train_exp_root)。
 # 覆盖：MOGO_MANIFEST=<其他 manifest> 换数据集；MOGO_MANIFEST= （置空）回到单城市旧行为；
 # MOGO_NAMES="a,b" 只跑子集；显式传 CACHE_PATHS/LOG_SPLIT/NAVSIM_EXP_ROOT 亦优先。
-MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml}"
+MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/traffic_light.yaml}"
 LOG_SPLIT="${LOG_SPLIT:-}"
 if [ -n "${MOGO_MANIFEST:-}" ]; then
   MOGO_PATHS_HELPER="${REPO_ROOT}/scripts/cache_dataset/mogo_manifest_paths.py"
@@ -57,7 +57,7 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
-BATCH_SIZE="${BATCH_SIZE:-512}" #2400
+BATCH_SIZE="${BATCH_SIZE:-2400}" #2400
 MAX_EPOCHS="${MAX_EPOCHS:-20}"
 # PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-}"
 PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_IL/2026.07.29.10.01.45/lightning_logs/version_0/checkpoints/epoch=69-step=9940.ckpt}"
@@ -128,13 +128,19 @@ torchrun \
   agent.use_hdmap_vector=true \
   agent.use_lane_boundaries=true \
   agent.hdmap_input_norm=false \
+  agent.use_explicit_safety_loss=true \
+  agent.lambda_collision="${LAMBDA_COLLISION:-0.1}" \
+  agent.lambda_offroad="${LAMBDA_OFFROAD:-0.05}" \
+  agent.lambda_route="${LAMBDA_ROUTE:-0.02}" \
+  agent.collision_margin="${COLLISION_MARGIN:-0.5}" \
+  agent.offroad_margin="${OFFROAD_MARGIN:-0.5}" \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.75}" \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=v3_alldata_traffic_light_Pretrain_lowBS${VLM_TAG}_IL \
+  experiment_name=v3_safe_loss${VLM_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   "+log_split@_global_=${LOG_SPLIT}" \
   "${CACHE_ARGS[@]}" \

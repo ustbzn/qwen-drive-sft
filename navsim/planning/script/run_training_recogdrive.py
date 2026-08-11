@@ -48,7 +48,6 @@ def custom_collate_fn(
     high_command_one_hot = torch.stack([features['high_command_one_hot'] for features in features_list], dim=0).cpu()
     status_feature = torch.stack([features['status_feature'] for features in features_list], dim=0).cpu()
 
-    trajectory = torch.stack([targets['trajectory'] for targets in targets_list], dim=0).cpu()
 
     features = {
         'history_trajectory': history_trajectory,
@@ -88,8 +87,12 @@ def custom_collate_fn(
     # 前视图像字段（固定形状 uint8，直接 stack）。仅当缓存里带 front_image 时补（零影响保护）。
     collate_front_image_features(features, features_list)
 
+    target_keys = set(targets_list[0])
+    if any(set(sample) != target_keys for sample in targets_list[1:]):
+        raise ValueError("All samples in a batch must expose identical target keys")
     targets = {
-        'trajectory': trajectory
+        key: torch.stack([sample[key] for sample in targets_list], dim=0).cpu()
+        for key in sorted(target_keys)
     }
 
     return features, targets, tokens_list

@@ -107,6 +107,25 @@ use_lane_boundaries: true
 # planner 内 MapEncoder.forward、不改缓存；从头训练效果一致，但旧 ckpt 不可热启（首层输入
 # 尺度变了）。多城市/长训数值稳健用，须与 use_hdmap_vector=true 搭配。
 hdmap_input_norm: false
+
+# --- 显式安全损失（默认关闭，开启后需缓存 recogdrive_safety_target_v1_*.gz）---
+# future_obj_boxes / drivable_sdf 仅作为 target 进入损失，不会拼入 DiT context。
+use_explicit_safety_loss: false
+lambda_collision: 0.1
+lambda_offroad: 0.05
+lambda_route: 0.02
+collision_margin: 0.5
+offroad_margin: 0.5
+route_lateral_margin: 1.5
+route_heading_weight: 0.5
+safety_smooth_beta: 10.0
+safety_snr_weighting: true
+route_loss_batch_chunk_size: 128
+max_future_objects: 64
+safety_sdf_x_range: [-10.0, 80.0]
+safety_sdf_y_range: [-40.0, 40.0]
+safety_sdf_resolution: 0.5
+
 # --- 前视图像 ResNet encoder token（默认关闭，等价当前流程，零影响；仅实验用）---
 # 目的：vlm_ablation=zero 屏蔽 VLM 语义 token 的同时，仍通过独立可训练 ResNet 向 DiT 注入
 # 前视图像视觉信息。图像从 agent_input 当前帧 cam_f0 取，编成空间 token 拼到 vl_context_tokens

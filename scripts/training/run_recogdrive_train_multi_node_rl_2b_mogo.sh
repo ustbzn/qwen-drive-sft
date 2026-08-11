@@ -59,7 +59,7 @@ if [ -n "${METRIC_CACHE_PATHS:-}" ]; then
 fi
 # Update CHECKPOINT to the HDMap IL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_RL/2026.07.06.03.56.28/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1.1_alldata_traffic_light_novlm_IL/2026.07.24.08.56.05/lightning_logs/version_0/checkpoints/epoch=66-step=6231.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt"
 MASTER_PORT="${MASTER_PORT:-9675}"
 PORT=${PORT:-63665}
 GPUS=${GPUS:-8}
@@ -154,11 +154,11 @@ torchrun \
   trainer.params.devices="${GPUS}" \
   trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size=80 \
-  experiment_name=v1.1_alldata_traffic_light${VLM_TAG}_RL \
+  experiment_name=v3_alldata_traffic_light_Pretrain_lowBS${VLM_TAG}_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \
-  train_token_whitelist_path=navsim/local_config/data_selection/rl_grpo_merged_results_n13000_selected_tokens_v1.txt \
+  train_token_whitelist_path=navsim/local_config/data_selection/rl_grpo_merged_results_0806_n10000_obstacle80_selected_tokens_v1.txt \
   "${CACHE_ARGS[@]}" \
   use_cache_without_dataset=True \
   force_cache_computation=False \

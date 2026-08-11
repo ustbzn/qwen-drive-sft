@@ -7,7 +7,7 @@ set -euo pipefail
 # + common/train_test_split/scene_filter/all_scenes.yaml
 # + common/agent/recogdrive_agent.yaml
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/20260712}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0717-0721}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
@@ -17,17 +17,17 @@ export NAVSIM_EXP_ROOT="${NAVSIM_EXP_ROOT:-${DATA_ROOT}/exp}"
 export NAVSIM_DEVKIT_ROOT="${NAVSIM_DEVKIT_ROOT:-${REPO_ROOT}}"
 export OPENSCENE_DATA_ROOT="${OPENSCENE_DATA_ROOT:-${DATA_ROOT}/dataset}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-export USE_OBJECT_VECTOR=false
+export USE_OBJECT_VECTOR=true
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。USE_IMAGE_ENCODER=true 时
 # 本阶段额外补出 front_image_feature_v1_<view>_<H>x<W>.gz（VLM 不重算，只多写图像 .gz）。
 # 须与 IL/RL/eval 保持一致，否则 get_unique_name 对不上、CacheOnlyDataset 会报告缺失并过滤不完整样本。
 export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
-SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
-MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
+SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_zhuhai_1.4.2_20260604.sqlite}"
+MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-49}"
 MOGO_UTM_SOUTH="${MOGO_UTM_SOUTH:-false}"
-GPUS="${GPUS:-4}"
+GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9696}"
 SLIM_CACHE_ONLY="${SLIM_CACHE_ONLY:-false}"
 
@@ -89,6 +89,7 @@ torchrun \
   agent.dit_type=small \
   agent.vlm_size=small \
   agent.use_hdmap_vector="${CACHE_USE_HDMAP}" \
+  agent.use_explicit_safety_loss="${CACHE_USE_HDMAP}" \
   agent.use_lane_boundaries="${CACHE_USE_HDMAP}" \
   mogo_map.sqlite_path="${CACHE_SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
