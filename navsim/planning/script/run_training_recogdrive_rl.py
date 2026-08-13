@@ -12,7 +12,11 @@ import torch.distributed as dist
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
-from navsim.planning.training.dataset import Dataset, build_cache_only_dataset
+from navsim.planning.training.dataset import Dataset
+from navsim.planning.training.distributed_cache_dataset import (
+    build_distributed_cache_only_datasets,
+    cache_index_sync_group,
+)
 from navsim.planning.training.agent_lightning_module import AgentLightningModule, AgentLightningDiT
 from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
 from navsim.agents.recogdrive.front_image_features import collate_front_image_features
@@ -217,23 +221,15 @@ def main(cfg: DictConfig) -> None:
         assert (
             cfg.cache_path is not None or cfg.get("cache_paths", None)
         ), "cache_path or cache_paths must be provided when using cached data without building SceneLoader"
-        train_data = build_cache_only_dataset(
-            cache_path=cfg.cache_path,
-            cache_paths=cfg.get("cache_paths", None),
-            feature_builders=agent.get_feature_builders(),
-            target_builders=agent.get_target_builders(),
-            log_names=cfg.train_logs,
-            tokens=train_tokens,
-            drop_hidden_state=not getattr(agent, "use_vlm", True),
-        )
-        val_data = build_cache_only_dataset(
-            cache_path=cfg.cache_path,
-            cache_paths=cfg.get("cache_paths", None),
-            feature_builders=agent.get_feature_builders(),
-            target_builders=agent.get_target_builders(),
-            log_names=cfg.val_logs,
-            drop_hidden_state=not getattr(agent, "use_vlm", True),
-        )
+        with cache_index_sync_group(cfg, world_size) as cache_sync_group:
+            train_data, val_data = build_distributed_cache_only_datasets(
+                cfg=cfg,
+                agent=agent,
+                rank=rank,
+                world_size=world_size,
+                cache_sync_group=cache_sync_group,
+                train_tokens=train_tokens,
+            )
     else:
         logger.info("Building SceneLoader")
         train_data, val_data = build_datasets(cfg, agent, train_tokens)

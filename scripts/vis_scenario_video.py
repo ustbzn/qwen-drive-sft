@@ -20,8 +20,8 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp")
 # os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
 # os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
@@ -35,7 +35,12 @@ import matplotlib.pyplot as plt
 from hydra.utils import instantiate
 from tqdm import tqdm
 
-from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+from navsim.agents.recogdrive.recogdrive_agent import (
+    DEFAULT_IMAGE_ENCODER_ARCH,
+    DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH,
+    ReCogDriveAgent,
+)
+from navsim.agents.recogdrive.front_image_features import normalize_image_view_list
 from navsim.common.dataloader import SceneLoader
 from navsim.common.dataclasses import SceneFilter, SensorConfig
 from navsim.planning.scenario_builder.mogo_sqlite_map_adapter import (
@@ -47,8 +52,8 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt",
-    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt",
+    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_novlm_IL/2026.08.11.12.22.39/lightning_logs/version_0/checkpoints/epoch=16-step=2176.ckpt",
+    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_RL/2026.08.06.08.00.28/lightning_logs/version_0/checkpoints/epoch=19-step=320.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"
@@ -63,9 +68,13 @@ def _default_mogo_map_sqlite_path(openscene_root: Path) -> Path:
     return candidates[0]
 
 
-def _front_camera_sensor_config() -> SensorConfig:
+def _front_camera_sensor_config(image_view_list=None) -> SensorConfig:
     sensor_config = SensorConfig.build_all_sensors(include=False)
     sensor_config.cam_f0 = True
+    for image_view in normalize_image_view_list(image_view_list=image_view_list):
+        if not hasattr(sensor_config, image_view):
+            raise ValueError(f"未知 image encoder 相机字段: {image_view}")
+        setattr(sensor_config, image_view, True)
     return sensor_config
 
 
@@ -123,6 +132,16 @@ def render_frames(
     for i, token in enumerate(tqdm(tokens, desc=f"渲染帧 -> {frame_dir.name}")):
         scene = scene_loader.get_scene_from_token(token)
         scene_traj = scene_loader_traj.get_scene_from_token(token)
+        missing_views = [
+            view
+            for view in agent.image_view_list
+            if getattr(scene_traj.frames[center_idx].cameras, view).image is None
+        ] if agent.use_image_encoder else []
+        if agent.use_image_encoder and len(missing_views) == len(agent.image_view_list):
+            raise RuntimeError(
+                "Image Encoder 已启用，但 SceneLoader 没有提供任何配置视角图像: "
+                f"{missing_views}。请确认 sensor_config 与 scene_loader_traj 使用 load_image_path=True。"
+            )
         agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input(), scene_traj)
         fig, _, _ = plot_bev_and_camera_with_agent(
             scene,
@@ -170,11 +189,16 @@ def frames_to_video(frame_paths: list[Path], out_path: Path, fps: float) -> None
             raise RuntimeError(f"ffmpeg 编码失败:\n{result.stderr}")
 
 
-def resolve_log_names(anchor_tokens: list[str], scene_filter: SceneFilter, openscene_root: Path) -> dict[str, str]:
+def resolve_log_names(
+    anchor_tokens: list[str],
+    scene_filter: SceneFilter,
+    openscene_root: Path,
+    image_view_list=None,
+) -> dict[str, str]:
     scene_filter.tokens = anchor_tokens
     navsim_logs = openscene_root / "navsim_logs" / DATA_SPLIT
     sensor_blobs = openscene_root / "sensor_blobs" / DATA_SPLIT
-    sensor_config = _front_camera_sensor_config()
+    sensor_config = _front_camera_sensor_config(image_view_list)
     scene_loader = SceneLoader(navsim_logs, sensor_blobs, scene_filter, sensor_config=sensor_config)
 
     token_to_log = {}
@@ -192,13 +216,14 @@ def load_scene_loaders(
     mogo_map_sqlite_path: Path,
     mogo_map_utm_zone: int,
     mogo_map_utm_south: bool,
+    image_view_list=None,
 ) -> tuple[SceneLoader, SceneLoader]:
     scene_filter.tokens = None
     scene_filter.log_names = log_names
 
     navsim_logs = openscene_root / "navsim_logs" / DATA_SPLIT
     sensor_blobs = openscene_root / "sensor_blobs" / DATA_SPLIT
-    sensor_config = _front_camera_sensor_config()
+    sensor_config = _front_camera_sensor_config(image_view_list)
     map_api_builder = _build_mogo_map_api_builder(
         mogo_map_sqlite_path,
         scene_filter.num_history_frames,
@@ -233,7 +258,10 @@ def generate_videos_for_tokens(
     openscene_root: Path,
     mogo_map_sqlite_path: Path,
 ):
-    token_to_log = resolve_log_names(anchor_tokens, scene_filter, openscene_root)
+    image_views = normalize_image_view_list(args.image_view, args.image_view_list)
+    token_to_log = resolve_log_names(
+        anchor_tokens, scene_filter, openscene_root, image_views
+    )
     log_names = sorted(set(token_to_log.values()))
     scene_loader, scene_loader_traj = load_scene_loaders(
         log_names,
@@ -242,6 +270,7 @@ def generate_videos_for_tokens(
         mogo_map_sqlite_path,
         args.mogo_map_utm_zone,
         args.mogo_map_utm_south,
+        image_views,
     )
     log_to_tokens = build_log_token_sequences(scene_loader)
 
@@ -272,6 +301,20 @@ def generate_videos_for_tokens(
             include_static_objects=bool(args.include_static_objects),
             object_token_dropout=float(args.object_token_dropout),
             use_image_encoder=bool(args.use_image_encoder),
+            image_encoder_arch=str(args.image_encoder_arch),
+            image_encoder_pretrained=bool(args.image_encoder_pretrained),
+            image_encoder_pretrained_path=(
+                str(args.image_encoder_pretrained_path)
+                if args.image_encoder_pretrained_path
+                else None
+            ),
+            image_height=int(args.image_height),
+            image_width=int(args.image_width),
+            image_grid_h=int(args.image_grid_h),
+            image_grid_w=int(args.image_grid_w),
+            image_token_dropout=float(args.image_token_dropout),
+            image_view=args.image_view,
+            image_view_list=args.image_view_list,
         )
         agent.initialize()
 
@@ -323,6 +366,29 @@ def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--use-lane-boundaries", action=argparse.BooleanOptionalAction, default=True)
     # 前视图像 ResNet encoder token
     group.add_argument("--use-image-encoder", action=argparse.BooleanOptionalAction, default=False)
+    group.add_argument("--image-encoder-arch", default=DEFAULT_IMAGE_ENCODER_ARCH)
+    group.add_argument(
+        "--image-encoder-pretrained",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="无本地权重路径时是否允许 timm 使用预训练权重",
+    )
+    group.add_argument(
+        "--image-encoder-pretrained-path",
+        default=DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH,
+        help="本地 ResNet 权重路径；非空时优先加载该文件",
+    )
+    group.add_argument("--image-height", type=int, default=256)
+    group.add_argument("--image-width", type=int, default=704)
+    group.add_argument("--image-grid-h", type=int, default=8)
+    group.add_argument("--image-grid-w", type=int, default=16)
+    group.add_argument("--image-token-dropout", type=float, default=0.1)
+    group.add_argument("--image-view-list", nargs="+", default=["cam_f0"])
+    group.add_argument(
+        "--image-view",
+        default=None,
+        help="旧版单视角参数；显式设置时优先于 --image-view-list",
+    )
 
 
 def main():
@@ -342,6 +408,19 @@ def main():
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
     _add_model_arch_args(parser)
     args = parser.parse_args()
+
+    if args.use_image_encoder:
+        if args.image_height <= 0 or args.image_width <= 0:
+            parser.error("--image-height/--image-width 必须大于 0")
+        if args.image_grid_h <= 0 or args.image_grid_w <= 0:
+            parser.error("--image-grid-h/--image-grid-w 必须大于 0")
+        if not 0.0 <= args.image_token_dropout < 1.0:
+            parser.error("--image-token-dropout 必须在 [0, 1) 范围内")
+        if args.image_encoder_pretrained_path and not Path(args.image_encoder_pretrained_path).is_file():
+            parser.error(
+                "--image-encoder-pretrained-path 不存在: "
+                f"{args.image_encoder_pretrained_path}"
+            )
 
     if args.gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)

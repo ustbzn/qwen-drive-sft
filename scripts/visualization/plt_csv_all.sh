@@ -3,40 +3,52 @@ export SHANGHAI_NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/wo
 export SHANGHAI_NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp"
 export SHANGHAI_OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset"
 export NAVSIM_DEVKIT_ROOT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive"
-export BEIJING_NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset/maps"
-export BEIJING_NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp"
-export BEIJING_OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset"
+export BEIJING_NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset/maps"
+export BEIJING_NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp"
+export BEIJING_OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset"
 export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 
 # ===== 单进程 / 单卡版本（默认启用）=====
 # 用单进程就保留这一段，注释掉下面的多卡版本。
 # /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/2603_ego_SDE_obj_hdmap_novlm_IL_worldsim_eval/2026.07.16.03.41.18/2026.07.16.03.44.30.csv
-python -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL_badcase_eval/2026.08.05.06.47.42/2026.08.05.06.49.32.csv" \
-  --out "vis_output/eval/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL_badcase" \
-  --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt" \
-  --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
-  --no-use_vlm \
-  --vlm_type qwen3 \
-  --openscene_data_root "$BEIJING_OPENSCENE_DATA_ROOT" \
-  --split val \
-  --scene_filter mogo_10hz \
-  --debug_failures \
-  --metric_cache_path "$BEIJING_NAVSIM_EXP_ROOT/metric_cache_mogo_v1" \
-  --mogo_map_sqlite_path "$BEIJING_OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite" \
-  --mogo_map_utm_zone 50 \
-  --vl_hidden_dim 2048 \
-  --ego_status_encoder_type attention \
-  --use_object_vector \
-  --object_encoder_type temporal \
-  --use_hdmap_vector \
-  --use_lane_boundaries \
+# python -m navsim.planning.script.plt_vis_from_csv_all \
+#   --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp/v3_imgencoder_novlm_IL_badcase_eval/2026.08.12.03.30.00/2026.08.12.03.31.03.csv" \
+#   --out "vis_output/eval/v3_imgencoder_novlm_IL_badcase_new" \
+#   --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_novlm_IL/2026.08.11.12.22.39/lightning_logs/version_0/checkpoints/epoch=16-step=2176.ckpt" \
+#   --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
+#   --no-use_vlm \
+#   --vlm_type qwen3 \
+#   --openscene_data_root "$BEIJING_OPENSCENE_DATA_ROOT" \
+#   --split val \
+#   --scene_filter mogo_10hz \
+#   --debug_failures \
+#   --metric_cache_path "$BEIJING_NAVSIM_EXP_ROOT/metric_cache_mogo_v1" \
+#   --mogo_map_sqlite_path "$BEIJING_OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite" \
+#   --mogo_map_utm_zone 50 \
+#   --vl_hidden_dim 2048 \
+#   --ego_status_encoder_type attention \
+#   --use_object_vector \
+#   --object_encoder_type temporal \
+#   --use_hdmap_vector \
+#   --use_lane_boundaries \
+#   --include_static_objects \
+#   --use_image_encoder \
+#   --image_encoder_arch resnet101 \
+#   --no-image_encoder_pretrained \
+#   --image_encoder_pretrained_path "" \
+#   --image_height 256 \
+#   --image_width 704 \
+#   --image_grid_h 8 \
+#   --image_grid_w 16 \
+#   --image_token_dropout 0.1 \
+#   --image_view_list cam_f0
+  # CSV 若含 trajectory_path，将直接绘制已保存轨迹；缺失时才重新调用 Image Encoder 推理。
   # --token 00016f8b45c25a1d
 
 python -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL_worldsim_eval/2026.08.06.06.11.03/2026.08.06.06.11.27.csv" \
-  --out "vis_output/eval/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL_shworldsim" \
-  --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt" \
+  --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/v3_imgencoder_novlm_IL_worldsim_eval/2026.08.12.11.44.17/2026.08.12.11.44.42.csv" \
+  --out "vis_output/eval/v3_imgencoder_novlm_IL_worldsim" \
+  --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_novlm_IL/2026.08.11.12.22.39/lightning_logs/version_0/checkpoints/epoch=16-step=2176.ckpt" \
   --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
   --no-use_vlm \
   --vlm_type qwen3 \
@@ -53,6 +65,17 @@ python -m navsim.planning.script.plt_vis_from_csv_all \
   --object_encoder_type temporal \
   --use_hdmap_vector \
   --use_lane_boundaries \
+  --include_static_objects \
+  --use_image_encoder \
+  --image_encoder_arch resnet101 \
+  --no-image_encoder_pretrained \
+  --image_encoder_pretrained_path "" \
+  --image_height 256 \
+  --image_width 704 \
+  --image_grid_h 8 \
+  --image_grid_w 16 \
+  --image_token_dropout 0.1 \
+  --image_view_list cam_f0
 
 # python -m navsim.planning.script.plt_vis_from_csv_all \
 #   --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL_worldsim_eval/2026.08.06.06.11.03/2026.08.06.06.11.27.csv" \
@@ -89,18 +112,19 @@ python -m navsim.planning.script.plt_vis_from_csv_all \
 # GPUS=8
 # torchrun --nproc_per_node=${GPUS} --master_port=9696 \
 #   -m navsim.planning.script.plt_vis_from_csv_all \
-#   --csv "/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive/all_exp/worldsim/shanghai/exp/v1_alldata_SDE_obj_hdmap_novlm_IL_worldsim_eval/2026.07.20.06.44.56/2026.07.20.06.46.08.csv" \
-#   --out "vis_output/eval/v1_alldata_SDE_obj_hdmap_novlm_IL_shworldsim" \
-#   --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v1_alldata_SDE_obj_hdmap_novlm_IL/2026.07.17.08.02.41/lightning_logs/version_0/checkpoints/epoch=84-step=2635.ckpt" \
+#   --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp/v2_alldata_traffic_light_novlm_RL_eval/2026.08.11.03.32.31/2026.08.11.03.47.55.csv" \
+#   --out "vis_output/eval/v2_alldata_traffic_light_novlm_RL" \
+#   --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_RL/2026.08.06.08.00.28/lightning_logs/version_0/checkpoints/epoch=19-step=320.ckpt" \
 #   --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
+#   --no-use_vlm \
 #   --vlm_type qwen3 \
-#   --openscene_data_root "$OPENSCENE_DATA_ROOT" \
-#   --split trainval \
+#   --openscene_data_root "$BEIJING_OPENSCENE_DATA_ROOT" \
+#   --split val \
 #   --scene_filter mogo_10hz \
 #   --debug_failures \
-#   --metric_cache_path "$NAVSIM_EXP_ROOT/metric_cache_mogo_v1" \
-#   --mogo_map_sqlite_path "$OPENSCENE_DATA_ROOT/maps/hm_shanghai_1.9.1_20260522.sqlite" \
-#   --mogo_map_utm_zone 51 \
+#   --metric_cache_path "$BEIJING_NAVSIM_EXP_ROOT/metric_cache_mogo_v1" \
+#   --mogo_map_sqlite_path "$BEIJING_OPENSCENE_DATA_ROOT/maps/hm_beijing_3.4.9_20260521.sqlite" \
+#   --mogo_map_utm_zone 50 \
 #   --vl_hidden_dim 2048 \
 #   --ego_status_encoder_type attention \
 #   --use_object_vector \

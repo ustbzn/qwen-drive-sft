@@ -22,6 +22,11 @@ from typing import Any, Dict, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_IMAGE_ENCODER_ARCH = "resnet101"
+DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH = (
+    "/pcpt/pcpt/project/jiangjunyuan/code/VLA/resnet101-cd907fc2.pth"
+)
+
 import numpy as np
 import torch
 from timm.models.layers import Mlp
@@ -113,15 +118,19 @@ class ObjectEncoder(nn.Module):
 
 
 class ImageEncoder(nn.Module):
-    """前视图像 ResNet 编码器（实验用，use_image_encoder）。
+    """单/多视角图像共享的 ResNet 编码器（实验用，use_image_encoder）。
 
-    把当前帧前视图编成一组空间 context token，与 VLM / obj / hdmap token 并列进 DiT
+    把当前帧相机图像编成空间 context token，与 VLM / obj / hdmap token 并列进 DiT
     cross-attention。用于在 vlm_ablation=zero（屏蔽 VLM 语义 token）时仍向规划器注入
     图像视觉信息。参考 DiffusionDriveV2 的 ResNet->flatten->pos_embed pattern。
 
-    uint8 (B,3,H,W) -> /255 -> ImageNet 标准化 -> timm ResNet features_only 末层特征图
+    uint8 (B,V,3,H,W) -> flatten B*V -> /255 -> ImageNet 标准化
+      -> timm ResNet features_only 末层特征图
       -> 1x1 conv 投到 embed_dim -> AdaptiveAvgPool2d(grid) 固定 token 数
-      -> flatten HxW -> + 可学习位置嵌入 -> LayerNorm。
+      -> flatten HxW -> + 空间/视角可学习位置嵌入 -> LayerNorm -> (B,V*N,D)。
+
+    V=1 时也接受历史 (B,3,H,W) / (B,) 输入，且不注册 view_embed 参数，保持旧模型
+    state_dict 和旧 front_image_feature_v1_*.gz 的兼容性。
 
     token 数 = grid_h*grid_w，与输入分辨率解耦（adaptive pool），故位置嵌入尺寸固定。
     有效位（front_image_valid=False，缺图占位）对应样本的全部 token 被 mask 置零并在
@@ -139,28 +148,38 @@ class ImageEncoder(nn.Module):
     def __init__(
         self,
         embed_dim: int,
-        arch: str = "resnet34",
-        pretrained: bool = True,
+        arch: str = DEFAULT_IMAGE_ENCODER_ARCH,
+        pretrained: bool = False,
+        pretrained_path: Optional[str] = DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH,
         grid_h: int = 8,
         grid_w: int = 16,
         dropout: float = 0.0,
+        num_views: int = 1,
     ):
         super().__init__()
         import timm
 
-        # features_only 取各 stage 特征图，out_indices=末层。预训练下载失败（无网络）时
-        # 退化到随机初始化（features_only 仍可用），避免整个流程崩，仅打印告警。
-        try:
-            self.backbone = timm.create_model(
-                arch, pretrained=pretrained, features_only=True
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "ImageEncoder: timm.create_model(%s, pretrained=%s) failed (%s); "
-                "falling back to pretrained=False (random init).",
-                arch, pretrained, e,
-            )
+        self.num_views = int(num_views)
+        if self.num_views <= 0:
+            raise ValueError("ImageEncoder num_views must be positive")
+
+        if pretrained_path:
+            # 本地权重优先：创建无预训练主干，避免 timm 触发网络下载。
             self.backbone = timm.create_model(arch, pretrained=False, features_only=True)
+            self._load_local_pretrained_weights(Path(pretrained_path).expanduser())
+        else:
+            # 未配置本地文件时保留历史 timm 行为。
+            try:
+                self.backbone = timm.create_model(
+                    arch, pretrained=pretrained, features_only=True
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "ImageEncoder: timm.create_model(%s, pretrained=%s) failed (%s); "
+                    "falling back to pretrained=False (random init).",
+                    arch, pretrained, e,
+                )
+                self.backbone = timm.create_model(arch, pretrained=False, features_only=True)
 
         feat_ch = int(self.backbone.feature_info.channels()[-1])
         self.proj = nn.Conv2d(feat_ch, embed_dim, kernel_size=1)
@@ -168,6 +187,12 @@ class ImageEncoder(nn.Module):
         self.num_tokens = int(grid_h) * int(grid_w)
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_tokens, embed_dim))
         nn.init.normal_(self.pos_embed, std=0.02)
+        if self.num_views > 1:
+            self.view_embed = nn.Parameter(torch.zeros(1, self.num_views, 1, embed_dim))
+            nn.init.normal_(self.view_embed, std=0.02)
+        else:
+            # None 不进入 state_dict，单视角 checkpoint 的参数集合保持不变。
+            self.view_embed = None
         self.output_norm = nn.LayerNorm(embed_dim)
         self.token_dropout = float(dropout)
 
@@ -178,17 +203,85 @@ class ImageEncoder(nn.Module):
             "pixel_std", torch.tensor(self._PIXEL_STD).view(1, 3, 1, 1), persistent=False
         )
 
+    def _load_local_pretrained_weights(self, pretrained_path: Path) -> None:
+        """严格加载 torchvision/timm ResNet 主干权重，仅允许多出分类头。"""
+        if not pretrained_path.is_file():
+            raise FileNotFoundError(
+                f"ImageEncoder pretrained weights not found: {pretrained_path}"
+            )
+
+        checkpoint = torch.load(pretrained_path, map_location="cpu", weights_only=True)
+        state_dict = (
+            checkpoint.get("state_dict", checkpoint)
+            if isinstance(checkpoint, dict)
+            else None
+        )
+        if not isinstance(state_dict, dict):
+            raise TypeError(
+                "ImageEncoder pretrained checkpoint must be a state_dict or contain "
+                f"state_dict: {pretrained_path}"
+            )
+
+        incompatible = self.backbone.load_state_dict(state_dict, strict=False)
+        allowed_unexpected = {
+            "fc.weight",
+            "fc.bias",
+            "classifier.weight",
+            "classifier.bias",
+        }
+        unexpected = [
+            key for key in incompatible.unexpected_keys if key not in allowed_unexpected
+        ]
+        if incompatible.missing_keys or unexpected:
+            raise RuntimeError(
+                "ImageEncoder local pretrained weights do not match "
+                f"arch={self.backbone.__class__.__name__}: "
+                f"missing={incompatible.missing_keys}, unexpected={unexpected}, "
+                f"path={pretrained_path}"
+            )
+
+        loaded_keys = len(state_dict) - len(incompatible.unexpected_keys)
+        logger.info(
+            "ImageEncoder loaded %d backbone tensors from %s",
+            loaded_keys,
+            pretrained_path,
+        )
+
     def forward(
         self,
         image: torch.Tensor,
         image_valid: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """:param image: [B,3,H,W] uint8 或 float；:param image_valid: [B] bool。
-        :return: (tokens [B,N,embed_dim], keep_mask [B,N] bool)，无效 / dropped token 全 0。
+        """:param image: [B,3,H,W] 或 [B,V,3,H,W] uint8/float。
+        :param image_valid: [B] 或 [B,V] bool。
+        :return: (tokens [B,V*N,D], keep_mask [B,V*N])；无效 / dropped token 全 0。
         """
-        B = image.shape[0]
+        if image.ndim == 4:
+            B, V = image.shape[0], 1
+            image = image.unsqueeze(1)
+        elif image.ndim == 5:
+            B, V = image.shape[:2]
+        else:
+            raise ValueError(
+                "ImageEncoder image must have shape [B,3,H,W] or [B,V,3,H,W], "
+                f"got {tuple(image.shape)}"
+            )
+        if V != self.num_views:
+            raise ValueError(
+                f"ImageEncoder configured for {self.num_views} views but received {V}"
+            )
+        if image.shape[2] != 3:
+            raise ValueError(f"ImageEncoder expects RGB input, got shape {tuple(image.shape)}")
+
+        if image_valid.ndim == 1 and V == 1:
+            image_valid = image_valid.unsqueeze(1)
+        if tuple(image_valid.shape) != (B, V):
+            raise ValueError(
+                f"image_valid must have shape {(B, V)}, got {tuple(image_valid.shape)}"
+            )
+
         # uint8/[0,255] -> [0,1]；已是 [0,1] float 则不重复缩放
-        x = image.float()
+        x = image.reshape(B * V, *image.shape[2:]).float()
         if x.dtype == torch.float32 and x.max() > 1.5:
             x = x / 255.0
         elif image.dtype == torch.uint8:
@@ -198,12 +291,21 @@ class ImageEncoder(nn.Module):
         feat = self.backbone(x)[-1]          # [B, C, H', W']
         feat = self.proj(feat)               # [B, embed_dim, H', W']
         feat = self.pool(feat)               # [B, embed_dim, grid_h, grid_w]
-        tokens = feat.flatten(2).transpose(1, 2)  # [B, N, embed_dim]
-        tokens = self.output_norm(tokens + self.pos_embed.to(tokens.dtype))
+        tokens = feat.flatten(2).transpose(1, 2)  # [B*V, N, embed_dim]
+        tokens = tokens + self.pos_embed.to(tokens.dtype)
+        if self.view_embed is None:
+            # 保持历史单视角计算路径与参数结构。
+            tokens = self.output_norm(tokens)
+            tokens = tokens.reshape(B, self.num_tokens, -1)
+        else:
+            tokens = tokens.reshape(B, V, self.num_tokens, -1)
+            tokens = self.output_norm(tokens + self.view_embed.to(tokens.dtype))
+            tokens = tokens.flatten(1, 2)
 
-        keep = image_valid.bool().unsqueeze(-1).expand(B, self.num_tokens)  # [B, N]
+        keep = image_valid.bool().unsqueeze(-1).expand(B, V, self.num_tokens)
+        keep = keep.reshape(B, V * self.num_tokens)
         if self.training and self.token_dropout > 0.0:
-            drop = torch.rand(B, self.num_tokens, device=tokens.device) >= self.token_dropout
+            drop = torch.rand(B, V * self.num_tokens, device=tokens.device) >= self.token_dropout
             keep = keep & drop
         tokens = tokens * keep.unsqueeze(-1).to(tokens.dtype)
         return tokens, keep
@@ -489,16 +591,19 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     sanitize_obj_diff: bool = True
     obj_diff_clamp: float = 20.0
 
-    # --- 前视图像 ResNet encoder token（默认关闭，零影响；实验用）---
-    # 开启后把当前帧前视图经 ResNet 编成空间 token，拼到 vl_context_tokens 后进 DiT
+    # --- 单/多视角图像 ResNet encoder token（默认关闭，零影响；实验用）---
+    # 开启后把当前帧图像经共享 ResNet 编成空间 token，拼到 vl_context_tokens 后进 DiT
     # cross-attention。与 vlm_ablation 正交：vlm_ablation=zero 仅置零 VLM token，图像 token
-    # 保留，从而"屏蔽 VLM 语义、保留图像视觉信息"。需重跑 hidden-state 缓存补 front_image .gz。
+    # 保留，从而"屏蔽 VLM 语义、保留图像视觉信息"。需补跑特征缓存生成 front_image .gz；
+    # 已有 hidden state 不重算。
     use_image_encoder: bool = False
-    image_encoder_arch: str = "resnet34"
-    image_encoder_pretrained: bool = True
+    image_encoder_arch: str = DEFAULT_IMAGE_ENCODER_ARCH
+    image_encoder_pretrained: bool = False
+    image_encoder_pretrained_path: Optional[str] = DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH
     image_grid_h: int = 8                  # ResNet 特征图自适应池化到的 token 网格高
     image_grid_w: int = 16                 # 网格宽；token 数 = grid_h*grid_w（默认 128）
     image_token_dropout: float = 0.0       # 训练期图像 token 随机丢弃概率（GRPO 时强制 eval 关闭）
+    num_image_views: int = 1               # 视角数；顺序由 agent.image_view_list 定义
 
     # --- 显式安全损失（默认关闭，保持旧训练行为）---
     use_explicit_safety_loss: bool = False
@@ -633,16 +738,18 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         else:
             self.object_encoder = None
 
-        # 前视图像 ResNet 编码器（实验用）。同 object_encoder，必须在下方 _init_grpo() 的
+        # 单/多视角 ResNet 编码器（实验用）。同 object_encoder，必须在下方 _init_grpo() 的
         # deepcopy(self) 之前创建，old_policy 才会带上它，GRPO rollout/logprob 才条件一致。
         if config.use_image_encoder:
             self.image_encoder = ImageEncoder(
                 embed_dim=config.input_embedding_dim,
                 arch=config.image_encoder_arch,
                 pretrained=config.image_encoder_pretrained,
+                pretrained_path=config.image_encoder_pretrained_path,
                 grid_h=config.image_grid_h,
                 grid_w=config.image_grid_w,
                 dropout=config.image_token_dropout,
+                num_views=config.num_image_views,
             )
         else:
             self.image_encoder = None
@@ -736,7 +843,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         return obj_inputs
 
     def _extract_img_inputs(self, action_input: Optional[BatchFeature]) -> Optional[Dict[str, torch.Tensor]]:
-        """从 action_input 取前视图字段；未启用图像 encoder 或字段缺失时返回 None。"""
+        """从 action_input 取图像字段；未启用图像 encoder 或字段缺失时返回 None。"""
         if self.image_encoder is None or action_input is None:
             return None
         if "front_image" not in action_input.data:
@@ -749,7 +856,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
     def encode_image_context_tokens(
         self, action_input: Optional[BatchFeature]
     ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """编码前视图 context tokens。:return: (tokens [B,N,D], keep_mask [B,N]) 或 (None, None)。"""
+        """编码图像 context tokens，返回 [B,V*N,D] token 与 [B,V*N] mask。"""
         img_inputs = self._extract_img_inputs(action_input)
         if img_inputs is None:
             return None, None
@@ -802,7 +909,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     obj_inputs["obj_valid_mask"],
                 )
 
-        # 收集前视图 context tokens（实验用）
+        # 收集单/多视角图像 context tokens（实验用）
         img_context_tokens, img_keep_mask = self.encode_image_context_tokens(action_input)
 
         # 拼接所有 context tokens 和构建 mask
@@ -882,7 +989,7 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             context_tokens_list.append(obj_context_tokens.to(dtype))
             mask_list.append(obj_inputs["obj_valid_mask"].bool().to(device=device))
 
-        # 前视图像 context tokens
+        # 单/多视角图像 context tokens
         img_context_tokens, img_keep_mask = self.encode_image_context_tokens(action_input)
         if img_context_tokens is not None:
             context_tokens_list.append(img_context_tokens.to(dtype))

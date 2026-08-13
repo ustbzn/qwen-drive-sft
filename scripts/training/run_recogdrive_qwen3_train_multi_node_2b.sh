@@ -40,7 +40,8 @@ export USE_OBJECT_VECTOR=true
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。开启需与缓存端一致，且
 # CACHE_PATH 必须已带 front_image_feature_*.gz，否则 CacheOnlyDataset 会报告缺失并过滤不完整样本。
 # 典型实验：与 agent.vlm_ablation=zero 组合 —— 屏蔽 VLM 语义、保留前视图像视觉信息。
-export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
+export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
+export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 # 自车状态编码器：mlp(默认，零影响) | attention(SDE，训练时随机遮蔽运动学量以抑制外推捷径)。
 # 与 vlm_ablation 正交(none/zero 均生效)。IL/RL/eval 必须三处一致，否则 ckpt 加载错配
 # (attention 层被 initialize() strict=False 丢成随机初始化)。
@@ -57,7 +58,7 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 GPUS="${GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-9676}"
-BATCH_SIZE="${BATCH_SIZE:-2400}" #2400
+BATCH_SIZE="${BATCH_SIZE:-80}" #2400
 MAX_EPOCHS="${MAX_EPOCHS:-20}"
 # PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-}"
 PRETRAINED_CKPT="${PRE_TRAINED_CKPT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_IL/2026.07.29.10.01.45/lightning_logs/version_0/checkpoints/epoch=69-step=9940.ckpt}"
@@ -91,16 +92,21 @@ fi
 
 # --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。开启需 CACHE_PATH 已带前视图 .gz。---
 if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+  IMAGE_VIEW_LIST_VALUE="${IMAGE_VIEW_LIST:-${IMAGE_VIEW:-cam_f0}}"
+  if [[ "${IMAGE_VIEW_LIST_VALUE}" != \[* ]]; then
+    IMAGE_VIEW_LIST_VALUE="[${IMAGE_VIEW_LIST_VALUE}]"
+  fi
   set -- \
     agent.use_image_encoder=true \
-    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}" \
-    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-true}" \
+    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet101}" \
+    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-false}" \
+    agent.image_encoder_pretrained_path="${IMAGE_ENCODER_PRETRAINED_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/resnet101-cd907fc2.pth}" \
     agent.image_height="${IMAGE_HEIGHT:-256}" \
     agent.image_width="${IMAGE_WIDTH:-704}" \
     agent.image_grid_h="${IMAGE_GRID_H:-8}" \
     agent.image_grid_w="${IMAGE_GRID_W:-16}" \
-    agent.image_token_dropout="${IMAGE_TOKEN_DROPOUT:-0.0}" \
-    agent.image_view="${IMAGE_VIEW:-cam_f0}" \
+    agent.image_token_dropout="${IMAGE_TOKEN_DROPOUT:-0.1}" \
+    agent.image_view_list="${IMAGE_VIEW_LIST_VALUE}" \
     "$@"
 fi
 
@@ -128,7 +134,7 @@ torchrun \
   agent.use_hdmap_vector=true \
   agent.use_lane_boundaries=true \
   agent.hdmap_input_norm=false \
-  agent.use_explicit_safety_loss=true \
+  agent.use_explicit_safety_loss=false \
   agent.lambda_collision="${LAMBDA_COLLISION:-0.1}" \
   agent.lambda_offroad="${LAMBDA_OFFROAD:-0.05}" \
   agent.lambda_route="${LAMBDA_ROUTE:-0.02}" \
@@ -140,7 +146,7 @@ torchrun \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=v3_safe_loss${VLM_TAG}_IL \
+  experiment_name=v3_imgencoder_4cam${VLM_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   "+log_split@_global_=${LOG_SPLIT}" \
   "${CACHE_ARGS[@]}" \

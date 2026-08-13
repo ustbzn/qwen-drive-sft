@@ -411,6 +411,20 @@ def _build_agent(model: str, args) -> video.ReCogDriveAgent:
         include_static_objects=bool(args.include_static_objects),
         object_token_dropout=float(args.object_token_dropout),
         use_image_encoder=bool(args.use_image_encoder),
+        image_encoder_arch=str(args.image_encoder_arch),
+        image_encoder_pretrained=bool(args.image_encoder_pretrained),
+        image_encoder_pretrained_path=(
+            str(args.image_encoder_pretrained_path)
+            if args.image_encoder_pretrained_path
+            else None
+        ),
+        image_height=int(args.image_height),
+        image_width=int(args.image_width),
+        image_grid_h=int(args.image_grid_h),
+        image_grid_w=int(args.image_grid_w),
+        image_token_dropout=float(args.image_token_dropout),
+        image_view=args.image_view,
+        image_view_list=args.image_view_list,
     )
     agent.initialize()
     return agent
@@ -426,7 +440,10 @@ def generate_gifs_for_tokens(
     openscene_root: Path,
     mogo_map_sqlite_path: Path,
 ) -> None:
-    token_to_log = video.resolve_log_names(anchor_tokens, scene_filter, openscene_root)
+    image_views = video.normalize_image_view_list(args.image_view, args.image_view_list)
+    token_to_log = video.resolve_log_names(
+        anchor_tokens, scene_filter, openscene_root, image_views
+    )
     log_names = sorted(set(token_to_log.values()))
     scene_loader, scene_loader_traj = video.load_scene_loaders(
         log_names,
@@ -435,6 +452,7 @@ def generate_gifs_for_tokens(
         mogo_map_sqlite_path,
         args.mogo_map_utm_zone,
         args.mogo_map_utm_south,
+        image_views,
     )
     log_to_tokens = video.build_log_token_sequences(scene_loader)
     frames_root.mkdir(parents=True, exist_ok=True)
@@ -512,7 +530,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL_badcase",
+        default="vis_output/gifs/v2_alldata_traffic_light_novlm_RL_badcase_new",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -569,22 +587,16 @@ def main() -> None:
         # "99bba5e74abb2261fa0c4a6328c1c611",
         # "f7dc542d3e1bf2c84c429f859b70ecbf",
         # val case
-        "506ef5edffa5ddd9acf8e72a9c78f86c",
-        "9fdf107997923ef7bd7207e4618b6a6b",
-        "efc7652bed3fd9c35799cc12dc5f183b",
-        "b48a61ac392670f1a2296c5ef118d58a",
-        "c545657ea85751ad9a6c35bc2515bd4e",
-        "37227caebfdda3257c46f3314816c52a",
-        "45b0c353a00f3faa12ce7d46bef5dcf6",
-        "26a0a7d4da89cd5b6175b4bb6a3dbbd7",
-        "15b734feb8f2b64e0032fafb34e91c6d",
-        "a3879c14d1c1a07f70cdb7bb5c07e9f1",
-        "1d9efa9752fff8fe4c01d170964f635f",
-        "37ad798b2faabb0e60426aef42ffcd3a",
-        "32e1c3140db74ec058c785f77193712a",
-        "1dd6b4cb40661650a0e62a81fe5506fc",
-        "5afd8ce7ff7defc319ef16920788f801",
-        "6dee9f3ef67a08bee0ae2c211f1383e4",
+        "ceb0c7cd344ac2c9a39e6a61c1e38325",
+        "e9b6420244ff6cf9ab8c73fb1911c1a8",
+        "60c072b2e3347a1787ab7d30626b562a",
+        "afeeb292cf8c7fc2b4c16396ec2c1177",
+        "9a389b30820919edcc7f1e017b90949b",
+        "0667a6b77e462ef287908fb8272dd84a",
+        "e4300310dc24c8ca016aca8b97a12618",
+        "73e4cf30818b40c32228647120a319e2",
+        "d1bde973416762200b87adc9b9c0e4e0",
+        "948b6390b445d154ca6415b70b3ed9ed",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:

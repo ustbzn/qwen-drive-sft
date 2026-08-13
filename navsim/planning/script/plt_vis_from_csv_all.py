@@ -53,6 +53,7 @@ from navsim.visualization.config import TRAJECTORY_CONFIG
 from navsim.visualization.bev import add_trajectory_to_bev_ax
 from navsim.visualization.camera import add_trajectory_to_camera_ax
 from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+from navsim.agents.recogdrive.front_image_features import normalize_image_view_list
 
 from navsim.evaluate.pdm_score import get_trajectory_as_array
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
@@ -745,7 +746,19 @@ def build_agent(args, device: torch.device) -> ReCogDriveAgent:
         hdmap_radius=float(args.hdmap_radius),
         use_image_encoder=bool(args.use_image_encoder),
         image_encoder_arch=str(args.image_encoder_arch),
-        image_view=str(args.image_view),
+        image_encoder_pretrained=bool(args.image_encoder_pretrained),
+        image_encoder_pretrained_path=(
+            str(args.image_encoder_pretrained_path)
+            if args.image_encoder_pretrained_path
+            else None
+        ),
+        image_height=int(args.image_height),
+        image_width=int(args.image_width),
+        image_grid_h=int(args.image_grid_h),
+        image_grid_w=int(args.image_grid_w),
+        image_token_dropout=float(args.image_token_dropout),
+        image_view=args.image_view,
+        image_view_list=args.image_view_list,
     ).to(device)
     agent.initialize()
     return agent
@@ -1184,10 +1197,26 @@ def parse_args():
     parser.add_argument("--max_map_tokens", type=int, default=128)
     parser.add_argument("--map_sample_points", type=int, default=20)
     parser.add_argument("--hdmap_radius", type=float, default=120.0)
-    # 前视图像 ResNet encoder token
+    # 单/多视角图像 ResNet encoder token
     parser.add_argument("--use_image_encoder", action="store_true")
     parser.add_argument("--image_encoder_arch", default="resnet34")
-    parser.add_argument("--image_view", default="cam_f0")
+    parser.add_argument("--image_encoder_pretrained", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--image_encoder_pretrained_path",
+        default="",
+        help="可选本地 ResNet 权重；留空时直接使用 checkpoint 中的 Image Encoder 权重",
+    )
+    parser.add_argument("--image_height", type=int, default=256)
+    parser.add_argument("--image_width", type=int, default=704)
+    parser.add_argument("--image_grid_h", type=int, default=8)
+    parser.add_argument("--image_grid_w", type=int, default=16)
+    parser.add_argument("--image_token_dropout", type=float, default=0.0)
+    parser.add_argument("--image_view_list", nargs="+", default=["cam_f0"])
+    parser.add_argument(
+        "--image_view",
+        default=None,
+        help="旧版单视角参数；显式设置时优先于 --image_view_list",
+    )
     return parser.parse_args()
 
 
@@ -1245,10 +1274,13 @@ def main():
     scene_filter = build_scene_filter(args.scene_filter)
     print("use_vlm:", args.use_vlm)
     agent = build_agent(args, device)
-    # 只渲染 + 推理需要前视 cam_f0；为避免某些 history iteration 未加载导致 cam_f0.image=None，
-    # 这里显式只加载 cam_f0（所有 history iteration）。
+    # 渲染固定需要 cam_f0；Image Encoder 额外加载配置视角，避免四视角 checkpoint 缺输入。
     sensor_cfg = SensorConfig.build_all_sensors(include=False)
     sensor_cfg.cam_f0 = True
+    for image_view in normalize_image_view_list(args.image_view, args.image_view_list):
+        if not hasattr(sensor_cfg, image_view):
+            raise ValueError(f"未知 image encoder 相机字段: {image_view}")
+        setattr(sensor_cfg, image_view, True)
     map_api_builder = build_mogo_map_api_builder(args)
     scene_loader, scene_loader_traj = build_scene_loaders(
         openscene_data_root=Path(args.openscene_data_root),

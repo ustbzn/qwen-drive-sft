@@ -21,7 +21,8 @@ export USE_OBJECT_VECTOR=true
 # (cache_hidden_state=False)，图像由 FrontImageFeatureBuilder 从当前帧 cam_f0 现场读取，
 # 不依赖缓存。类型/分辨率须与训练一致，CHECKPOINT 必须来自带 image_encoder 的 IL/RL 训练，
 # 否则 image_encoder 随机初始化（initialize() strict=False 静默跳过）。
-export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
+export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
+export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。eval 时不 dropout(self.training=False)，但类型
 # 必须与训练 ckpt 一致，否则 attention 层被 initialize() strict=False 丢成随机初始化。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
@@ -59,7 +60,7 @@ SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_RL/2026.08.06.08.00.28/lightning_logs/version_0/checkpoints/epoch=19-step=320.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_novlm_IL/2026.08.11.12.22.39/lightning_logs/version_0/checkpoints/epoch=16-step=2176.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_shanghai_1.9.1_20260522.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-51}"
@@ -82,15 +83,20 @@ fi
 
 # --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。CHECKPOINT 须来自带 image_encoder 的训练。---
 if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+  IMAGE_VIEW_LIST_VALUE="${IMAGE_VIEW_LIST:-${IMAGE_VIEW:-cam_f0}}"
+  if [[ "${IMAGE_VIEW_LIST_VALUE}" != \[* ]]; then
+    IMAGE_VIEW_LIST_VALUE="[${IMAGE_VIEW_LIST_VALUE}]"
+  fi
   set -- \
     agent.use_image_encoder=true \
-    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}" \
-    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-true}" \
+    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet101}" \
+    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-false}" \
+    agent.image_encoder_pretrained_path="${IMAGE_ENCODER_PRETRAINED_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/resnet101-cd907fc2.pth}" \
     agent.image_height="${IMAGE_HEIGHT:-256}" \
     agent.image_width="${IMAGE_WIDTH:-704}" \
     agent.image_grid_h="${IMAGE_GRID_H:-8}" \
     agent.image_grid_w="${IMAGE_GRID_W:-16}" \
-    agent.image_view="${IMAGE_VIEW:-cam_f0}" \
+    agent.image_view_list="${IMAGE_VIEW_LIST_VALUE}" \
     "$@"
 fi
 
@@ -127,7 +133,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name=v2_alldata_traffic_light${VLM_TAG}_RL_worldsim_eval \
+  experiment_name=v3_imgencoder${VLM_TAG}_IL_worldsim_eval \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

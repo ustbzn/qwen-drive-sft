@@ -2,6 +2,7 @@ import pickle
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -11,7 +12,15 @@ from navsim.agents.recogdrive import recogdrive_features
 from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent, make_recogdrive_config
 from navsim.agents.recogdrive.recogdrive_backbone import load_qwen3_processor, system_message
 from navsim.agents.recogdrive.hdmap_vector_encoder import MapEncoder
-from navsim.agents.recogdrive.recogdrive_diffusion_planner import ReCogDriveDiffusionPlanner
+from navsim.agents.recogdrive.recogdrive_diffusion_planner import (
+    ImageEncoder,
+    ReCogDriveDiffusionPlanner,
+)
+from navsim.agents.recogdrive.front_image_features import (
+    FrontImageFeatureBuilder,
+    collate_front_image_features,
+    normalize_image_view_list,
+)
 from navsim.agents.recogdrive.recogdrive_features import (
     RECOGDRIVE_EGO_FEATURE_KEYS,
     ReCogDriveEgoFeatureBuilder,
@@ -48,6 +57,196 @@ def test_make_recogdrive_config_accepts_vl_hidden_normalization_toggle():
     )
 
     assert config.normalize_vl_hidden_states is True
+
+
+def test_make_recogdrive_config_accepts_local_image_pretrained_path():
+    config = make_recogdrive_config(
+        "small",
+        action_dim=3,
+        action_horizon=8,
+        input_embedding_dim=384,
+        use_image_encoder=True,
+        image_encoder_arch="resnet101",
+        image_encoder_pretrained=False,
+        image_encoder_pretrained_path="/tmp/resnet101.pth",
+    )
+
+    assert config.use_image_encoder is True
+    assert config.image_encoder_arch == "resnet101"
+    assert config.image_encoder_pretrained is False
+    assert config.image_encoder_pretrained_path == "/tmp/resnet101.pth"
+
+
+def test_image_view_list_config_preserves_single_view_defaults():
+    config = make_recogdrive_config(
+        "small",
+        action_dim=3,
+        action_horizon=8,
+        input_embedding_dim=384,
+        use_image_encoder=True,
+        num_image_views=1,
+    )
+
+    assert config.num_image_views == 1
+
+
+def test_normalize_image_view_list_supports_new_and_legacy_inputs():
+    assert normalize_image_view_list(image_view_list=["cam_f0"]) == ["cam_f0"]
+    assert normalize_image_view_list(
+        image_view_list="cam_f0,cam_b0,cam_l0,cam_r0"
+    ) == ["cam_f0", "cam_b0", "cam_l0", "cam_r0"]
+    assert normalize_image_view_list(
+        image_view_list="[cam_f0,cam_b0,cam_l0,cam_r0]"
+    ) == ["cam_f0", "cam_b0", "cam_l0", "cam_r0"]
+    assert normalize_image_view_list(
+        image_view="cam_b0",
+        image_view_list=["cam_f0", "cam_l0"],
+    ) == ["cam_b0"]
+
+
+def test_front_image_builder_keeps_single_view_cache_contract_and_supports_four_views():
+    cameras = SimpleNamespace(
+        cam_f0=SimpleNamespace(image=np.full((4, 6, 3), 10, dtype=np.uint8)),
+        cam_b0=SimpleNamespace(image=np.full((4, 6, 3), 20, dtype=np.uint8)),
+        cam_l0=SimpleNamespace(image=np.full((4, 6, 3), 30, dtype=np.uint8)),
+        cam_r0=SimpleNamespace(image=np.full((4, 6, 3), 40, dtype=np.uint8)),
+    )
+    agent_input = SimpleNamespace(cameras=[cameras])
+
+    single = FrontImageFeatureBuilder(image_height=2, image_width=3, view_list=["cam_f0"])
+    single_features = single.compute_features(agent_input)
+    assert single.get_unique_name() == "front_image_feature_v1_cam_f0_2x3"
+    assert single_features["front_image"].shape == (3, 2, 3)
+    assert single_features["front_image_valid"].shape == ()
+
+    multi = FrontImageFeatureBuilder(
+        image_height=2,
+        image_width=3,
+        view_list=["cam_f0", "cam_b0", "cam_l0", "cam_r0"],
+    )
+    multi_features = multi.compute_features(agent_input)
+    assert multi.get_unique_name() == "front_image_feature_v2_v4_cam_f0-cam_b0-cam_l0-cam_r0_2x3"
+    assert multi_features["front_image"].shape == (4, 3, 2, 3)
+    assert torch.equal(
+        multi_features["front_image_valid"], torch.ones(4, dtype=torch.bool)
+    )
+
+    batch = {}
+    collate_front_image_features(batch, [multi_features, multi_features])
+    assert batch["front_image"].shape == (2, 4, 3, 2, 3)
+    assert batch["front_image_valid"].shape == (2, 4)
+
+
+def test_cache_only_loads_existing_single_view_front_image_cache(tmp_path):
+    token_path = tmp_path / "log" / "token"
+    token_path.mkdir(parents=True)
+    image_builder = FrontImageFeatureBuilder(
+        image_height=2,
+        image_width=3,
+        view_list=["cam_f0"],
+    )
+    dump_feature_target_to_pickle(
+        token_path / "front_image_feature_v1_cam_f0_2x3.gz",
+        {
+            "front_image": torch.zeros(3, 2, 3, dtype=torch.uint8),
+            "front_image_valid": torch.tensor(True),
+        },
+    )
+    dump_feature_target_to_pickle(
+        token_path / "trajectory_target.gz",
+        {"trajectory": torch.zeros(8, 3)},
+    )
+
+    dataset = CacheOnlyDataset(
+        cache_path=str(tmp_path),
+        feature_builders=[image_builder],
+        target_builders=[_TestTargetBuilder()],
+    )
+    features, targets, token = dataset[0]
+
+    assert token == "token"
+    assert features["front_image"].shape == (3, 2, 3)
+    assert bool(features["front_image_valid"])
+    assert targets["trajectory"].shape == (8, 3)
+
+
+def test_image_encoder_loads_local_pretrained_weights(monkeypatch, tmp_path):
+    import timm
+
+    class FakeFeatureInfo:
+        def channels(self):
+            return [4]
+
+    class FakeBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(3, 4, kernel_size=1)
+            self.feature_info = FakeFeatureInfo()
+
+        def forward(self, image):
+            return [self.conv(image)]
+
+    pretrained_backbone = FakeBackbone()
+    with torch.no_grad():
+        pretrained_backbone.conv.weight.fill_(0.25)
+        pretrained_backbone.conv.bias.fill_(-0.5)
+    state_dict = pretrained_backbone.state_dict()
+    state_dict["fc.weight"] = torch.zeros(2, 4)
+    state_dict["fc.bias"] = torch.zeros(2)
+    pretrained_path = tmp_path / "resnet101.pth"
+    torch.save(state_dict, pretrained_path)
+
+    create_calls = []
+
+    def fake_create_model(arch, pretrained, features_only):
+        create_calls.append((arch, pretrained, features_only))
+        return FakeBackbone()
+
+    monkeypatch.setattr(timm, "create_model", fake_create_model)
+    encoder = ImageEncoder(
+        embed_dim=2,
+        arch="resnet101",
+        pretrained=True,
+        pretrained_path=str(pretrained_path),
+        grid_h=1,
+        grid_w=1,
+    )
+
+    assert create_calls == [("resnet101", False, True)]
+    assert torch.equal(encoder.backbone.conv.weight, state_dict["conv.weight"])
+    assert torch.equal(encoder.backbone.conv.bias, state_dict["conv.bias"])
+    assert "backbone.conv.weight" in encoder.state_dict()
+
+    tokens, keep = encoder(
+        torch.full((1, 3, 4, 4), 128, dtype=torch.uint8),
+        torch.ones(1, dtype=torch.bool),
+    )
+    tokens[..., 0].sum().backward()
+
+    assert keep.all()
+    assert encoder.backbone.conv.weight.requires_grad
+    assert encoder.backbone.conv.weight.grad is not None
+    assert encoder.view_embed is None
+    assert "view_embed" not in encoder.state_dict()
+
+    multi_encoder = ImageEncoder(
+        embed_dim=2,
+        arch="resnet101",
+        pretrained=True,
+        pretrained_path=str(pretrained_path),
+        grid_h=1,
+        grid_w=1,
+        num_views=4,
+    )
+    multi_tokens, multi_keep = multi_encoder(
+        torch.full((2, 4, 3, 4, 4), 128, dtype=torch.uint8),
+        torch.tensor([[True, False, True, True], [False, True, True, False]]),
+    )
+    assert multi_tokens.shape == (2, 4, 2)
+    assert multi_keep.shape == (2, 4)
+    assert torch.equal(multi_keep[0], torch.tensor([True, False, True, True]))
+    assert multi_encoder.view_embed is not None
+    assert "view_embed" in multi_encoder.state_dict()
 
 
 def test_planner_uses_identity_vl_norm_by_default():

@@ -59,7 +59,7 @@ if [ -n "${METRIC_CACHE_PATHS:-}" ]; then
 fi
 # Update CHECKPOINT to the HDMap IL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_RL/2026.07.06.03.56.28/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v3_alldata_traffic_light_Pretrain_lowBS_novlm_IL/2026.08.04.08.37.35/lightning_logs/version_0/checkpoints/epoch=3-step=160.ckpt"
+CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_novlm_IL/2026.08.11.12.22.39/lightning_logs/version_0/checkpoints/epoch=16-step=2176.ckpt}"
 MASTER_PORT="${MASTER_PORT:-9675}"
 PORT=${PORT:-63665}
 GPUS=${GPUS:-8}
@@ -73,7 +73,7 @@ export USE_OBJECT_VECTOR=true
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。开启需与 IL 缓存端一致，且
 # CHECKPOINT / reference_policy_checkpoint 必须来自带 image_encoder 的 IL 训练
 # （_init_grpo strict=True，缺 image_encoder.* 会报缺键）。常与 vlm_ablation=zero 组合实验。
-export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
+export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。与 vlm_ablation 正交；IL/RL/eval 必须一致，
 # 且 CHECKPOINT/reference_policy_checkpoint 须来自同类型 IL(_init_grpo 对 ego_status_encoder 结构敏感)。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
@@ -109,16 +109,21 @@ fi
 # --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。CHECKPOINT 须来自带 image_encoder 的 IL。---
 IMG_ARGS=()
 if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+  IMAGE_VIEW_LIST_VALUE="${IMAGE_VIEW_LIST:-${IMAGE_VIEW:-cam_f0}}"
+  if [[ "${IMAGE_VIEW_LIST_VALUE}" != \[* ]]; then
+    IMAGE_VIEW_LIST_VALUE="[${IMAGE_VIEW_LIST_VALUE}]"
+  fi
   IMG_ARGS=(
     agent.use_image_encoder=true
-    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}"
-    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-true}"
+    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet101}"
+    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-false}"
+    agent.image_encoder_pretrained_path="${IMAGE_ENCODER_PRETRAINED_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/resnet101-cd907fc2.pth}"
     agent.image_height="${IMAGE_HEIGHT:-256}"
     agent.image_width="${IMAGE_WIDTH:-704}"
     agent.image_grid_h="${IMAGE_GRID_H:-8}"
     agent.image_grid_w="${IMAGE_GRID_W:-16}"
     agent.image_token_dropout="${IMAGE_TOKEN_DROPOUT:-0.0}"
-    agent.image_view="${IMAGE_VIEW:-cam_f0}"
+    agent.image_view_list="${IMAGE_VIEW_LIST_VALUE}"
   )
 fi
 
@@ -154,7 +159,7 @@ torchrun \
   trainer.params.devices="${GPUS}" \
   trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size=80 \
-  experiment_name=v3_alldata_traffic_light_Pretrain_lowBS${VLM_TAG}_RL \
+  experiment_name=v3_imgencoder${VLM_TAG}_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \
@@ -176,5 +181,3 @@ python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
 # agent.use_video_input=True \
 # agent.num_frames=4 \
 # '+log_split@_global_=mogo' \
-
-

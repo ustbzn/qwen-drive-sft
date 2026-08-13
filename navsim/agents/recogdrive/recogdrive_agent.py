@@ -34,7 +34,7 @@ from .object_vector_features import (
     OBJECT_NUM_TYPES,
 )
 from .object_temporal_features import ObjectTemporalFeatureBuilder
-from .front_image_features import FrontImageFeatureBuilder
+from .front_image_features import FrontImageFeatureBuilder, normalize_image_view_list
 from .safety_targets import (
     DEFAULT_SDF_RESOLUTION,
     DEFAULT_SDF_X_RANGE,
@@ -51,6 +51,8 @@ from .recogdrive_view_utils import (
     build_driving_question,
 )
 from .recogdrive_diffusion_planner import (
+    DEFAULT_IMAGE_ENCODER_ARCH,
+    DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH,
     ReCogDriveDiffusionPlanner,
     ReCogDriveDiffusionPlannerConfig,
 )
@@ -124,14 +126,16 @@ class ReCogDriveAgent(AbstractAgent):
         safety_sdf_y_range: Optional[List[float]] = None,
         safety_sdf_resolution: float = DEFAULT_SDF_RESOLUTION,
         use_image_encoder: bool = False,
-        image_encoder_arch: str = "resnet34",
-        image_encoder_pretrained: bool = True,
+        image_encoder_arch: str = DEFAULT_IMAGE_ENCODER_ARCH,
+        image_encoder_pretrained: bool = False,
+        image_encoder_pretrained_path: Optional[str] = DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH,
         image_height: int = 256,
         image_width: int = 704,
         image_grid_h: int = 8,
         image_grid_w: int = 16,
         image_token_dropout: float = 0.0,
-        image_view: str = "cam_f0",
+        image_view: Optional[str] = None,
+        image_view_list: Optional[List[str]] = None,
     ):
         super().__init__(requires_scene=bool(use_object_vector or use_hdmap_vector))
         self._trajectory_sampling = trajectory_sampling
@@ -230,18 +234,23 @@ class ReCogDriveAgent(AbstractAgent):
             and not self.use_hdmap_vector
         ):
             raise ValueError("lambda_route > 0 requires use_hdmap_vector=True")
-        # 前视图像 ResNet encoder（默认关闭，零影响；实验用）。图像从 agent_input.cameras
+        # 单/多视角 ResNet encoder（默认关闭，零影响；实验用）。图像从 agent_input.cameras
         # 当前帧取，不依赖 Scene，故不改 requires_scene。开启需全链路（缓存/IL/RL/eval）一致，
-        # 并重跑 hidden-state 缓存补出 front_image_feature_*.gz（VLM 不重算）。
+        # 并补跑特征缓存生成 front_image_feature_*.gz（已有 VLM hidden state 不重算）。
         self.use_image_encoder = bool(use_image_encoder)
         self.image_encoder_arch = str(image_encoder_arch)
         self.image_encoder_pretrained = bool(image_encoder_pretrained)
+        self.image_encoder_pretrained_path = (
+            str(image_encoder_pretrained_path) if image_encoder_pretrained_path else None
+        )
         self.image_height = int(image_height)
         self.image_width = int(image_width)
         self.image_grid_h = int(image_grid_h)
         self.image_grid_w = int(image_grid_w)
         self.image_token_dropout = float(image_token_dropout)
-        self.image_view = str(image_view)
+        # image_view 是旧版单视角入口；显式设置时优先，未设置则使用新 image_view_list。
+        self.image_view_list = normalize_image_view_list(image_view, image_view_list)
+        self.image_view = self.image_view_list[0]
 
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
@@ -303,9 +312,11 @@ class ReCogDriveAgent(AbstractAgent):
                 use_image_encoder=self.use_image_encoder,
                 image_encoder_arch=self.image_encoder_arch,
                 image_encoder_pretrained=self.image_encoder_pretrained,
+                image_encoder_pretrained_path=self.image_encoder_pretrained_path,
                 image_grid_h=self.image_grid_h,
                 image_grid_w=self.image_grid_w,
                 image_token_dropout=self.image_token_dropout,
+                num_image_views=len(self.image_view_list),
             )
         elif self.dit_type == "small":
             cfg = make_recogdrive_config(
@@ -334,9 +345,11 @@ class ReCogDriveAgent(AbstractAgent):
                 use_image_encoder=self.use_image_encoder,
                 image_encoder_arch=self.image_encoder_arch,
                 image_encoder_pretrained=self.image_encoder_pretrained,
+                image_encoder_pretrained_path=self.image_encoder_pretrained_path,
                 image_grid_h=self.image_grid_h,
                 image_grid_w=self.image_grid_w,
                 image_token_dropout=self.image_token_dropout,
+                num_image_views=len(self.image_view_list),
             )
 
         cfg.vlm_size = self.vlm_size
@@ -456,7 +469,7 @@ class ReCogDriveAgent(AbstractAgent):
             builders.append(FrontImageFeatureBuilder(
                 image_height=self.image_height,
                 image_width=self.image_width,
-                view=self.image_view,
+                view_list=self.image_view_list,
             ))
         return builders
 
@@ -593,7 +606,7 @@ class ReCogDriveAgent(AbstractAgent):
                 obj_data["obj_diff_features"] = features["obj_diff_features"].to(model_dtype)
                 obj_data["obj_is_dynamic"] = features["obj_is_dynamic"].bool()
 
-        # 前视图像字段（启用图像 encoder 且 features 里带图时才注入）。front_image 保持 uint8
+        # 单/多视角图像字段（启用图像 encoder 且 features 里带图时才注入）。front_image 保持 uint8
         # （ImageEncoder 内部转 float + 归一化，省显存/带宽）；front_image_valid 为 bool。
         img_data: Dict[str, torch.Tensor] = {}
         if self.use_image_encoder and "front_image" in features:
@@ -855,11 +868,13 @@ def make_recogdrive_config(
     safety_snr_weighting: bool = True,
     route_loss_batch_chunk_size: int = 128,
     use_image_encoder: bool = False,
-    image_encoder_arch: str = "resnet34",
-    image_encoder_pretrained: bool = True,
+    image_encoder_arch: str = DEFAULT_IMAGE_ENCODER_ARCH,
+    image_encoder_pretrained: bool = False,
+    image_encoder_pretrained_path: Optional[str] = DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH,
     image_grid_h: int = 8,
     image_grid_w: int = 16,
     image_token_dropout: float = 0.0,
+    num_image_views: int = 1,
 ) -> ReCogDriveDiffusionPlannerConfig:
     """
     A factory function to create a ReCogDriveDiffusionPlannerConfig object.
@@ -941,9 +956,11 @@ def make_recogdrive_config(
         use_image_encoder=use_image_encoder,
         image_encoder_arch=image_encoder_arch,
         image_encoder_pretrained=image_encoder_pretrained,
+        image_encoder_pretrained_path=image_encoder_pretrained_path,
         image_grid_h=image_grid_h,
         image_grid_w=image_grid_w,
         image_token_dropout=image_token_dropout,
+        num_image_views=num_image_views,
     )
 
     return config

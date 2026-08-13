@@ -7,7 +7,7 @@ set -euo pipefail
 # + common/train_test_split/scene_filter/all_scenes.yaml
 # + common/agent/recogdrive_agent.yaml
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0717-0721}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/20260624}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
@@ -21,7 +21,8 @@ export USE_OBJECT_VECTOR=true
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。USE_IMAGE_ENCODER=true 时
 # 本阶段额外补出 front_image_feature_v1_<view>_<H>x<W>.gz（VLM 不重算，只多写图像 .gz）。
 # 须与 IL/RL/eval 保持一致，否则 get_unique_name 对不上、CacheOnlyDataset 会报告缺失并过滤不完整样本。
-export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
+export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
+export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_zhuhai_1.4.2_20260604.sqlite}"
@@ -60,15 +61,20 @@ fi
 
 # --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。开启补出前视图 uint8 缓存。---
 if [ "${SLIM_CACHE_ONLY}" != "true" ] && [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+  IMAGE_VIEW_LIST_VALUE="${IMAGE_VIEW_LIST:-${IMAGE_VIEW:-cam_f0}}"
+  if [[ "${IMAGE_VIEW_LIST_VALUE}" != \[* ]]; then
+    IMAGE_VIEW_LIST_VALUE="[${IMAGE_VIEW_LIST_VALUE}]"
+  fi
   set -- \
     agent.use_image_encoder=true \
-    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}" \
-    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-true}" \
+    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet101}" \
+    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-false}" \
+    agent.image_encoder_pretrained_path="${IMAGE_ENCODER_PRETRAINED_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/resnet101-cd907fc2.pth}" \
     agent.image_height="${IMAGE_HEIGHT:-256}" \
     agent.image_width="${IMAGE_WIDTH:-704}" \
     agent.image_grid_h="${IMAGE_GRID_H:-8}" \
     agent.image_grid_w="${IMAGE_GRID_W:-16}" \
-    agent.image_view="${IMAGE_VIEW:-cam_f0}" \
+    agent.image_view_list="${IMAGE_VIEW_LIST_VALUE}" \
     "$@"
 fi
 

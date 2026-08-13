@@ -13,7 +13,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 import navsim.planning.training.dataset as dataset_module
 
-from navsim.planning.script.run_training_recogdrive import (
+from navsim.planning.training.distributed_cache_dataset import (
     build_distributed_cache_only_datasets,
 )
 from navsim.planning.training.cache_dataset_index import (
@@ -116,11 +116,17 @@ def _distributed_index_worker(rank, world_size, init_file, cache_roots, index_di
             rank=rank,
             world_size=world_size,
             cache_sync_group=cache_sync_group,
+            train_tokens=[
+                "train_0_0",
+                "train_0_1",
+                "train_1_0",
+                "train_1_1",
+            ],
         )
         dist.destroy_process_group(cache_sync_group)
         cache_sync_group = None
 
-        assert len(train_data) == 6
+        assert len(train_data) == 4
         assert len(val_data) == 2
         ordered_tokens = list(train_data.tokens)
         gathered_orders = [None] * world_size
@@ -142,7 +148,7 @@ def _distributed_index_worker(rank, world_size, init_file, cache_roots, index_di
         dist.all_gather_object(gathered_tokens, local_tokens)
         if rank == 0:
             assert set(gathered_indices[0]).isdisjoint(gathered_indices[1])
-            assert set(gathered_indices[0] + gathered_indices[1]) == set(range(6))
+            assert set(gathered_indices[0] + gathered_indices[1]) == set(range(4))
             assert set(gathered_tokens[0]).isdisjoint(gathered_tokens[1])
             assert set(gathered_tokens[0] + gathered_tokens[1]) == set(ordered_tokens)
     finally:
@@ -267,12 +273,71 @@ def test_cache_index_signature_covers_split_and_required_features(tmp_path):
     feature_spec = make_cache_only_dataset_index_spec(
         **{**train_inputs, "feature_builders": [_TestBuilder("other_feature")]}
     )
+    whitelist_spec = make_cache_only_dataset_index_spec(
+        **train_inputs,
+        tokens=["token_b", "token_a", "token_a"],
+    )
+    equivalent_whitelist_spec = make_cache_only_dataset_index_spec(
+        **train_inputs,
+        tokens=["token_a", "token_b"],
+    )
+    different_whitelist_spec = make_cache_only_dataset_index_spec(
+        **train_inputs,
+        tokens=["token_a"],
+    )
 
     assert train_spec.signature != val_spec.signature
     assert train_spec.signature != feature_spec.signature
+    assert whitelist_spec.tokens == ("token_a", "token_b")
+    assert whitelist_spec.signature == equivalent_whitelist_spec.signature
+    assert whitelist_spec.signature != different_whitelist_spec.signature
     assert get_cache_dataset_index_path(tmp_path, "train", train_spec) != get_cache_dataset_index_path(
         tmp_path, "train", feature_spec
     )
+
+
+def test_shared_cache_index_applies_whitelist_to_train_only(tmp_path):
+    cache_root = tmp_path / "cache"
+    _write_sample(cache_root, "train_log", "train_keep", 1)
+    _write_sample(cache_root, "train_log", "train_drop", 2)
+    _write_sample(cache_root, "val_log", "val_0", 3)
+    _write_sample(cache_root, "val_log", "val_1", 4)
+    cfg = OmegaConf.create(
+        {
+            "cache_path": str(cache_root),
+            "cache_paths": None,
+            "train_logs": ["train_log"],
+            "val_logs": ["val_log"],
+            "cache_index_dir": str(tmp_path / "indexes"),
+            "cache_index_workers": 4,
+            "rebuild_cache_index": False,
+        }
+    )
+
+    train_data, val_data = build_distributed_cache_only_datasets(
+        cfg=cfg,
+        agent=_TestAgent(),
+        rank=0,
+        world_size=1,
+        train_tokens=["train_keep"],
+    )
+
+    assert train_data.tokens == ["train_keep"]
+    assert set(val_data.tokens) == {"val_0", "val_1"}
+    train_spec = make_cache_only_dataset_index_spec(
+        **_dataset_inputs([cache_root], ["train_log"]),
+        tokens=["train_keep"],
+    )
+    train_index_path = get_cache_dataset_index_path(
+        tmp_path / "indexes",
+        "train",
+        train_spec,
+    )
+    assert train_index_path.is_file()
+    assert load_cache_dataset_index(
+        train_index_path,
+        expected_spec=train_spec,
+    ).spec.tokens == ("train_keep",)
 
 
 def test_corrupt_cache_index_is_rebuilt(tmp_path):

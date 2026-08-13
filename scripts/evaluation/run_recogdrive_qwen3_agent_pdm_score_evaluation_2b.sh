@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319}"
+DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802}"
 QWEN3_VL_PATH="${QWEN3_VL_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct}"
 TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 
@@ -21,7 +21,8 @@ export USE_OBJECT_VECTOR=true
 # (cache_hidden_state=False)，图像由 FrontImageFeatureBuilder 从当前帧 cam_f0 现场读取，
 # 不依赖缓存。类型/分辨率须与训练一致，CHECKPOINT 必须来自带 image_encoder 的 IL/RL 训练，
 # 否则 image_encoder 随机初始化（initialize() strict=False 静默跳过）。
-export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-false}"
+export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
+export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。eval 时不 dropout(self.training=False)，但类型
 # 必须与训练 ckpt 一致，否则 attention 层被 initialize() strict=False 丢成随机初始化。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
@@ -41,20 +42,20 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 export SAVE_MODEL_IO="${SAVE_MODEL_IO:-false}"
 
 # --- badcase 评测模式开关（默认关闭）。开启后仅评测指定 token 列表中的样本。---
-export BADCASE_MODE="${BADCASE_MODE:-true}"
-export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/0312_0319_10case.txt}"
+export BADCASE_MODE="${BADCASE_MODE:-false}"
+export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/0731-0802_10case.txt}"
 
 # --- GT 进度参考开关（默认开启）。模型始终推理，仅用 GT 归一化模型轨迹的 EP。---
 # 兼容旧环境变量 USE_GT_TRAJECTORY；新调用请使用语义更明确的 USE_GT_PROGRESS_REFERENCE。
 export USE_GT_PROGRESS_REFERENCE="${USE_GT_PROGRESS_REFERENCE:-${USE_GT_TRAJECTORY:-true}}"
 
 # --- 变道场景中心线收敛满分模式（默认开启）。按场景 CSV 的 scene_merge=lane_change 识别。---
-export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-true}"
+export LANE_CHANGE_CENTERLINE_FULL_SCORE="${LANE_CHANGE_CENTERLINE_FULL_SCORE:-false}"
 SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_logs/val_scenario_type_token_map.csv}"
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_RL/2026.08.06.08.00.28/lightning_logs/version_0/checkpoints/epoch=19-step=320.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_IL/2026.08.12.13.42.27/lightning_logs/version_0/checkpoints/epoch=12-step=3315.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
@@ -77,15 +78,20 @@ fi
 
 # --- 前视图像 encoder 开关（默认关闭，零影响；实验用）。CHECKPOINT 须来自带 image_encoder 的训练。---
 if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
+  IMAGE_VIEW_LIST_VALUE="${IMAGE_VIEW_LIST:-${IMAGE_VIEW:-cam_f0}}"
+  if [[ "${IMAGE_VIEW_LIST_VALUE}" != \[* ]]; then
+    IMAGE_VIEW_LIST_VALUE="[${IMAGE_VIEW_LIST_VALUE}]"
+  fi
   set -- \
     agent.use_image_encoder=true \
-    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet34}" \
-    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-true}" \
+    agent.image_encoder_arch="${IMAGE_ENCODER_ARCH:-resnet101}" \
+    agent.image_encoder_pretrained="${IMAGE_ENCODER_PRETRAINED:-false}" \
+    agent.image_encoder_pretrained_path="${IMAGE_ENCODER_PRETRAINED_PATH:-/pcpt/pcpt/project/jiangjunyuan/code/VLA/resnet101-cd907fc2.pth}" \
     agent.image_height="${IMAGE_HEIGHT:-256}" \
     agent.image_width="${IMAGE_WIDTH:-704}" \
     agent.image_grid_h="${IMAGE_GRID_H:-8}" \
     agent.image_grid_w="${IMAGE_GRID_W:-16}" \
-    agent.image_view="${IMAGE_VIEW:-cam_f0}" \
+    agent.image_view_list="${IMAGE_VIEW_LIST_VALUE}" \
     "$@"
 fi
 
@@ -121,7 +127,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name="${EXPERIMENT_NAME:-v2_alldata_traffic_light${VLM_TAG}_RL_badcase_eval}" \
+  experiment_name="${EXPERIMENT_NAME:-v3_imgencoder_4cam${VLM_TAG}_IL_eval}" \
   "$@"
 
 # "agent.view_list=[cam_f0]" \
