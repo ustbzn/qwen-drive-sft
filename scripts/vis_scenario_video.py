@@ -20,8 +20,10 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp")
+# os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset")
+# os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp")
 # os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
 # os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
@@ -52,8 +54,8 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_novlm_IL/2026.08.11.12.22.39/lightning_logs/version_0/checkpoints/epoch=16-step=2176.ckpt",
-    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/mogo_multi/exp/v2_alldata_traffic_light_novlm_RL/2026.08.06.08.00.28/lightning_logs/version_0/checkpoints/epoch=19-step=320.ckpt",
+    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_IL/2026.08.12.13.42.27/lightning_logs/version_0/checkpoints/epoch=12-step=3315.ckpt",
+    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_RL/2026.08.18.11.59.28/lightning_logs/version_0/checkpoints/epoch=16-step=5321.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"
@@ -365,7 +367,7 @@ def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--use-hdmap-vector", action=argparse.BooleanOptionalAction, default=True)
     group.add_argument("--use-lane-boundaries", action=argparse.BooleanOptionalAction, default=True)
     # 前视图像 ResNet encoder token
-    group.add_argument("--use-image-encoder", action=argparse.BooleanOptionalAction, default=False)
+    group.add_argument("--use-image-encoder", action=argparse.BooleanOptionalAction, default=True)
     group.add_argument("--image-encoder-arch", default=DEFAULT_IMAGE_ENCODER_ARCH)
     group.add_argument(
         "--image-encoder-pretrained",
@@ -383,7 +385,8 @@ def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--image-grid-h", type=int, default=8)
     group.add_argument("--image-grid-w", type=int, default=16)
     group.add_argument("--image-token-dropout", type=float, default=0.1)
-    group.add_argument("--image-view-list", nargs="+", default=["cam_f0"])
+    # group.add_argument("--image-view-list", nargs="+", default=["cam_f0"])
+    group.add_argument("--image-view-list", nargs="+", default=["cam_f0", "cam_b0", "cam_l0", "cam_r0"])
     group.add_argument(
         "--image-view",
         default=None,

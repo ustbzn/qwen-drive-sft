@@ -530,7 +530,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/v2_alldata_traffic_light_novlm_RL_badcase_new",
+        default="vis_output/gifs/v3_imgencoder_4cam_novlm_IL_TSP",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -587,16 +587,21 @@ def main() -> None:
         # "99bba5e74abb2261fa0c4a6328c1c611",
         # "f7dc542d3e1bf2c84c429f859b70ecbf",
         # val case
-        "ceb0c7cd344ac2c9a39e6a61c1e38325",
-        "e9b6420244ff6cf9ab8c73fb1911c1a8",
-        "60c072b2e3347a1787ab7d30626b562a",
-        "afeeb292cf8c7fc2b4c16396ec2c1177",
-        "9a389b30820919edcc7f1e017b90949b",
-        "0667a6b77e462ef287908fb8272dd84a",
-        "e4300310dc24c8ca016aca8b97a12618",
-        "73e4cf30818b40c32228647120a319e2",
-        "d1bde973416762200b87adc9b9c0e4e0",
-        "948b6390b445d154ca6415b70b3ed9ed",
+        # "ceb0c7cd344ac2c9a39e6a61c1e38325",
+        # "e9b6420244ff6cf9ab8c73fb1911c1a8",
+        # "60c072b2e3347a1787ab7d30626b562a",
+        # "afeeb292cf8c7fc2b4c16396ec2c1177",
+        # "9a389b30820919edcc7f1e017b90949b",
+        # "0667a6b77e462ef287908fb8272dd84a",
+        # "e4300310dc24c8ca016aca8b97a12618",
+        # "73e4cf30818b40c32228647120a319e2",
+        # "d1bde973416762200b87adc9b9c0e4e0",
+        # "948b6390b445d154ca6415b70b3ed9ed",
+        # tsp
+        "0eacaa708f434fd1c0498e12c05eb3f9",
+        "1b5c92eddf63406988f65d539e27b00f",
+        "3429fa7aa5ea7720d9df32ee947e7c58",
+        "ef520a6c595c1cad0587a615c31c9a07",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:

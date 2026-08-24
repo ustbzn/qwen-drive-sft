@@ -12,7 +12,7 @@ TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 # 覆盖：MOGO_MANIFEST=<其他 manifest> 换数据集；MOGO_MANIFEST= 置空回到单城市旧行为；MOGO_NAMES="a,b" 只跑子集。
 # 注意：RL 用 token 白名单而非 log_split，多城市白名单须覆盖目标城市；MetricCacheLoader 多 metric root
 # 间发现重复 token 会直接报错（数据生成需保证 token 全局唯一）。CHECKPOINT 须来自同结构多城市 IL。
-MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/mogo_multi.yaml}"
+MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/traffic_light.yaml}"
 if [ -n "${MOGO_MANIFEST:-}" ]; then
   MOGO_PATHS_HELPER="${REPO_ROOT}/scripts/cache_dataset/mogo_manifest_paths.py"
   MOGO_NAMES_ARGS=""
@@ -59,7 +59,7 @@ if [ -n "${METRIC_CACHE_PATHS:-}" ]; then
 fi
 # Update CHECKPOINT to the HDMap IL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_RL/2026.07.06.03.56.28/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_novlm_IL/2026.08.11.12.22.39/lightning_logs/version_0/checkpoints/epoch=16-step=2176.ckpt}"
+CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_IL/2026.08.12.13.42.27/lightning_logs/version_0/checkpoints/epoch=12-step=3315.ckpt}"
 MASTER_PORT="${MASTER_PORT:-9675}"
 PORT=${PORT:-63665}
 GPUS=${GPUS:-8}
@@ -70,6 +70,7 @@ export PORT=${PORT}
 export CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
 export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 export USE_OBJECT_VECTOR=true
+export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 # 前视图像 ResNet encoder 开关（默认关闭，零影响；仅实验用）。开启需与 IL 缓存端一致，且
 # CHECKPOINT / reference_policy_checkpoint 必须来自带 image_encoder 的 IL 训练
 # （_init_grpo strict=True，缺 image_encoder.* 会报缺键）。常与 vlm_ablation=zero 组合实验。
@@ -135,7 +136,7 @@ torchrun \
   --master_port="${MLP_WORKER_0_PORT:-${MASTER_PORT}}" \
   "${NAVSIM_DEVKIT_ROOT}/navsim/planning/script/run_training_recogdrive_rl.py" \
   agent=recogdrive_agent \
-  agent.lr=1e-4 \
+  agent.lr=2e-5 \
   agent.vlm_path="${QWEN3_VL_PATH}" \
   agent.cam_type=single \
   agent.grpo=True \
@@ -158,8 +159,8 @@ torchrun \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   trainer.params.strategy=ddp_find_unused_parameters_true \
-  dataloader.params.batch_size=80 \
-  experiment_name=v3_imgencoder${VLM_TAG}_RL \
+  dataloader.params.batch_size=4 \
+  experiment_name=v3_imgencoder_4cam${VLM_TAG}_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \
