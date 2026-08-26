@@ -732,6 +732,9 @@ def build_agent(args, device: torch.device) -> ReCogDriveAgent:
         use_vlm=bool(args.use_vlm),
         vlm_ablation=str(args.vlm_ablation),
         ego_status_encoder_type=str(args.ego_status_encoder_type),
+        use_navigation_command=bool(args.use_navigation_command),
+        use_station_token=bool(args.use_station_token),
+        max_station_tokens=int(args.max_station_tokens),
         use_object_vector=bool(args.use_object_vector),
         object_encoder_type=str(args.object_encoder_type),
         max_obj_tokens=int(args.max_obj_tokens),
@@ -1183,6 +1186,13 @@ def parse_args():
     parser.add_argument("--vlm_ablation", default="none", choices=["none", "zero"])
     parser.add_argument("--ego_status_encoder_type", default="mlp", choices=["mlp", "attention"],
                         help="attention=状态丢弃编码器 SDE")
+    # 进出站导航（须与 checkpoint 训练配置一致）
+    parser.add_argument("--use_navigation_command", action="store_true",
+                        help="用 navigation_command 编码替换旧 4 维导航命令")
+    parser.add_argument("--use_station_token", action="store_true",
+                        help="把当前活动站点编码为 DiT context token")
+    parser.add_argument("--max_station_tokens", type=int, default=1,
+                        help="站点 token 数；当前 StationFeatureBuilder 仅支持 1")
     # obj token
     parser.add_argument("--use_object_vector", action="store_true")
     parser.add_argument("--object_encoder_type", default="mlp", choices=["mlp", "temporal"])

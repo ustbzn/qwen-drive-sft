@@ -11,6 +11,13 @@ from navsim.common.dataclasses import Scene, Trajectory
 from navsim.visualization.config import BEV_PLOT_CONFIG, TRAJECTORY_CONFIG, CAMERAS_PLOT_CONFIG
 from navsim.visualization.bev import add_configured_bev_on_ax, add_trajectory_to_bev_ax
 from navsim.visualization.camera import add_annotations_to_camera_ax, add_lidar_to_camera_ax, add_camera_ax,add_trajectory_to_camera_ax
+import numpy as np
+from navsim.common.command_utils import parse_park_command, command_code_to_text
+from navsim.agents.recogdrive.station_features import (
+    _active_station_xy_from_meta,
+    _station_xy_along_centerline,
+    _global_xy_to_local,
+)
 
 
 def configure_bev_ax(ax: plt.Axes, half_range: float | None = None) -> plt.Axes:
@@ -168,6 +175,47 @@ def plot_cameras_frame_with_agent(
     return fig, left_ax, right_ax
 
 
+def _resolve_station_and_nav(frame):
+    """从当前帧派生 (站点 ego 系 (x,y) 或 None, 导航文字)。坐标系与轨迹一致（ego 后轴系）。
+
+    站点坐标复用 station_features 的三级来源（meta 精确 > centerline 反投影）；导航文字汇总
+    主命令 type 与 park 的 dist/侧向。无 navigation_command（旧数据）返回 (None, "")。
+    """
+    nav = getattr(frame, "navigation_command", None)
+    if not nav:
+        return None, ""
+    meta = getattr(frame, "navigation_command_meta", None)
+    ego_pose = np.asarray(frame.ego_status.ego_pose, dtype=np.float64)
+
+    # 导航文字：主命令（第一条非 park）+ park 的 dist/侧向
+    park = parse_park_command(nav)
+    parts = []
+    for quad in nav:
+        try:
+            t = str(quad[0]).lower()
+        except (TypeError, IndexError):
+            continue
+        if t not in ("none", "park") and not (isinstance(quad[1], float) and quad[1] != quad[1]):
+            parts.append(f"{t} {float(quad[1]):.0f}m")
+            break
+    nav_text = " | ".join(parts) if parts else ""
+    if park is not None:
+        dist_m, side = park
+        side_str = "L" if side > 0 else ("R" if side < 0 else "?")
+        nav_text = (nav_text + " | " if nav_text else "") + f"PARK {dist_m:.0f}m {side_str}"
+
+    if park is None:
+        return None, nav_text  # 无 park → 不画站点，仅文字
+    dist_m, _ = park
+    station_global = _active_station_xy_from_meta(meta)
+    if station_global is None:
+        station_global = _station_xy_along_centerline(getattr(frame, "route_centerline", None), dist_m)
+    if station_global is None:
+        return None, nav_text
+    local = _global_xy_to_local(station_global[None, :], ego_pose)[0]
+    return (float(local[0]), float(local[1])), nav_text
+
+
 def plot_bev_and_camera_with_agent(
     scene: Scene,
     scene_traj: Scene,
@@ -215,6 +263,30 @@ def plot_bev_and_camera_with_agent(
     configure_bev_ax(bev_ax, half_range=bev_half_range) # 配置BEV坐标轴(±50m)
     bev_ax.set_xticks([]) # 移除刻度
     bev_ax.set_yticks([])
+
+    # 进出站导航叠加：仅当 agent 启用了导航/站点 token 时（旧 agent 无该属性→getattr False→不画）。
+    # BEV 坐标：x 轴=ego 横向(y，左正)，y 轴=ego 纵向(x，前正)，与 add_trajectory_to_bev_ax 一致。
+    if getattr(agent, "use_navigation_command", False) or getattr(agent, "use_station_token", False):
+        station_xy, nav_text = _resolve_station_and_nav(frame)
+        if station_xy is not None:
+            sx, sy = station_xy  # ego 系 (前, 左)
+            # 钳到视野边界内显示（超界则贴边，避免站点在远处不可见）
+            cx = float(np.clip(sy, -bev_half_range * 0.98, bev_half_range * 0.98))
+            cy = float(np.clip(sx, -bev_half_range * 0.98, bev_half_range * 0.98))
+            bev_ax.scatter(
+                cx, cy, marker="*", s=420, c="magenta", edgecolors="black",
+                linewidths=1.2, zorder=6, label="station",
+            )
+            bev_ax.annotate(
+                "STATION", (cx, cy), textcoords="offset points", xytext=(6, 6),
+                color="magenta", fontsize=11, fontweight="bold", zorder=6,
+            )
+        if nav_text:
+            bev_ax.text(
+                0.02, 0.98, nav_text, transform=bev_ax.transAxes, va="top", ha="left",
+                color="magenta", fontsize=12, fontweight="bold", zorder=7,
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.7, edgecolor="magenta"),
+            )
 
     # 左侧前视摄像头布局 (gs[0])
     camera_ax = fig.add_subplot(gs[0])

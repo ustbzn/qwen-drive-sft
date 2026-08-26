@@ -20,6 +20,7 @@ from navsim.planning.training.distributed_cache_dataset import (
 from navsim.planning.training.agent_lightning_module import AgentLightningModule, AgentLightningDiT
 from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
 from navsim.agents.recogdrive.front_image_features import collate_front_image_features
+from navsim.agents.recogdrive.station_features import collate_station_features
 from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 import torch
 import torch.nn.utils.rnn as rnn_utils
@@ -81,6 +82,9 @@ def custom_collate_fn(
 
     # 前视图像字段（固定形状 uint8，直接 stack）。GRPO 时 forward_grpo 会按 G 复制这些字段。
     collate_front_image_features(features, features_list)
+
+    # 站点字段（进出站导航，固定形状）。GRPO 时 forward_grpo 的 _repeat_action_input 会按 G 复制。
+    collate_station_features(features, features_list)
 
     targets = {
         'trajectory': trajectory

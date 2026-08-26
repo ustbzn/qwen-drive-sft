@@ -410,6 +410,10 @@ def _build_agent(model: str, args) -> video.ReCogDriveAgent:
         max_obj_tokens=int(args.max_obj_tokens),
         include_static_objects=bool(args.include_static_objects),
         object_token_dropout=float(args.object_token_dropout),
+        # 进出站导航 / 站点 token（对齐 nav_station ckpt）
+        use_navigation_command=bool(args.use_navigation_command),
+        use_station_token=bool(args.use_station_token),
+        max_station_tokens=int(args.max_station_tokens),
         use_image_encoder=bool(args.use_image_encoder),
         image_encoder_arch=str(args.image_encoder_arch),
         image_encoder_pretrained=bool(args.image_encoder_pretrained),
@@ -527,10 +531,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为不超过指定大小的 GIF")
     parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
     parser.add_argument("--token", nargs="+", default=None, help="anchor scenario token（可传多个）")
-    parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
+    parser.add_argument("--model", choices=["il", "rl", "both"], default="rl", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/v3_imgencoder_4cam_novlm_IL_TSP",
+        default="vis_output/gifs/v3_nav_station_4cam_novlm_RL_worldsim",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -556,7 +560,7 @@ def main() -> None:
     parser.add_argument(
         "--mogo-map-utm-zone",
         type=int,
-        default=50,
+        default=51,
         help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致",
     )
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
@@ -579,13 +583,13 @@ def main() -> None:
         parser.error(f"--colors 必须在 {MIN_FALLBACK_COLORS}-256 之间")
 
     default_token_list = [
-        # "6778f89b398dee3ddde0156b2079e356",
-        # "8ec9b77adeaa5c6aae500334f321f1c2",
-        # "ec6788598cc3fa0b2ea7a667f03f7346",
-        # "7a8525b11fea08e4187b4afe77ef9117",
-        # "1e223bdaeed2f9c46bb351de8e712168",
-        # "99bba5e74abb2261fa0c4a6328c1c611",
-        # "f7dc542d3e1bf2c84c429f859b70ecbf",
+        "6778f89b398dee3ddde0156b2079e356",
+        "8ec9b77adeaa5c6aae500334f321f1c2",
+        "ec6788598cc3fa0b2ea7a667f03f7346",
+        "7a8525b11fea08e4187b4afe77ef9117",
+        "1e223bdaeed2f9c46bb351de8e712168",
+        "99bba5e74abb2261fa0c4a6328c1c611",
+        "f7dc542d3e1bf2c84c429f859b70ecbf",
         # val case
         # "ceb0c7cd344ac2c9a39e6a61c1e38325",
         # "e9b6420244ff6cf9ab8c73fb1911c1a8",
@@ -598,10 +602,16 @@ def main() -> None:
         # "d1bde973416762200b87adc9b9c0e4e0",
         # "948b6390b445d154ca6415b70b3ed9ed",
         # tsp
-        "0eacaa708f434fd1c0498e12c05eb3f9",
-        "1b5c92eddf63406988f65d539e27b00f",
-        "3429fa7aa5ea7720d9df32ee947e7c58",
-        "ef520a6c595c1cad0587a615c31c9a07",
+        # "0eacaa708f434fd1c0498e12c05eb3f9",
+        # "1b5c92eddf63406988f65d539e27b00f",
+        # "3429fa7aa5ea7720d9df32ee947e7c58",
+        # "ef520a6c595c1cad0587a615c31c9a07",
+        # "1a53cd20df6b6c44c14d32b934729f68",
+        # "1ee735d5bd04d02c8b68fa5279593d74",
+        # "1f9d510d6e6a3765c6f4e8a7cb368b8e",
+        # "3ae98191a8cd036e003c8badf6891d44",
+        # "3de132ffbc1093e50a4b70dd09a94eb6",
+        # "1cb0c9121a1a285c64c8e56b47663c3a",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:

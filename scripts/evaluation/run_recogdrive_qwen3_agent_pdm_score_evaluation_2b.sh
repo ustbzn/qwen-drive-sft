@@ -26,6 +26,12 @@ export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。eval 时不 dropout(self.training=False)，但类型
 # 必须与训练 ckpt 一致，否则 attention 层被 initialize() strict=False 丢成随机初始化。
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
+
+# 站点、导航指令开关（本脚本默认开启；非零影响）。USE_NAVIGATION_COMMAND=true 时 ego_status_dim
+# 13->30(NAV_COMMAND_DIM=21+9)；CHECKPOINT 必须来自同样开 nav/station 的 IL/RL。
+export USE_NAVIGATION_COMMAND="${USE_NAVIGATION_COMMAND:-true}"
+export USE_STATION_TOKEN="${USE_STATION_TOKEN:-true}"
+
 # VLM 总开关：true(默认) | false(完全不用 VLM)。use_vlm=false 时 eval 不加载 Qwen3（省一次
 # 2B 在线前向），planner 无 vl 投影层、DiT context 仅 obj/hdmap/img；vlm_ablation 为 no-op。
 # CHECKPOINT 必须来自 use_vlm=false 的 IL/RL 训练（否则 vl 投影层被 initialize() strict=False
@@ -42,7 +48,7 @@ if [ "${USE_VLM}" = "false" ]; then VLM_TAG="_novlm"; else VLM_TAG=""; fi
 export SAVE_MODEL_IO="${SAVE_MODEL_IO:-false}"
 
 # --- badcase 评测模式开关（默认关闭）。开启后仅评测指定 token 列表中的样本。---
-export BADCASE_MODE="${BADCASE_MODE:-true}"
+export BADCASE_MODE="${BADCASE_MODE:-false}"
 export BADCASE_TOKEN_LIST="${BADCASE_TOKEN_LIST:-${REPO_ROOT}/navsim/local_config/data_selection/0731-0802_10case.txt}"
 
 # --- GT 进度参考开关（默认开启）。模型始终推理，仅用 GT 归一化模型轨迹的 EP。---
@@ -55,7 +61,7 @@ SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_RL/2026.08.18.11.59.28/lightning_logs/version_0/checkpoints/epoch=16-step=5321.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_nav_station_4cam_novlm_nav_station_RL/2026.08.25.10.09.13/lightning_logs/version_0/checkpoints/epoch=15-step=1264.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
@@ -95,6 +101,22 @@ if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
     "$@"
 fi
 
+# --- 进出站导航开关（默认关闭，零影响）。CHECKPOINT 必须来自同样开了 nav/station 的
+# IL/RL 训练（ego 首层与 station 层形状须匹配）。station token 在线 eval 走 scene-aware
+# （requires_scene 已自动为 True），从 park + route_centerline 派生，无 sqlite 依赖。---
+NAV_TAG=""
+if [ "${USE_NAVIGATION_COMMAND:-false}" = "true" ]; then
+  set -- agent.use_navigation_command=true "$@"
+  NAV_TAG="${NAV_TAG}_nav"
+fi
+if [ "${USE_STATION_TOKEN:-false}" = "true" ]; then
+  set -- \
+    agent.use_station_token=true \
+    agent.max_station_tokens="${MAX_STATION_TOKENS:-1}" \
+    "$@"
+  NAV_TAG="${NAV_TAG}_station"
+fi
+
 torchrun \
   --nnodes=1 \
   --nproc_per_node="${GPUS}" \
@@ -127,7 +149,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name="${EXPERIMENT_NAME:-v3_imgencoder_4cam${VLM_TAG}_RL_badcase_eval}" \
+  experiment_name="${EXPERIMENT_NAME:-v3_nav_station_4cam${VLM_TAG}${NAV_TAG}_RL_eval}" \
   "$@"
 
 # "agent.view_list=[cam_f0]" \

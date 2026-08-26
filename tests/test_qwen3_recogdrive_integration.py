@@ -486,6 +486,9 @@ def _make_agent_shell(use_vlm: bool, cache_mode: bool = False):
         use_hdmap_vector=False,
         use_object_vector=False,
         use_image_encoder=False,
+        use_navigation_command=False,
+        use_station_token=False,
+        max_station_tokens=1,
     )
 
 

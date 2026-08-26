@@ -117,6 +117,40 @@ class ObjectEncoder(nn.Module):
         return tokens * mask
 
 
+class StationEncoder(nn.Module):
+    """把站点（进出站目标）特征编成 context token，与 VLM/obj/hdmap token 并列进 DiT cross-attention。
+
+    结构对标 ObjectEncoder（LayerNorm + MLP），但通常只有 1 个 station token。站点特征是
+    「当前活动站点投影到 ego 系」的空间目标点 + dist/侧向（见 station_features.py），为规划器
+    提供显式 goal，让输出轨迹在站点处呈现进/出站形状（goal-conditioned planning）。
+
+    padding / 无 park 的 slot 由 station_valid_mask=False 置零（与 ObjectEncoder 一致，
+    cross-attention 无需额外 mask 即忽略）。第一版不加 token_dropout：站点 goal 是稀疏的强信号，
+    随机丢弃会削弱进出站监督；若后续需正则可再加。
+    """
+
+    def __init__(self, feature_dim: int, embed_dim: int, hidden_dim: int):
+        super().__init__()
+        self.feature_norm = nn.LayerNorm(feature_dim)
+        self.feature_mlp = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, embed_dim),
+        )
+        self.output_norm = nn.LayerNorm(embed_dim)
+
+    def forward(
+        self,
+        station_features: torch.Tensor,
+        station_valid_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """:return: [B, N_station, embed_dim]，padding 行为全 0。"""
+        tokens = self.feature_mlp(self.feature_norm(station_features))
+        tokens = self.output_norm(tokens)
+        mask = station_valid_mask.unsqueeze(-1).to(tokens.dtype)
+        return tokens * mask
+
+
 class ImageEncoder(nn.Module):
     """单/多视角图像共享的 ResNet 编码器（实验用，use_image_encoder）。
 
@@ -591,6 +625,15 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     sanitize_obj_diff: bool = True
     obj_diff_clamp: float = 20.0
 
+    # --- 站点 token（进出站导航，默认关闭，零影响）---
+    # True: 把当前活动站点（从 navigation_command 的 park + route_centerline 派生）投影到 ego 系，
+    #   编成 station token 拼到 context 末尾进 DiT cross-attention，为规划器提供显式进出站目标点。
+    #   无 park / 旧数据 → station 全 padding（valid_mask=False），编码器置零、DiT 忽略，等价无约束。
+    # 需与 use_navigation_command 搭配使用（命令段告诉模型「要进站」，station token 给出「站在哪」）。
+    use_station_token: bool = False
+    station_feature_dim: int = 6          # 须与 station_features.STATION_FEATURE_DIM 一致
+    max_station_tokens: int = 1           # 站点 token 数（第一版固定 1）
+
     # --- 单/多视角图像 ResNet encoder token（默认关闭，零影响；实验用）---
     # 开启后把当前帧图像经共享 ResNet 编成空间 token，拼到 vl_context_tokens 后进 DiT
     # cross-attention。与 vlm_ablation 正交：vlm_ablation=zero 仅置零 VLM token，图像 token
@@ -738,6 +781,17 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         else:
             self.object_encoder = None
 
+        # 站点编码器（进出站导航）。同 object_encoder，必须在下方 _init_grpo() 的
+        # deepcopy(self) 之前创建，old_policy 才会带上它，GRPO rollout/logprob 才条件一致。
+        if config.use_station_token:
+            self.station_encoder = StationEncoder(
+                feature_dim=config.station_feature_dim,
+                embed_dim=config.input_embedding_dim,
+                hidden_dim=config.hidden_size,
+            )
+        else:
+            self.station_encoder = None
+
         # 单/多视角 ResNet 编码器（实验用）。同 object_encoder，必须在下方 _init_grpo() 的
         # deepcopy(self) 之前创建，old_policy 才会带上它，GRPO rollout/logprob 才条件一致。
         if config.use_image_encoder:
@@ -866,6 +920,32 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         )
         return tokens, keep
 
+    def _extract_station_inputs(
+        self, action_input: Optional[BatchFeature]
+    ) -> Optional[Dict[str, torch.Tensor]]:
+        """从 action_input 取 station_* 字段；未启用 station token 或字段缺失时返回 None。"""
+        if self.station_encoder is None or action_input is None:
+            return None
+        if "station_features" not in action_input.data:
+            return None
+        return {
+            "station_features": action_input.station_features,
+            "station_valid_mask": action_input.station_valid_mask,
+        }
+
+    def encode_station_context_tokens(
+        self, action_input: Optional[BatchFeature]
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """编码站点 context tokens，返回 [B,N_station,D] token 与 [B,N_station] mask。"""
+        station_inputs = self._extract_station_inputs(action_input)
+        if station_inputs is None:
+            return None, None
+        tokens = self.station_encoder(
+            station_inputs["station_features"],
+            station_inputs["station_valid_mask"],
+        )
+        return tokens, station_inputs["station_valid_mask"].bool()
+
     def build_context_tokens(
         self,
         first_hidden_state: torch.Tensor,
@@ -912,6 +992,9 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         # 收集单/多视角图像 context tokens（实验用）
         img_context_tokens, img_keep_mask = self.encode_image_context_tokens(action_input)
 
+        # 收集站点 context tokens（进出站导航）
+        station_context_tokens, station_keep_mask = self.encode_station_context_tokens(action_input)
+
         # 拼接所有 context tokens 和构建 mask
         B, N_vl = vl_context_tokens.shape[0], vl_context_tokens.shape[1]
         context_tokens_list = [vl_context_tokens]
@@ -930,6 +1013,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if img_context_tokens is not None:
             context_tokens_list.append(img_context_tokens.to(vl_context_tokens.dtype))
             mask_list.append(img_keep_mask.bool().to(device=vl_context_tokens.device))
+
+        if station_context_tokens is not None:
+            context_tokens_list.append(station_context_tokens.to(vl_context_tokens.dtype))
+            mask_list.append(station_keep_mask.to(device=vl_context_tokens.device))
 
         if len(context_tokens_list) > 1:
             vl_context_tokens = torch.cat(context_tokens_list, dim=1)
@@ -994,6 +1081,12 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         if img_context_tokens is not None:
             context_tokens_list.append(img_context_tokens.to(dtype))
             mask_list.append(img_keep_mask.bool().to(device=device))
+
+        # 站点 context tokens（进出站导航）
+        station_context_tokens, station_keep_mask = self.encode_station_context_tokens(action_input)
+        if station_context_tokens is not None:
+            context_tokens_list.append(station_context_tokens.to(dtype))
+            mask_list.append(station_keep_mask.to(device=device))
 
         # 占位 summary token（[B, 1, D] 零向量），仅承载 batch/device/dtype。
         vl_summary_tokens = torch.zeros(B, 1, D, dtype=dtype, device=device)
@@ -1197,6 +1290,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
                     self.object_encoder.eval()
                 if self.image_encoder is not None:
                     self.image_encoder.eval()
+                if self.station_encoder is not None:
+                    self.station_encoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
             
@@ -1914,6 +2009,10 @@ class ReCogDriveDiffusionPlanner(nn.Module):
         # logprob 用同一份确定的图像 context，避免两次前向 BN 统计不同导致 mean 漂移。
         if self.image_encoder is not None:
             self.image_encoder.eval()
+        # 站点编码器无 dropout（仅 LayerNorm+MLP），切 eval 对数值无影响，保持与其他 context
+        # 编码器一致的 GRPO 惯例（rollout/logprob 两次前向条件一致）。
+        if self.station_encoder is not None:
+            self.station_encoder.eval()
         B = last_hidden_state.shape[0] if self.config.use_vlm else action_input.status_feature.shape[0]
         G = sample_time
 

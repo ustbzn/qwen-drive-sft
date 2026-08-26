@@ -24,6 +24,9 @@ export USE_OBJECT_VECTOR=true
 export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
 export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 
+export USE_NAVIGATION_COMMAND="${USE_NAVIGATION_COMMAND:-true}"
+export USE_STATION_TOKEN="${USE_STATION_TOKEN:-true}"
+
 CACHE_PATH="${CACHE_PATH:-${NAVSIM_EXP_ROOT}/recogdrive_qwen3_notrain_obj_hdmap_cache}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_zhuhai_1.4.2_20260604.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-49}"
@@ -75,6 +78,22 @@ if [ "${SLIM_CACHE_ONLY}" != "true" ] && [ "${USE_IMAGE_ENCODER:-false}" = "true
     agent.image_grid_h="${IMAGE_GRID_H:-8}" \
     agent.image_grid_w="${IMAGE_GRID_W:-16}" \
     agent.image_view_list="${IMAGE_VIEW_LIST_VALUE}" \
+    "$@"
+fi
+
+# --- 进出站导航开关（默认关闭，零影响）。USE_NAVIGATION_COMMAND=true 时 status_feature
+# 命令段改用 navigation_command 编码（ego 缓存名版本化为 recogdrive_ego_feature_v2_nav）；
+# USE_STATION_TOKEN=true 时补出 station_feature_v1.gz（从 park + route_centerline 派生，
+# 不依赖 sqlite 地图）。开启需全链路(缓存/IL/RL/eval)一致，旧 ckpt 不可移植。---
+# nav 编码只影响 ego sidecar（ReCogDriveEgoFeatureBuilder），SLIM 模式正是补该 sidecar，
+# 故 nav 开关在 slim 下也须生效（否则补出的 v2_nav sidecar 命令段仍是旧 one-hot）。
+if [ "${USE_NAVIGATION_COMMAND:-false}" = "true" ]; then
+  set -- agent.use_navigation_command=true "$@"
+fi
+if [ "${SLIM_CACHE_ONLY}" != "true" ] && [ "${USE_STATION_TOKEN:-false}" = "true" ]; then
+  set -- \
+    agent.use_station_token=true \
+    agent.max_station_tokens="${MAX_STATION_TOKENS:-1}" \
     "$@"
 fi
 

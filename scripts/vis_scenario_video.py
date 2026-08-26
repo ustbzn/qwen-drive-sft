@@ -20,12 +20,12 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp")
+# os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset")
+# os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp")
 # os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset")
 # os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp")
-# os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
-# os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
 os.environ.setdefault("NUPLAN_MAP_VERSION", "nuplan-maps-v1.0")
 
@@ -54,8 +54,8 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_IL/2026.08.12.13.42.27/lightning_logs/version_0/checkpoints/epoch=12-step=3315.ckpt",
-    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_RL/2026.08.18.11.59.28/lightning_logs/version_0/checkpoints/epoch=16-step=5321.ckpt",
+    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_nav_station_4cam_novlm_nav_station_IL/2026.08.25.07.23.13/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt",
+    "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_nav_station_4cam_novlm_nav_station_RL/2026.08.25.10.09.13/lightning_logs/version_0/checkpoints/epoch=15-step=1264.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"
@@ -302,6 +302,10 @@ def generate_videos_for_tokens(
             max_obj_tokens=int(args.max_obj_tokens),
             include_static_objects=bool(args.include_static_objects),
             object_token_dropout=float(args.object_token_dropout),
+            # 进出站导航 / 站点 token（对齐 nav_station ckpt）
+            use_navigation_command=bool(args.use_navigation_command),
+            use_station_token=bool(args.use_station_token),
+            max_station_tokens=int(args.max_station_tokens),
             use_image_encoder=bool(args.use_image_encoder),
             image_encoder_arch=str(args.image_encoder_arch),
             image_encoder_pretrained=bool(args.image_encoder_pretrained),
@@ -366,6 +370,12 @@ def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
     # hdmap 向量 token
     group.add_argument("--use-hdmap-vector", action=argparse.BooleanOptionalAction, default=True)
     group.add_argument("--use-lane-boundaries", action=argparse.BooleanOptionalAction, default=True)
+    # 进出站导航 / 站点 token（默认 True，对齐默认 nav_station ckpt；旧 ckpt 用 --no-* 关闭）。
+    # 必须与训练时一致：开则 ego_status_dim=30、SDE 前 21 维永久可见、DiT 多一个 station token；
+    # 否则 ckpt 的 ego_status_encoder / station_encoder 会被 strict=False 静默丢成随机初始化。
+    group.add_argument("--use-navigation-command", action=argparse.BooleanOptionalAction, default=True)
+    group.add_argument("--use-station-token", action=argparse.BooleanOptionalAction, default=True)
+    group.add_argument("--max-station-tokens", type=int, default=1)
     # 前视图像 ResNet encoder token
     group.add_argument("--use-image-encoder", action=argparse.BooleanOptionalAction, default=True)
     group.add_argument("--image-encoder-arch", default=DEFAULT_IMAGE_ENCODER_ARCH)

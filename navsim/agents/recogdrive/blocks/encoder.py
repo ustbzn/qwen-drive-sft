@@ -107,18 +107,28 @@ class ActionEncoder(nn.Module):
 
 class StateAttentionEncoder(nn.Module):
     """
-    State Dropout Encoder (SDE)，参考 pluto 的自车状态编码：把 13 维 status_feature
+    State Dropout Encoder (SDE)，参考 pluto 的自车状态编码：把 ``state_dim`` 维 status_feature
     的每一维单独投影成 token，再用一个可学习 query 做多头注意力池化成单个 embedding。
 
+    ``state_dim`` / ``num_command_states`` 均为构造参数，随 agent 配置变化，不写死：
+    - 默认（use_navigation_command=False）：state_dim=13，前 num_command_states=4 维是旧
+      4 维 one-hot 导航命令(cmd_0..cmd_3)。
+    - 启用 navigation_command：state_dim=30，前 num_command_states=NAV_COMMAND_DIM=21 维是
+      navigation_command 编码段（主命令 type/dist/车道范围 + 次命令 + park 的 dist/侧向）。
+    agent 通过 self._ego_status_dim / self._ego_num_command_states 计算后经 planner config
+    传入（见 recogdrive_agent.py），二者对应 recogdrive_features.ego_status_feature_names(...)
+    的布局。
+
     关键在于训练时对状态做 dropout 以抑制"捷径学习"：status_feature 的前
-    ``num_command_states`` 维是导航命令(cmd_0..cmd_3)——它是意图不是捷径，永久可见；
-    其余维是自车运动学量(vx/vy/ax/ay/yaw_rate/curvature/curvature_rate/
-    steering_wheel_angle/steering_wheel_rate)——有它们模型能直接外推 4s 轨迹，
-    故按 ``state_dropout`` 概率随机遮蔽，逼模型转向地图/障碍物/VLM 上下文。
+    ``num_command_states`` 维是导航命令/意图——不是捷径，永久可见；其余维是自车运动学量
+    (vx/vy/ax/ay/yaw_rate/curvature/curvature_rate/steering_wheel_angle/steering_wheel_rate)
+    ——有它们模型能直接外推 4s 轨迹，故按 ``state_dropout`` 概率随机遮蔽，逼模型转向
+    地图/障碍物/站点/VLM 上下文。
 
     注意与 pluto 的差异：pluto 前 3 维是 ego 系恒为 0 的位置/朝向(永久可见)，此处对应的
-    永久可见维是导航命令。掩码拼接顺序 [command(可见), kinematic(可丢)] 必须与
-    recogdrive_features.EGO_STATUS_FEATURE_NAMES 的 [命令在前, 运动学量在后] 布局一致。
+    永久可见维是导航命令段。掩码拼接顺序 [command(可见), kinematic(可丢)] 必须与
+    recogdrive_features.ego_status_feature_names(use_navigation_command) 的
+    [命令段在前, 运动学量在后] 布局一致。
 
     本编码器与 agent.vlm_ablation 正交：dropout 只作用于 ego status token，
     vlm_ablation=none / zero 下均生效。

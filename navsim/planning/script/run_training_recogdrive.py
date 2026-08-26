@@ -21,6 +21,7 @@ from navsim.planning.training.distributed_cache_dataset import (
 from navsim.planning.training.agent_lightning_module import AgentLightningModule
 from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
 from navsim.agents.recogdrive.front_image_features import collate_front_image_features
+from navsim.agents.recogdrive.station_features import collate_station_features
 from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 import torch
 import torch.nn.utils.rnn as rnn_utils
@@ -80,6 +81,9 @@ def custom_collate_fn(
 
     # 前视图像字段（固定形状 uint8，直接 stack）。仅当缓存里带 front_image 时补（零影响保护）。
     collate_front_image_features(features, features_list)
+
+    # 站点字段（进出站导航，固定形状，直接 stack）。仅当缓存里带 station_features 时补（零影响保护）。
+    collate_station_features(features, features_list)
 
     target_keys = set(targets_list[0])
     if any(set(sample) != target_keys for sample in targets_list[1:]):

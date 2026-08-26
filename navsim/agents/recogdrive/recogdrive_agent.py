@@ -10,7 +10,7 @@ import math
 
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import AgentInput, Scene, SensorConfig, Trajectory
-from navsim.common.command_utils import command_code_to_text
+from navsim.common.command_utils import command_code_to_text, NAV_COMMAND_DIM
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
@@ -21,6 +21,11 @@ from .recogdrive_features import (
     ReCogDriveFeatureBuilder,
     TrajectoryTargetBuilder,
     select_hidden_state,
+    ego_status_dim as compute_ego_status_dim,
+)
+from .station_features import (
+    StationFeatureBuilder,
+    STATION_FEATURE_DIM,
 )
 from .hdmap_vector_features import (
     HDMAP_VECTOR_BOOL_KEYS,
@@ -136,8 +141,11 @@ class ReCogDriveAgent(AbstractAgent):
         image_token_dropout: float = 0.0,
         image_view: Optional[str] = None,
         image_view_list: Optional[List[str]] = None,
+        use_navigation_command: bool = False,
+        use_station_token: bool = False,
+        max_station_tokens: int = 1,
     ):
-        super().__init__(requires_scene=bool(use_object_vector or use_hdmap_vector))
+        super().__init__(requires_scene=bool(use_object_vector or use_hdmap_vector or use_station_token))
         self._trajectory_sampling = trajectory_sampling
         self.vlm_path = vlm_path
         self.checkpoint_path = checkpoint_path
@@ -252,6 +260,17 @@ class ReCogDriveAgent(AbstractAgent):
         self.image_view_list = normalize_image_view_list(image_view, image_view_list)
         self.image_view = self.image_view_list[0]
 
+        # --- 进出站导航（默认关闭，零影响）---
+        # use_navigation_command: status_feature 命令段改用 navigation_command 编码（含 park
+        #   进出站 dist/侧向），替换旧 4 维 one-hot；旧数据自动退化。改变 ego_status_dim，须版本化
+        #   缓存并重训 IL（旧 ckpt 不可移植）。
+        # use_station_token: 把当前活动站点（park + route_centerline 派生）投影到 ego 系，编成
+        #   station token 进 DiT cross-attention（requires_scene=True）。二者通常一起开：命令段告诉
+        #   模型「要进站」，station token 给出「站点在哪」。
+        self.use_navigation_command = bool(use_navigation_command)
+        self.use_station_token = bool(use_station_token)
+        self.max_station_tokens = int(max_station_tokens)
+
         local_rank = int(os.getenv("LOCAL_RANK", "0"))
         device = f"cuda:{local_rank}"
         self.device = device
@@ -285,6 +304,13 @@ class ReCogDriveAgent(AbstractAgent):
             else:
                 self.vl_hidden_dim = 1536
 
+        # navigation_command 命令段改变 status_feature 维度与 SDE 永久可见命令段长度：
+        # 关闭时保持历史 13 维 / 前 4 维命令；开启时 NAV_COMMAND_DIM(=21)+9=30 维 / 前 NAV_COMMAND_DIM 维命令。
+        self._ego_status_dim = compute_ego_status_dim(self.use_navigation_command)
+        self._ego_num_command_states = (
+            NAV_COMMAND_DIM if self.use_navigation_command else ego_num_command_states
+        )
+
         if self.dit_type == "large":
             cfg = make_recogdrive_config(
                 self.dit_type,
@@ -308,7 +334,8 @@ class ReCogDriveAgent(AbstractAgent):
                 static_speed_threshold=self.static_speed_threshold,
                 ego_status_encoder_type=self.ego_status_encoder_type,
                 ego_state_dropout=self.ego_state_dropout,
-                ego_num_command_states=self.ego_num_command_states,
+                ego_num_command_states=self._ego_num_command_states,
+                ego_status_dim=self._ego_status_dim,
                 use_image_encoder=self.use_image_encoder,
                 image_encoder_arch=self.image_encoder_arch,
                 image_encoder_pretrained=self.image_encoder_pretrained,
@@ -317,6 +344,9 @@ class ReCogDriveAgent(AbstractAgent):
                 image_grid_w=self.image_grid_w,
                 image_token_dropout=self.image_token_dropout,
                 num_image_views=len(self.image_view_list),
+                use_station_token=self.use_station_token,
+                station_feature_dim=STATION_FEATURE_DIM,
+                max_station_tokens=self.max_station_tokens,
             )
         elif self.dit_type == "small":
             cfg = make_recogdrive_config(
@@ -341,7 +371,8 @@ class ReCogDriveAgent(AbstractAgent):
                 static_speed_threshold=self.static_speed_threshold,
                 ego_status_encoder_type=self.ego_status_encoder_type,
                 ego_state_dropout=self.ego_state_dropout,
-                ego_num_command_states=self.ego_num_command_states,
+                ego_num_command_states=self._ego_num_command_states,
+                ego_status_dim=self._ego_status_dim,
                 use_image_encoder=self.use_image_encoder,
                 image_encoder_arch=self.image_encoder_arch,
                 image_encoder_pretrained=self.image_encoder_pretrained,
@@ -350,6 +381,9 @@ class ReCogDriveAgent(AbstractAgent):
                 image_grid_w=self.image_grid_w,
                 image_token_dropout=self.image_token_dropout,
                 num_image_views=len(self.image_view_list),
+                use_station_token=self.use_station_token,
+                station_feature_dim=STATION_FEATURE_DIM,
+                max_station_tokens=self.max_station_tokens,
             )
 
         cfg.vlm_size = self.vlm_size
@@ -428,12 +462,15 @@ class ReCogDriveAgent(AbstractAgent):
                 num_frames=self.num_frames,
                 use_video_input=self.use_video_input,
                 video_fps=self.video_fps,
+                use_navigation_command=self.use_navigation_command,
             ))
 
         # 缓存生产同时写 full + slim；no-VLM 训练/推理只注册 slim，从缓存扫描阶段
         # 就不再要求或打开 qwen3_feature.gz。VLM 训练继续只读 full，兼容旧缓存。
         if self.cache_mode or not self.use_vlm:
-            builders.append(ReCogDriveEgoFeatureBuilder())
+            builders.append(ReCogDriveEgoFeatureBuilder(
+                use_navigation_command=self.use_navigation_command,
+            ))
 
         if self.use_hdmap_vector:
             builders.append(
@@ -470,6 +507,11 @@ class ReCogDriveAgent(AbstractAgent):
                 image_height=self.image_height,
                 image_width=self.image_width,
                 view_list=self.image_view_list,
+            ))
+
+        if self.use_station_token:
+            builders.append(StationFeatureBuilder(
+                max_station_tokens=self.max_station_tokens,
             ))
         return builders
 
@@ -615,6 +657,15 @@ class ReCogDriveAgent(AbstractAgent):
                 "front_image_valid": features["front_image_valid"].bool(),
             }
 
+        # 站点字段（启用 station token 且 features 里带 station 时才注入）。station_features 跟随
+        # model_dtype，station_valid_mask 保持 bool。
+        station_data: Dict[str, torch.Tensor] = {}
+        if self.use_station_token and "station_features" in features:
+            station_data = {
+                "station_features": features["station_features"].to(model_dtype),
+                "station_valid_mask": features["station_valid_mask"].bool(),
+            }
+
         if targets is not None and not self.grpo:  # IL train/validation objective
             action_inputs = self._build_action_inputs(
                 features, status_feature, model_dtype, targets["trajectory"]
@@ -623,6 +674,8 @@ class ReCogDriveAgent(AbstractAgent):
                 action_inputs.data.update(obj_data)
             if img_data:
                 action_inputs.data.update(img_data)
+            if station_data:
+                action_inputs.data.update(station_data)
             safety_targets = self._build_safety_targets(targets)
             return self.action_head(
                 first_hidden_state,
@@ -637,6 +690,8 @@ class ReCogDriveAgent(AbstractAgent):
                 action_inputs.data.update(obj_data)
             if img_data:
                 action_inputs.data.update(img_data)
+            if station_data:
+                action_inputs.data.update(station_data)
             return self.action_head.forward_grpo(first_hidden_state, last_hidden_state, action_inputs, tokens_list)    # tokens_list 是场景的token，在计算 PDM score 需要知道"这个样本对应哪个场景/片段"的 token，用 token 去加载对应的 metric cache
         else:    # 推理，无 action
             action_inputs = self._build_action_inputs(features, status_feature, model_dtype)
@@ -645,6 +700,8 @@ class ReCogDriveAgent(AbstractAgent):
                 action_inputs.data.update(obj_data)
             if img_data:
                 action_inputs.data.update(img_data)
+            if station_data:
+                action_inputs.data.update(station_data)
             # return_init_noise=True 额外带出采样起点噪声（[B,8,3]，极小），供部署端复现。
             # return_step_noises=True 额外带出 DDIM 每步噪声（[num_steps,B,8,3]）：
             #   deterministic=False 时它与 init_noise 一起构成全部随机源，逐点复现须两者兼备。
@@ -856,6 +913,10 @@ def make_recogdrive_config(
     ego_status_encoder_type: str = 'mlp',
     ego_state_dropout: float = 0.75,
     ego_num_command_states: int = 4,
+    ego_status_dim: int = 13,
+    use_station_token: bool = False,
+    station_feature_dim: int = STATION_FEATURE_DIM,
+    max_station_tokens: int = 1,
     use_explicit_safety_loss: bool = False,
     lambda_collision: float = 0.1,
     lambda_offroad: float = 0.05,
@@ -942,6 +1003,10 @@ def make_recogdrive_config(
         ego_status_encoder_type=ego_status_encoder_type,
         ego_state_dropout=ego_state_dropout,
         ego_num_command_states=ego_num_command_states,
+        ego_status_dim=ego_status_dim,
+        use_station_token=use_station_token,
+        station_feature_dim=station_feature_dim,
+        max_station_tokens=max_station_tokens,
         use_explicit_safety_loss=use_explicit_safety_loss,
         lambda_collision=lambda_collision,
         lambda_offroad=lambda_offroad,

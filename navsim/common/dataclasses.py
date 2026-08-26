@@ -165,6 +165,15 @@ class EgoStatus:
     ego_steering_wheel_angle: float = 0.0
     ego_steering_wheel_rate: float = 0.0
     in_global_frame: bool = False  # False for AgentInput
+    # 新版 Mogo pkl（进出站导航）可选字段，旧数据为 None。
+    # navigation_command: 两个四元组 [type, dist, a, b]（含 park 进出站语义），见
+    #   docs/recogdrive_navigation_command_generation.md；替换旧 4 维 driving_command 时使用。
+    # route_stations: 整条线路站点全局 UTM 坐标目录（各帧相同），station token 派生用。
+    navigation_command: Optional[List[Any]] = None
+    route_stations: Optional[List[Any]] = None
+    # navigation_command_meta.station_target_buffer.current_target.point_xy 给出**精确**活动站点
+    # 全局 UTM 坐标（比 park.dist 沿中心线反投影更鲁棒，能处理站点偏离中心线/横向偏移）。旧数据为 None。
+    navigation_command_meta: Optional[Dict[str, Any]] = None
 
 
 def _extract_can_bus_value(scene_frame: Dict, value_index: int) -> float:
@@ -319,6 +328,10 @@ class AgentInput:
                 ego_curvature_rate=ego_curvature_rates[frame_idx],
                 ego_steering_wheel_angle=ego_steering_wheel_angles[frame_idx],
                 ego_steering_wheel_rate=ego_steering_wheel_rates[frame_idx],
+                # 新版 Mogo 进出站导航字段（旧 pkl 无该键时 .get 返回 None，零影响）。
+                navigation_command=scene_dict_list[frame_idx].get("navigation_command"),
+                route_stations=scene_dict_list[frame_idx].get("route_stations"),
+                navigation_command_meta=scene_dict_list[frame_idx].get("navigation_command_meta"),
             )
             ego_statuses.append(ego_status)
 
@@ -406,6 +419,10 @@ class Frame:
     route_centerline: Optional[Any] = None
     route_centerline_segments: Optional[Any] = None
     traffic_light_states: Optional[List[Dict[str, Any]]] = None
+    # 新版 Mogo pkl 进出站导航字段（旧日志无，__post_init__ 兜底为 None/[]）。
+    navigation_command: Optional[List[Any]] = None
+    route_stations: Optional[List[Any]] = None
+    navigation_command_meta: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         # Older NAVSIM/Mogo logs do not carry the rich traffic-light field.
@@ -501,6 +518,10 @@ class Scene:
                     ego_curvature_rate=frame_ego_status.ego_curvature_rate,
                     ego_steering_wheel_angle=frame_ego_status.ego_steering_wheel_angle,
                     ego_steering_wheel_rate=frame_ego_status.ego_steering_wheel_rate,
+                    # 进出站导航字段随 frame ego status 透传（旧数据为 None）。
+                    navigation_command=frame_ego_status.navigation_command,
+                    route_stations=frame_ego_status.route_stations,
+                    navigation_command_meta=frame_ego_status.navigation_command_meta,
                 )
             )
             cameras.append(self.frames[frame_idx].cameras)
@@ -552,6 +573,10 @@ class Scene:
             ego_steering_wheel_angle=_extract_ego_steering_wheel_angle(scene_frame),
             ego_steering_wheel_rate=_extract_ego_steering_wheel_rate(scene_frame),
             in_global_frame=True,
+            # 新版 Mogo 进出站导航字段（旧 pkl 无该键时 .get 返回 None，零影响）。
+            navigation_command=scene_frame.get("navigation_command"),
+            route_stations=scene_frame.get("route_stations"),
+            navigation_command_meta=scene_frame.get("navigation_command_meta"),
         )
 
     @classmethod
@@ -618,6 +643,9 @@ class Scene:
                 route_centerline=scene_dict_list[frame_idx].get("route_centerline"),
                 route_centerline_segments=scene_dict_list[frame_idx].get("route_centerline_segments"),
                 traffic_light_states=list(scene_dict_list[frame_idx].get("traffic_light_states") or []),
+                navigation_command=scene_dict_list[frame_idx].get("navigation_command"),
+                route_stations=scene_dict_list[frame_idx].get("route_stations"),
+                navigation_command_meta=scene_dict_list[frame_idx].get("navigation_command_meta"),
             )
             frames.append(frame)
 

@@ -74,6 +74,26 @@ object_token_dropout: 0.1
 object_encoder_type: mlp
 # 动/静划分阈值(m/s)：当前帧地速 < 阈值判为静态(纯几何约束)，>= 判为动态(几何+运动意图)。
 static_speed_threshold: 0.5
+# --- 进出站导航（navigation_command + 站点 token，默认关闭，等价当前流程，零影响）---
+# 数据前提：新版 Mogo pkl 每帧带 navigation_command（含 park 进出站语义）与 route_stations；
+#   旧数据无该字段时全部自动退化（见下），不报错。语义见
+#   docs/recogdrive_navigation_command_generation.md 与 docs/recogdrive_navigation_and_station_plan.md。
+# use_navigation_command=true：status_feature 的命令段由旧 4 维 one-hot 换成 navigation_command
+#   编码（两个四元组都编码：主命令 type+dist双尺度+车道范围a,b | 次命令 type+dist |
+#   park 的 has/dist双尺度/侧向，共 NAV_COMMAND_DIM=21 维），ego_status_dim 从 13 变 30，
+#   SDE 永久可见命令段同步变 21。旧数据自动从 driving_command 退化填 type、其余置 0。
+#   改变 status_feature 布局 → ego 缓存名版本化为 recogdrive_ego_feature_v2_nav，且旧 ckpt 不可
+#   热启（首层 ego_status_encoder 形状变）。开启需重跑该 CACHE_PATH 缓存并全链路(缓存/IL/RL/eval)一致。
+use_navigation_command: false
+# use_station_token=true：把当前活动站点（navigation_command 的 park + route_centerline 派生，
+#   投影到 ego 系）编成 station token 进 DiT cross-attention（requires_scene=True），给规划器显式
+#   进出站目标点。无 park / 旧数据 → station 全 padding，编码器置零、DiT 忽略（等价无约束）。
+#   开启需重跑缓存补 station_feature_v1.gz（CacheOnlyDataset 缺该 .gz 会过滤不完整样本）。
+#   通常与 use_navigation_command 一起开：命令段告诉「要进站」，station token 给出「站在哪」。
+use_station_token: false
+# 站点 token 数。**当前仅支持 1**（只编码 navigation_command 派生的当前活动站点）；StationFeatureBuilder
+# 会对 !=1 报错防呆。多站点（从 route_stations 选最近 N 个）是未来扩展，见方案文档 §10.2。
+max_station_tokens: 1
 grpo: False
 # Step 3 (optional): tighten the behavior-cloning anchor. Defaults reproduce the
 # Step 1+2 RL run. Override from the RL script, e.g.

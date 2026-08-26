@@ -12,7 +12,7 @@ TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 # 覆盖：MOGO_MANIFEST=<其他 manifest> 换数据集；MOGO_MANIFEST= 置空回到单城市旧行为；MOGO_NAMES="a,b" 只跑子集。
 # 注意：RL 用 token 白名单而非 log_split，多城市白名单须覆盖目标城市；MetricCacheLoader 多 metric root
 # 间发现重复 token 会直接报错（数据生成需保证 token 全局唯一）。CHECKPOINT 须来自同结构多城市 IL。
-MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/traffic_light.yaml}"
+MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/nav_station.yaml}"
 if [ -n "${MOGO_MANIFEST:-}" ]; then
   MOGO_PATHS_HELPER="${REPO_ROOT}/scripts/cache_dataset/mogo_manifest_paths.py"
   MOGO_NAMES_ARGS=""
@@ -59,7 +59,7 @@ if [ -n "${METRIC_CACHE_PATHS:-}" ]; then
 fi
 # Update CHECKPOINT to the HDMap IL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_RL/2026.07.06.03.56.28/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_IL/2026.08.12.13.42.27/lightning_logs/version_0/checkpoints/epoch=12-step=3315.ckpt}"
+CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_nav_station_4cam_novlm_nav_station_IL/2026.08.25.07.23.13/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt}"
 MASTER_PORT="${MASTER_PORT:-9675}"
 PORT=${PORT:-63665}
 GPUS=${GPUS:-8}
@@ -77,6 +77,12 @@ export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
 # 自车状态编码器：mlp(默认) | attention(SDE)。与 vlm_ablation 正交；IL/RL/eval 必须一致，
 # 且 CHECKPOINT/reference_policy_checkpoint 须来自同类型 IL(_init_grpo 对 ego_status_encoder 结构敏感)。
+
+# 站点、导航指令开关（本脚本默认开启；非零影响）。USE_NAVIGATION_COMMAND=true 时 ego_status_dim
+# 13->30(NAV_COMMAND_DIM=21+9)；CHECKPOINT/reference_policy 必须来自同样开 nav/station 的 IL。
+export USE_NAVIGATION_COMMAND="${USE_NAVIGATION_COMMAND:-true}"
+export USE_STATION_TOKEN="${USE_STATION_TOKEN:-true}"
+
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
 # VLM 总开关：true(默认) | false(完全不用 VLM，模型更小)。use_vlm=false 时 planner 无 vl 投影层，
 # 缓存只读 recogdrive_ego_feature_v1.gz；旧 CACHE_PATH 须先用 --slim-only 补写 sidecar。
@@ -128,6 +134,20 @@ if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
   )
 fi
 
+# --- 进出站导航开关（默认关闭，零影响）。RL 的 CHECKPOINT / reference_policy 必须来自
+# 同样开了 nav/station 的 IL 训练（ego 首层与 station 层形状须匹配，否则 GRPO 加载 reference
+# 时会 shape 不符）。二者须与缓存端一致。---
+NAV_ARGS=()
+NAV_TAG=""
+if [ "${USE_NAVIGATION_COMMAND:-false}" = "true" ]; then
+  NAV_ARGS+=(agent.use_navigation_command=true)
+  NAV_TAG="${NAV_TAG}_nav"
+fi
+if [ "${USE_STATION_TOKEN:-false}" = "true" ]; then
+  NAV_ARGS+=(agent.use_station_token=true agent.max_station_tokens="${MAX_STATION_TOKENS:-1}")
+  NAV_TAG="${NAV_TAG}_station"
+fi
+
 torchrun \
   --nnodes=1 \
   --node_rank="${MLP_ROLE_INDEX:-0}" \
@@ -160,7 +180,7 @@ torchrun \
   trainer.params.devices="${GPUS}" \
   trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size=4 \
-  experiment_name=v3_imgencoder_4cam${VLM_TAG}_RL \
+  experiment_name=v3_nav_station_4cam${VLM_TAG}${NAV_TAG}_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \
@@ -168,7 +188,7 @@ torchrun \
   "${CACHE_ARGS[@]}" \
   use_cache_without_dataset=True \
   force_cache_computation=False \
-  "${OBJ_ARGS[@]}" "${IMG_ARGS[@]}" > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
+  "${OBJ_ARGS[@]}" "${IMG_ARGS[@]}" "${NAV_ARGS[@]}" > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
 
 python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
 

@@ -35,6 +35,7 @@ from navsim.common.dataloader import SceneLoader
 from navsim.planning.training.dataset import Dataset, build_cache_only_dataset
 from navsim.agents.recogdrive.hdmap_vector_features import collate_hdmap_vector_features
 from navsim.agents.recogdrive.front_image_features import collate_front_image_features
+from navsim.agents.recogdrive.station_features import collate_station_features
 from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 
 from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
@@ -141,6 +142,8 @@ def custom_collate_fn(
     collate_hdmap_vector_features(features, features_list)
     # 前视图像字段（固定形状 uint8，直接 stack）。仅当缓存里带 front_image 时补。
     collate_front_image_features(features, features_list)
+    # 站点字段（进出站导航，固定形状）。仅当缓存里带 station_features 时补（零影响保护）。
+    collate_station_features(features, features_list)
 
     targets = {"trajectory": trajectory}
 

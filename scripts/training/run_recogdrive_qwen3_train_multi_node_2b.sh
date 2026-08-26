@@ -11,7 +11,7 @@ TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-mogo_trainval}"
 # 自动派生 CACHE_PATHS、LOG_SPLIT(=manifest 文件名 stem)、NAVSIM_EXP_ROOT(=顶层 train_exp_root)。
 # 覆盖：MOGO_MANIFEST=<其他 manifest> 换数据集；MOGO_MANIFEST= （置空）回到单城市旧行为；
 # MOGO_NAMES="a,b" 只跑子集；显式传 CACHE_PATHS/LOG_SPLIT/NAVSIM_EXP_ROOT 亦优先。
-MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/traffic_light.yaml}"
+MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/nav_station.yaml}"
 LOG_SPLIT="${LOG_SPLIT:-}"
 if [ -n "${MOGO_MANIFEST:-}" ]; then
   MOGO_PATHS_HELPER="${REPO_ROOT}/scripts/cache_dataset/mogo_manifest_paths.py"
@@ -42,6 +42,13 @@ export USE_OBJECT_VECTOR=true
 # 典型实验：与 agent.vlm_ablation=zero 组合 —— 屏蔽 VLM 语义、保留前视图像视觉信息。
 export USE_IMAGE_ENCODER="${USE_IMAGE_ENCODER:-true}"
 export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
+
+# 站点、导航指令开关（本脚本默认开启，用于进出站训练；非零影响）。USE_NAVIGATION_COMMAND=true 时
+# ego_status_dim 13->30(NAV_COMMAND_DIM=21+9)，须缓存已含 recogdrive_ego_feature_v2_nav.gz；
+# USE_STATION_TOKEN=true 须缓存已含 station_feature_v1.gz。旧 ckpt 的 ego/station 层不可热启(重训)。
+export USE_NAVIGATION_COMMAND="${USE_NAVIGATION_COMMAND:-true}"
+export USE_STATION_TOKEN="${USE_STATION_TOKEN:-true}"
+
 # 自车状态编码器：mlp(默认，零影响) | attention(SDE，训练时随机遮蔽运动学量以抑制外推捷径)。
 # 与 vlm_ablation 正交(none/zero 均生效)。IL/RL/eval 必须三处一致，否则 ckpt 加载错配
 # (attention 层被 initialize() strict=False 丢成随机初始化)。
@@ -110,6 +117,23 @@ if [ "${USE_IMAGE_ENCODER:-false}" = "true" ]; then
     "$@"
 fi
 
+# --- 进出站导航开关（override 段）。USE_NAVIGATION_COMMAND=true 时 ego_status_dim 13->30
+# 并读 recogdrive_ego_feature_v2_nav 缓存；USE_STATION_TOKEN=true 时读 station_feature_v1.gz
+# 拼 DiT context。二者须与缓存端一致，旧 ckpt 不可热启（ego 首层/新 station 层形状不符，
+# 会被 initialize() 的 strict=False 丢成随机初始化，等价从这些层重新训练）。---
+NAV_TAG=""
+if [ "${USE_NAVIGATION_COMMAND:-false}" = "true" ]; then
+  set -- agent.use_navigation_command=true "$@"
+  NAV_TAG="${NAV_TAG}_nav"
+fi
+if [ "${USE_STATION_TOKEN:-false}" = "true" ]; then
+  set -- \
+    agent.use_station_token=true \
+    agent.max_station_tokens="${MAX_STATION_TOKENS:-1}" \
+    "$@"
+  NAV_TAG="${NAV_TAG}_station"
+fi
+
 #finetune lr=2e-5/orgin lr=1e-4
 torchrun \
   --nnodes=1 \
@@ -146,7 +170,7 @@ torchrun \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=v3_imgencoder_4cam${VLM_TAG}_IL \
+  experiment_name=v3_nav_station_4cam${VLM_TAG}${NAV_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   "+log_split@_global_=${LOG_SPLIT}" \
   "${CACHE_ARGS[@]}" \
