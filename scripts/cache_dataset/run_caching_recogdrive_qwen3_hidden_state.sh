@@ -116,6 +116,7 @@ torchrun \
   agent.use_hdmap_vector="${CACHE_USE_HDMAP}" \
   agent.use_explicit_safety_loss="${CACHE_USE_HDMAP}" \
   agent.use_lane_boundaries="${CACHE_USE_HDMAP}" \
+  agent.encode_boundary_constraint="${CACHE_USE_HDMAP}" \
   mogo_map.sqlite_path="${CACHE_SQLITE_PATH}" \
   mogo_map.utm_zone="${MOGO_UTM_ZONE}" \
   mogo_map.utm_south="${MOGO_UTM_SOUTH}" \

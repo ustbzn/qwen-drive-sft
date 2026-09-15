@@ -32,6 +32,7 @@ HDMAP_VECTOR_FLOAT_KEYS = (
     "map_polygon_speed_limit",
     "map_point_valid_mask",
     "map_valid_mask",
+    "map_boundary_constraint",
 )
 HDMAP_VECTOR_LONG_KEYS = (
     "map_polygon_type",
@@ -39,6 +40,7 @@ HDMAP_VECTOR_LONG_KEYS = (
     "map_polygon_tl_status",
     "map_polygon_control_type",
     "map_polygon_tl_direction",
+    "map_boundary_type",
 )
 HDMAP_VECTOR_BOOL_KEYS = ("map_polygon_has_speed_limit",)
 HDMAP_VECTOR_BATCH_KEYS = HDMAP_VECTOR_FLOAT_KEYS + HDMAP_VECTOR_LONG_KEYS + HDMAP_VECTOR_BOOL_KEYS
@@ -87,6 +89,19 @@ class HDMapTrafficLightDirection:
     RIGHT = 3
     U_TURN = 4
     UNKNOWN = 5
+
+
+class HDMapBoundaryType:
+    """Boundary line type from Mogo SQLite map adapter.
+
+    Used to encode whether a lane boundary can be crossed:
+    - DEFAULT: no explicit marking or unknown
+    - CROSSABLE: broken/dashed lines that vehicles may cross
+    - NON_CROSSABLE: solid lines, curbs, fences, or road edges that must not be crossed
+    """
+    DEFAULT = 0
+    CROSSABLE = 1
+    NON_CROSSABLE = 2
 
 
 class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
@@ -230,6 +245,8 @@ class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
             "map_polygon_speed_limit": torch.zeros((m,), dtype=torch.float32),
             "map_point_valid_mask": torch.zeros((m, p), dtype=torch.float32),
             "map_valid_mask": torch.zeros((m,), dtype=torch.float32),
+            "map_boundary_constraint": torch.zeros((m, 2, p), dtype=torch.float32),
+            "map_boundary_type": torch.full((m, 2, p), HDMapBoundaryType.DEFAULT, dtype=torch.long),
         }
 
     def _build_traffic_control_candidates(
@@ -295,6 +312,9 @@ class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
             float(center_next_xy[1] - center_xy[1]),
             float(center_next_xy[0] - center_xy[0]),
         )
+        # Traffic control boundaries: no constraint encoding (stop lines are control tokens, not lane boundaries)
+        boundary_constraint = torch.zeros((2, self.map_sample_points), dtype=torch.float32)
+        boundary_type = torch.full((2, self.map_sample_points), HDMapBoundaryType.DEFAULT, dtype=torch.long)
         return {
             "map_point_position": point_position,
             "map_point_vector": point_vector,
@@ -310,6 +330,8 @@ class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
             "map_polygon_has_speed_limit": torch.tensor(False, dtype=torch.bool),
             "map_polygon_speed_limit": torch.tensor(0.0, dtype=torch.float32),
             "map_point_valid_mask": torch.ones((self.map_sample_points,), dtype=torch.float32),
+            "map_boundary_constraint": boundary_constraint,
+            "map_boundary_type": boundary_type,
         }
 
     def _build_map_object_candidate(
@@ -333,6 +355,10 @@ class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
         ):
             left_boundary, right_boundary = self._fallback_boundaries(centerline)
 
+        # Extract boundary types from map_object (Mogo SQLite map adapter provides these)
+        left_boundary_type = getattr(map_object, "left_boundary_type", HDMapBoundaryType.DEFAULT)
+        right_boundary_type = getattr(map_object, "right_boundary_type", HDMapBoundaryType.DEFAULT)
+
         paths = (centerline, left_boundary, right_boundary)
         point_position = torch.zeros((3, self.map_sample_points, 2), dtype=torch.float32)
         point_vector = torch.zeros((3, self.map_sample_points, 2), dtype=torch.float32)
@@ -351,6 +377,20 @@ class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
             )
             if path_index == 0:
                 path_valid_mask[:] = 1.0
+
+        # Build boundary constraint weights: 1.0 for NON_CROSSABLE, 0.0 for others
+        boundary_constraint = torch.zeros((2, self.map_sample_points), dtype=torch.float32)
+        boundary_type_tensor = torch.full((2, self.map_sample_points), HDMapBoundaryType.DEFAULT, dtype=torch.long)
+
+        # Left boundary (index 0)
+        boundary_type_tensor[0, :] = int(left_boundary_type)
+        if int(left_boundary_type) == HDMapBoundaryType.NON_CROSSABLE:
+            boundary_constraint[0, :] = 1.0
+
+        # Right boundary (index 1)
+        boundary_type_tensor[1, :] = int(right_boundary_type)
+        if int(right_boundary_type) == HDMapBoundaryType.NON_CROSSABLE:
+            boundary_constraint[1, :] = 1.0
 
         sampled_center_global = self._resample_states(centerline, self.map_sample_points + 1)
         local_center = self._to_local_states(origin, sampled_center_global)
@@ -385,6 +425,8 @@ class HDMapVectorFeatureBuilder(AbstractFeatureBuilder):
             "map_polygon_has_speed_limit": torch.tensor(bool(has_speed_limit), dtype=torch.bool),
             "map_polygon_speed_limit": torch.tensor(float(speed_limit or 0.0), dtype=torch.float32),
             "map_point_valid_mask": path_valid_mask,
+            "map_boundary_constraint": boundary_constraint,
+            "map_boundary_type": boundary_type_tensor,
         }
 
     @staticmethod

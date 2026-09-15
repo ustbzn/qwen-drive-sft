@@ -4,9 +4,9 @@ export SHANGHAI_NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/wo
 export SHANGHAI_NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp"
 export SHANGHAI_OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset"
 export NAVSIM_DEVKIT_ROOT="/pcpt/pcpt/project/jiangjunyuan/code/VLA/recog_drive"
-export BEIJING_NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset/maps"
-export BEIJING_NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp"
-export BEIJING_OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset"
+export BEIJING_NUPLAN_MAPS_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset/maps"
+export BEIJING_NAVSIM_EXP_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp"
+export BEIJING_OPENSCENE_DATA_ROOT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset"
 export PYTHONPATH=${NAVSIM_DEVKIT_ROOT}:${PYTHONPATH:-}
 
 # 站点与导航指令开关（默认开启；必须与 checkpoint 的训练配置保持一致）。
@@ -27,8 +27,8 @@ fi
 # 用单进程就保留这一段，注释掉下面的多卡版本。
 # /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/2603_ego_SDE_obj_hdmap_novlm_IL_worldsim_eval/2026.07.16.03.41.18/2026.07.16.03.44.30.csv
 python -m navsim.planning.script.plt_vis_from_csv_all \
-  --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp/v3_nav_station_4cam_novlm_nav_station_IL_badcase_eval/2026.08.26.05.01.07/2026.08.26.05.02.09.csv" \
-  --out "vis_output/eval/v3_nav_station_4cam_novlm_RL_badcase" \
+  --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp/v3_nav_station_4cam_novlm_RL_TSP_eval/2026.08.26.08.16.58/2026.08.26.08.17.35.csv" \
+  --out "vis_output/eval/v3_nav_station_4cam_novlm_RL_TSP" \
   --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_nav_station_4cam_novlm_nav_station_RL/2026.08.25.10.09.13/lightning_logs/version_0/checkpoints/epoch=15-step=1264.ckpt" \
   --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \
   --no-use_vlm \
@@ -62,7 +62,7 @@ python -m navsim.planning.script.plt_vis_from_csv_all \
   # --token 00016f8b45c25a1d
 
 # python -m navsim.planning.script.plt_vis_from_csv_all \
-#   --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/v3_nav_station_4cam_novlm_IL_worldsim_eval/2026.08.26.05.52.15/2026.08.26.05.52.41.csv" \
+#   --csv "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp/v3_nav_station_4cam_novlm_RL_worldsim_eval/2026.08.26.08.14.46/2026.08.26.08.15.12.csv" \
 #   --out "vis_output/eval/v3_nav_station_4cam_novlm_RL_worldsim" \
 #   --checkpoint "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_nav_station_4cam_novlm_nav_station_RL/2026.08.25.10.09.13/lightning_logs/version_0/checkpoints/epoch=15-step=1264.ckpt" \
 #   --vlm_path "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct" \

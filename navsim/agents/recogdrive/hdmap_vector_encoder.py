@@ -38,11 +38,16 @@ class MapEncoder(nn.Module):
         num_tl_states: int = 5,
         num_control_types: int = 3,
         num_tl_directions: int = 6,
+        num_boundary_types: int = 3,
         use_lane_boundaries: bool = False,
+        encode_boundary_constraint: bool = False,
         input_norm: bool = False,
+        _expand_from_13dim: bool = True,  # 新增：自动扩展旧checkpoint
     ) -> None:
         super().__init__()
         self.use_lane_boundaries = bool(use_lane_boundaries)
+        self.encode_boundary_constraint = bool(encode_boundary_constraint)
+        self._expand_from_13dim = bool(_expand_from_13dim)
         # fp16 数值加固（默认关，字节级零影响）：对进 encoder 的局部米制坐标做
         # nan_to_num→宽 clamp→scale 到 O(1)。局部坐标实测 <652m（远低于 fp16 上限 65504），
         # clamp 阈值取 ±1000 覆盖全部真实数据不截断，仅兜底极端/脏坐标；scale 让首层 Linear
@@ -52,8 +57,14 @@ class MapEncoder(nn.Module):
         self.input_norm = bool(input_norm)
         self._pos_clamp, self._pos_scale = 1000.0, 100.0
         self._vec_clamp, self._vec_scale = 100.0, 10.0
-        # 中心线 per-point 6 维 [pos(2), vec(2), sinθ, cosθ]；开启车道边界再拼 7 维边界几何 -> 13 维。
-        point_input_dim = 13 if self.use_lane_boundaries else 6
+        # 中心线 per-point 6 维 [pos(2), vec(2), sinθ, cosθ]；
+        # + use_lane_boundaries: 追加 7 维边界几何 -> 13 维
+        # + encode_boundary_constraint: 再追加 4 维边界约束 (left_type, left_weight, right_type, right_weight) -> 17 维
+        point_input_dim = 6
+        if self.use_lane_boundaries:
+            point_input_dim += 7
+        if self.encode_boundary_constraint:
+            point_input_dim += 4
         self.centerline_encoder = PointsEncoder(input_dim=point_input_dim, hidden_size=hidden_size)
         self.type_embedding = nn.Embedding(num_polygon_types, hidden_size)
         self.route_embedding = nn.Embedding(num_route_states, hidden_size)
@@ -82,6 +93,8 @@ class MapEncoder(nn.Module):
         polygon_speed_limit: torch.Tensor,
         point_valid_mask: torch.Tensor,
         map_valid_mask: torch.Tensor,
+        boundary_constraint: Optional[torch.Tensor] = None,
+        boundary_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         batch_size, max_map_tokens, _, sample_points, _ = point_position.shape
         dtype = self.output_norm.weight.dtype
@@ -117,6 +130,13 @@ class MapEncoder(nn.Module):
                 point_position, center_position, center_orientation
             )
             point_features = torch.cat([point_features, boundary_features], dim=-1)
+
+        # 开启边界约束编码：追加 4 维 [left_type_normalized, left_constraint, right_type_normalized, right_constraint]
+        if self.encode_boundary_constraint and boundary_constraint is not None and boundary_type is not None:
+            boundary_constraint_features = self._boundary_constraint_features(
+                boundary_constraint, boundary_type
+            )
+            point_features = torch.cat([point_features, boundary_constraint_features], dim=-1)
 
         flattened_points = point_features.reshape(batch_size * max_map_tokens, sample_points, -1)
         flattened_mask = point_valid_mask.reshape(batch_size * max_map_tokens, sample_points)
@@ -181,3 +201,60 @@ class MapEncoder(nn.Module):
         return torch.cat(
             [left_offset, right_offset, lane_width, signed_left, signed_right], dim=-1
         )                                                                          # (B,M,P,7)
+
+    def _boundary_constraint_features(
+        self,
+        boundary_constraint: torch.Tensor,
+        boundary_type: torch.Tensor,
+    ) -> torch.Tensor:
+        """从边界类型和约束权重构建 per-point 边界约束特征 (B, M, 2, P) -> (B, M, P, 4)。
+
+        Args:
+            boundary_constraint: (B, M, 2, P) 边界约束权重，1.0=NON_CROSSABLE, 0.0=其他
+            boundary_type: (B, M, 2, P) 边界类型整数编码 (0=DEFAULT, 1=CROSSABLE, 2=NON_CROSSABLE)
+
+        Returns:
+            (B, M, P, 4) 特征: [left_type_normalized, left_constraint, right_type_normalized, right_constraint]
+                - type_normalized: 类型归一化到 [0, 1] 范围
+                - constraint: 约束权重，直接使用 boundary_constraint
+        """
+        dtype = self.output_norm.weight.dtype
+        # boundary_constraint: (B, M, 2, P)
+        # boundary_type: (B, M, 2, P)
+        # 转换为 (B, M, P, 2) 以便拼接
+        constraint_left = boundary_constraint[:, :, 0, :].to(dtype=dtype)  # (B, M, P)
+        constraint_right = boundary_constraint[:, :, 1, :].to(dtype=dtype)  # (B, M, P)
+        type_left = boundary_type[:, :, 0, :].to(dtype=dtype) / 2.0        # (B, M, P) 归一化到 [0, 1]
+        type_right = boundary_type[:, :, 1, :].to(dtype=dtype) / 2.0       # (B, M, P)
+
+        return torch.stack(
+            [type_left, constraint_left, type_right, constraint_right], dim=-1
+        )  # (B, M, P, 4)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """加载checkpoint时自动扩展13→17维权重（兼容旧checkpoint）。"""
+        if not self._expand_from_13dim or not self.encode_boundary_constraint:
+            return super().load_state_dict(state_dict, strict=strict)
+
+        # 检查是否需要扩展：centerline_encoder.point_mlp.0.weight 从 (hidden, 13) → (hidden, 17)
+        key = "centerline_encoder.point_mlp.0.weight"
+        if key in state_dict:
+            old_weight = state_dict[key]
+            expected_in = 13 if self.use_lane_boundaries else 6
+            if old_weight.shape[1] == expected_in:  # 旧checkpoint是13维（或6维）
+                # 扩展到17维（或10维）：新增4维boundary constraint，用零初始化
+                import torch
+                new_in = expected_in + 4
+                new_weight = torch.zeros(old_weight.shape[0], new_in, dtype=old_weight.dtype)
+                new_weight[:, :expected_in] = old_weight  # 复制旧权重
+                # 新增的4维用小随机值初始化，让网络可学习
+                torch.nn.init.normal_(new_weight[:, expected_in:], std=0.02)
+                state_dict[key] = new_weight
+
+                # 同样扩展bias（如果存在）
+                bias_key = "centerline_encoder.point_mlp.0.bias"
+                if bias_key in state_dict:
+                    # bias维度不变，无需扩展
+                    pass
+
+        return super().load_state_dict(state_dict, strict=strict)

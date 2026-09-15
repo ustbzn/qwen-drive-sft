@@ -157,8 +157,9 @@ torchrun \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
   agent.use_lane_boundaries=true \
+  agent.encode_boundary_constraint=true \
   agent.hdmap_input_norm=false \
-  agent.use_explicit_safety_loss=false \
+  agent.use_explicit_safety_loss=true \
   agent.lambda_collision="${LAMBDA_COLLISION:-0.1}" \
   agent.lambda_offroad="${LAMBDA_OFFROAD:-0.05}" \
   agent.lambda_route="${LAMBDA_ROUTE:-0.02}" \
@@ -169,8 +170,9 @@ torchrun \
   trainer.params.max_epochs="${MAX_EPOCHS}" \
   trainer.params.num_nodes=1 \
   trainer.params.devices="${GPUS}" \
+  trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=v3_nav_station_4cam${VLM_TAG}${NAV_TAG}_IL \
+  experiment_name=v3_boundary_safetyloss_4cam${VLM_TAG}${NAV_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   "+log_split@_global_=${LOG_SPLIT}" \
   "${CACHE_ARGS[@]}" \

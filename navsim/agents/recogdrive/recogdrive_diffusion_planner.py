@@ -573,6 +573,11 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     map_sample_points: int = 20
     # 开启后 MapEncoder 额外编码左右车道边界几何（per-point 6->13 维），token 数/缓存均不变。
     use_lane_boundaries: bool = False
+    # 开启后 MapEncoder 再额外编码边界约束信息（per-point 再+4 维，总 17 维）。
+    # boundary type(0=DEFAULT,1=CROSSABLE,2=NON_CROSSABLE) + constraint weight(1.0 for NON_CROSSABLE)。
+    # Mogo SQLite map adapter 已保存边界类型到 metric cache，DiT 通过 cross-attention 学习边界约束，
+    # 抑制轨迹越过 NON_CROSSABLE 边界（路沿石、护栏等物理障碍）。依赖 use_hdmap_vector=true。
+    encode_boundary_constraint: bool = False
     # fp16 数值加固开关（默认关，字节级零影响）：对进 MapEncoder 的局部米制坐标做
     # nan_to_num→clamp→scale。仅影响 planner 内 MapEncoder.forward，不改缓存；从头训练效果
     # 一致，但旧 ckpt 不可热启（首层输入尺度变了）。多城市/长训 fp16 数值稳健性用。
@@ -582,6 +587,7 @@ class ReCogDriveDiffusionPlannerConfig(PretrainedConfig):
     num_map_tl_states: int = 5
     num_map_control_types: int = 3
     num_map_tl_directions: int = 6
+    num_map_boundary_types: int = 3
 
     # --- VLM 消融开关（默认 none，零影响）---
     # "none": 正常使用 VLM hidden state。
@@ -751,7 +757,9 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             num_tl_states=config.num_map_tl_states,
             num_control_types=config.num_map_control_types,
             num_tl_directions=config.num_map_tl_directions,
+            num_boundary_types=config.num_map_boundary_types,
             use_lane_boundaries=config.use_lane_boundaries,
+            encode_boundary_constraint=config.encode_boundary_constraint,
             input_norm=config.hdmap_input_norm,
         ) if config.use_hdmap_vector else None
 
@@ -875,6 +883,8 @@ class ReCogDriveDiffusionPlanner(nn.Module):
             polygon_speed_limit=action_input.map_polygon_speed_limit,
             point_valid_mask=action_input.map_point_valid_mask,
             map_valid_mask=action_input.map_valid_mask,
+            boundary_constraint=action_input.get("map_boundary_constraint"),
+            boundary_type=action_input.get("map_boundary_type"),
         )
 
     def _extract_obj_inputs(self, action_input: BatchFeature) -> Optional[Dict[str, torch.Tensor]]:

@@ -404,12 +404,14 @@ def _build_agent(model: str, args) -> video.ReCogDriveAgent:
         ego_status_encoder_type=str(args.ego_status_encoder_type),
         use_hdmap_vector=bool(args.use_hdmap_vector),
         use_lane_boundaries=bool(args.use_lane_boundaries),
+        encode_boundary_constraint=bool(args.encode_boundary_constraint),
         use_object_vector=bool(args.use_object_vector),
         object_encoder_type=str(args.object_encoder_type),
         static_speed_threshold=float(args.static_speed_threshold),
         max_obj_tokens=int(args.max_obj_tokens),
         include_static_objects=bool(args.include_static_objects),
         object_token_dropout=float(args.object_token_dropout),
+        eval_deterministic=bool(args.eval_deterministic),
         # 进出站导航 / 站点 token（对齐 nav_station ckpt）
         use_navigation_command=bool(args.use_navigation_command),
         use_station_token=bool(args.use_station_token),
@@ -531,10 +533,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为不超过指定大小的 GIF")
     parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
     parser.add_argument("--token", nargs="+", default=None, help="anchor scenario token（可传多个）")
-    parser.add_argument("--model", choices=["il", "rl", "both"], default="rl", help="IL / RL / 两者")
+    parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/v3_nav_station_4cam_novlm_RL_worldsim",
+        default="vis_output/gifs/v3_boundary_zhuhainudge_4cam_novlm_IL_0828",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -583,13 +585,13 @@ def main() -> None:
         parser.error(f"--colors 必须在 {MIN_FALLBACK_COLORS}-256 之间")
 
     default_token_list = [
-        "6778f89b398dee3ddde0156b2079e356",
-        "8ec9b77adeaa5c6aae500334f321f1c2",
-        "ec6788598cc3fa0b2ea7a667f03f7346",
-        "7a8525b11fea08e4187b4afe77ef9117",
-        "1e223bdaeed2f9c46bb351de8e712168",
-        "99bba5e74abb2261fa0c4a6328c1c611",
-        "f7dc542d3e1bf2c84c429f859b70ecbf",
+        # "6778f89b398dee3ddde0156b2079e356",
+        # "8ec9b77adeaa5c6aae500334f321f1c2",
+        # "ec6788598cc3fa0b2ea7a667f03f7346",
+        # "7a8525b11fea08e4187b4afe77ef9117",
+        # "1e223bdaeed2f9c46bb351de8e712168",
+        # "99bba5e74abb2261fa0c4a6328c1c611",
+        # "f7dc542d3e1bf2c84c429f859b70ecbf",
         # val case
         # "ceb0c7cd344ac2c9a39e6a61c1e38325",
         # "e9b6420244ff6cf9ab8c73fb1911c1a8",
@@ -612,6 +614,12 @@ def main() -> None:
         # "3ae98191a8cd036e003c8badf6891d44",
         # "3de132ffbc1093e50a4b70dd09a94eb6",
         # "1cb0c9121a1a285c64c8e56b47663c3a",
+        # "62b18008d41971db10b0efe0adfb0a46",
+        # "29286be540c6ad4b7d3141f50708b63d",
+        # "87542378170ccb2a477d3964eea9161e",
+        # "49cc92b208e3b16fd4cb3becfc65438a",
+        # "0d25dabb22875f5bed64b877e08dac15",
+        "0e77f1b1318b9d6eb64b0cd8e2364745",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:
