@@ -13,7 +13,7 @@ import torch.distributed as dist
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
-from navsim.planning.training.dataset import Dataset
+from navsim.planning.training.dataset import Dataset, apply_train_oversample
 from navsim.planning.training.distributed_cache_dataset import (
     build_distributed_cache_only_datasets,
     cache_index_sync_group,
@@ -207,6 +207,15 @@ def main(cfg: DictConfig) -> None:
     else:
         logger.info("Building SceneLoader")
         train_data, val_data = build_datasets(cfg, agent)
+
+    # 稀有场景过采样：只作用于训练集，val 保持原样，否则 val/loss_epoch 会被过采样
+    # 场景主导，ModelCheckpoint 的选点跟着偏。过采样在 cache index 之后进行，
+    # 不改动 index 的 spec 签名。
+    apply_train_oversample(
+        dataset=train_data,
+        tokens_path=str(cfg.get("train_oversample_tokens_path", "") or ""),
+        factor=int(cfg.get("train_oversample_factor", 1)),
+    )
 
     logger.info("Building Datasets")
     train_dataloader = DataLoader(train_data, collate_fn=custom_collate_fn,  **cfg.dataloader.params, shuffle=True)

@@ -59,7 +59,7 @@ if [ -n "${METRIC_CACHE_PATHS:-}" ]; then
 fi
 # Update CHECKPOINT to the HDMap IL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_recogdrive_ego_SDE_RL/2026.07.06.03.56.28/lightning_logs/version_0/checkpoints/epoch=19-step=640.ckpt}"
-CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_nav_station_4cam_novlm_nav_station_IL/2026.08.25.07.23.13/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt}"
+CHECKPOINT="${CHECKPOINT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_nudgex20_IL/2026.09.15.08.15.46/lightning_logs/version_0/checkpoints/epoch=13-step=4340.ckpt}"
 MASTER_PORT="${MASTER_PORT:-9675}"
 PORT=${PORT:-63665}
 GPUS=${GPUS:-8}
@@ -84,6 +84,14 @@ export USE_NAVIGATION_COMMAND="${USE_NAVIGATION_COMMAND:-true}"
 export USE_STATION_TOKEN="${USE_STATION_TOKEN:-true}"
 
 export EGO_STATUS_ENCODER="${EGO_STATUS_ENCODER:-attention}"
+
+# 稀有场景（road-nudge 绕行）过采样。默认 1 = 关闭，零影响。只作用于 train，val 不动。
+# 与 train_token_whitelist_path 是先后关系：白名单先决定哪些 token 进训练集，过采样再在
+# 其中复制目标 token；被白名单过滤掉的 token 不会因为在过采样列表里而回到训练集。
+# 用法：OVERSAMPLE_FACTOR=5 bash scripts/training/run_recogdrive_train_multi_node_rl_2b_mogo.sh
+OVERSAMPLE_TOKENS="${OVERSAMPLE_TOKENS:-${REPO_ROOT}/navsim/local_config/data_selection/nudge_oversample_tokens_v1.txt}"
+OVERSAMPLE_FACTOR="${OVERSAMPLE_FACTOR:-1}"
+
 # VLM 总开关：true(默认) | false(完全不用 VLM，模型更小)。use_vlm=false 时 planner 无 vl 投影层，
 # 缓存只读 recogdrive_ego_feature_v1.gz；旧 CACHE_PATH 须先用 --slim-only 补写 sidecar。
 # vlm_ablation 为 no-op；且 _init_grpo 的 reference 加载是 strict=True——CHECKPOINT/reference
@@ -148,6 +156,22 @@ if [ "${USE_STATION_TOKEN:-false}" = "true" ]; then
   NAV_TAG="${NAV_TAG}_station"
 fi
 
+# --- 稀有场景过采样（默认 1 = 关闭，零影响）---
+OVERSAMPLE_ARGS=()
+OVERSAMPLE_TAG=""
+if [ "${OVERSAMPLE_FACTOR}" != "1" ]; then
+  if [ ! -f "${OVERSAMPLE_TOKENS}" ]; then
+    echo "ERROR: OVERSAMPLE_FACTOR=${OVERSAMPLE_FACTOR} but token list not found: ${OVERSAMPLE_TOKENS}" >&2
+    echo "       generate it first: python scripts/cache_dataset/gen_nudge_oversample_tokens.py --manifest ${MOGO_MANIFEST}" >&2
+    exit 1
+  fi
+  OVERSAMPLE_ARGS=(
+    train_oversample_tokens_path="${OVERSAMPLE_TOKENS}"
+    train_oversample_factor="${OVERSAMPLE_FACTOR}"
+  )
+  OVERSAMPLE_TAG="_nudgex${OVERSAMPLE_FACTOR}"
+fi
+
 torchrun \
   --nnodes=1 \
   --node_rank="${MLP_ROLE_INDEX:-0}" \
@@ -171,6 +195,7 @@ torchrun \
   agent.sampling_method=ddim \
   agent.use_hdmap_vector=true \
   agent.use_lane_boundaries=true \
+  agent.encode_boundary_constraint=true \
   agent.ego_status_encoder_type="${EGO_STATUS_ENCODER}" \
   agent.ego_state_dropout="${EGO_STATE_DROPOUT:-0.75}" \
   agent.metric_cache_path="${METRIC_CACHE_PATH}" \
@@ -180,7 +205,7 @@ torchrun \
   trainer.params.devices="${GPUS}" \
   trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size=4 \
-  experiment_name=v3_nav_station_4cam${VLM_TAG}${NAV_TAG}_RL \
+  experiment_name=v3_boundary_4cam${VLM_TAG}${NAV_TAG}${OVERSAMPLE_TAG}_RL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   train_logs=null \
   val_logs=null \
@@ -188,7 +213,7 @@ torchrun \
   "${CACHE_ARGS[@]}" \
   use_cache_without_dataset=True \
   force_cache_computation=False \
-  "${OBJ_ARGS[@]}" "${IMG_ARGS[@]}" "${NAV_ARGS[@]}" > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
+  "${OBJ_ARGS[@]}" "${IMG_ARGS[@]}" "${NAV_ARGS[@]}" "${OVERSAMPLE_ARGS[@]}" > train_recogdrive_qwen3_agent_rl_2b.txt 2>&1
 
 python /pcpt/pcpt/project/jiangjunyuan/tools/simple_gpu_stress.py all
 

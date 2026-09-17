@@ -49,6 +49,16 @@ export IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_b0,cam_l0,cam_r0]}"
 export USE_NAVIGATION_COMMAND="${USE_NAVIGATION_COMMAND:-true}"
 export USE_STATION_TOKEN="${USE_STATION_TOKEN:-true}"
 
+# 稀有场景（road-nudge 绕行）过采样。默认 1 = 关闭，零影响。
+# token 列表用 scripts/cache_dataset/gen_nudge_oversample_tokens.py 生成，按 token 匹配而非
+# log 名：珠海 nudge 的 token 只在 nudge cache root，北京 nudge 的 token 全部通过 active 源
+# 数据集(0509_0626-0627 / 0714-0716)进入训练集，源 log 名不带 road-nudge 后缀。
+# 只作用于 train，val 不动。开启后 epoch 变长(step 数随总样本量增加)，与 baseline 比较时
+# 注意 lr schedule 与 ckpt 频率的变化。
+# 用法：OVERSAMPLE_FACTOR=5 bash scripts/training/run_recogdrive_qwen3_train_multi_node_2b.sh
+OVERSAMPLE_TOKENS="${OVERSAMPLE_TOKENS:-${REPO_ROOT}/navsim/local_config/data_selection/nudge_oversample_tokens_v1.txt}"
+OVERSAMPLE_FACTOR="${OVERSAMPLE_FACTOR:-20}"
+
 # 自车状态编码器：mlp(默认，零影响) | attention(SDE，训练时随机遮蔽运动学量以抑制外推捷径)。
 # 与 vlm_ablation 正交(none/zero 均生效)。IL/RL/eval 必须三处一致，否则 ckpt 加载错配
 # (attention 层被 initialize() strict=False 丢成随机初始化)。
@@ -134,6 +144,21 @@ if [ "${USE_STATION_TOKEN:-false}" = "true" ]; then
   NAV_TAG="${NAV_TAG}_station"
 fi
 
+# --- 稀有场景过采样（默认 1 = 关闭，零影响）---
+OVERSAMPLE_TAG=""
+if [ "${OVERSAMPLE_FACTOR}" != "1" ]; then
+  if [ ! -f "${OVERSAMPLE_TOKENS}" ]; then
+    echo "ERROR: OVERSAMPLE_FACTOR=${OVERSAMPLE_FACTOR} but token list not found: ${OVERSAMPLE_TOKENS}" >&2
+    echo "       generate it first: python scripts/cache_dataset/gen_nudge_oversample_tokens.py --manifest ${MOGO_MANIFEST}" >&2
+    exit 1
+  fi
+  set -- \
+    train_oversample_tokens_path="${OVERSAMPLE_TOKENS}" \
+    train_oversample_factor="${OVERSAMPLE_FACTOR}" \
+    "$@"
+  OVERSAMPLE_TAG="_nudgex${OVERSAMPLE_FACTOR}"
+fi
+
 #finetune lr=2e-5/orgin lr=1e-4
 torchrun \
   --nnodes=1 \
@@ -172,7 +197,7 @@ torchrun \
   trainer.params.devices="${GPUS}" \
   trainer.params.strategy=ddp_find_unused_parameters_true \
   dataloader.params.batch_size="${BATCH_SIZE}" \
-  experiment_name=v3_boundary_safetyloss_4cam${VLM_TAG}${NAV_TAG}_IL \
+  experiment_name=v3_boundary_safetyloss_4cam${VLM_TAG}${NAV_TAG}${OVERSAMPLE_TAG}_IL \
   train_test_split="${TRAIN_TEST_SPLIT}" \
   "+log_split@_global_=${LOG_SPLIT}" \
   "${CACHE_ARGS[@]}" \

@@ -156,11 +156,11 @@ datasets:
     cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/zhuhai/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
     metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/zhuhai/exp/metric_cache_mogo_v1
 
-  - name: beijing_road_nudge
-    city: beijing
-    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing
-    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
-    utm_zone: 50
-    utm_south: false
-    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
-    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/exp/metric_cache_mogo_v1
+  # - name: beijing_road_nudge
+  #   city: beijing
+  #   data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing
+  #   sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+  #   utm_zone: 50
+  #   utm_south: false
+  #   cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+  #   metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/exp/metric_cache_mogo_v1

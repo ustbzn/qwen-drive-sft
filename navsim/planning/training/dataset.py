@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from pathlib import Path
 import logging
 import pickle
@@ -494,6 +494,90 @@ class MultiCacheOnlyDataset(torch.utils.data.Dataset):
         _maybe_drop_hidden_state(features, self._drop_hidden_state)
 
         return (features, targets, sample.token)
+
+
+def load_oversample_tokens(path_str: str) -> List[str]:
+    """读取一行一个 token 的过采样列表；路径为空返回空列表。"""
+    if not path_str:
+        return []
+
+    tokens_path = Path(path_str)
+    if not tokens_path.is_file():
+        raise FileNotFoundError(f"Oversample token file not found: {tokens_path}")
+
+    with tokens_path.open("r") as fp:
+        return [line.strip() for line in fp if line.strip()]
+
+
+def apply_train_oversample(
+    dataset: torch.utils.data.Dataset,
+    tokens_path: str,
+    factor: int,
+) -> int:
+    """按 token 列表文件对训练集做过采样，返回新增样本数。"""
+    if not tokens_path or factor <= 1:
+        return 0
+    tokens = load_oversample_tokens(tokens_path)
+    logger.info("Loaded %d oversample token(s) from %s", len(tokens), tokens_path)
+    return oversample_train_dataset(dataset, tokens, factor)
+
+
+def oversample_train_dataset(
+    dataset: torch.utils.data.Dataset,
+    tokens: Optional[Sequence[str]],
+    factor: int,
+) -> int:
+    """就地复制指定 token 的训练样本，返回新增样本数。
+
+    只对训练集调用。过采样发生在 cache index 加载之后，因此不影响 index 的 spec
+    签名，已有索引文件可以复用。
+
+    按 token 而不是 log 名匹配：珠海 nudge 的 token 只存在于 nudge cache root，而
+    北京 nudge 的 token 全部通过 active 源数据集进入训练集（源 log 名不带
+    road-nudge 后缀），只有 token 粒度能同时覆盖两者。
+
+    :param dataset: CacheOnlyDataset 或 MultiCacheOnlyDataset
+    :param tokens: 需要过采样的 token；空则不做任何事
+    :param factor: 目标倍数，1 表示不过采样
+    :return: 新增的样本条数
+    """
+    if not tokens or factor <= 1:
+        return 0
+
+    target_tokens = set(tokens)
+    extra_copies = factor - 1
+
+    if isinstance(dataset, MultiCacheOnlyDataset):
+        # samples 是 list，重复条目即重复样本；tokens 需同步以保持与 samples 等长。
+        matched = [sample for sample in dataset.samples if sample.token in target_tokens]
+        dataset.samples.extend(matched * extra_copies)
+        dataset.tokens = [sample.token for sample in dataset.samples]
+    elif isinstance(dataset, CacheOnlyDataset):
+        # __getitem__ 按 idx 取 token 再查 _valid_cache_paths，重复 token 是安全的。
+        matched = [token for token in dataset.tokens if token in target_tokens]
+        dataset.tokens.extend(matched * extra_copies)
+    else:
+        raise TypeError(f"Unsupported dataset type for oversampling: {type(dataset)!r}")
+
+    added = len(matched) * extra_copies
+    matched_tokens = {
+        sample.token if isinstance(sample, CacheSampleKey) else sample for sample in matched
+    }
+    logger.info(
+        "Oversampled %d cached sample(s) by %dx (+%d samples); %d/%d requested token(s) present",
+        len(matched),
+        factor,
+        added,
+        len(matched_tokens),
+        len(target_tokens),
+    )
+    if not matched:
+        logger.warning(
+            "Oversampling requested for %d token(s) but none are in the training set; "
+            "check that the token list matches the active cache roots and log split",
+            len(target_tokens),
+        )
+    return added
 
 
 def normalize_cache_paths(

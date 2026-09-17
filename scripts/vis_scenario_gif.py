@@ -536,7 +536,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/v3_boundary_zhuhainudge_4cam_novlm_IL_0828",
+        default="vis_output/gifs/v3_boundary_safetyloss_4cam_novlm_IL_0828",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -562,7 +562,7 @@ def main() -> None:
     parser.add_argument(
         "--mogo-map-utm-zone",
         type=int,
-        default=51,
+        default=50,
         help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致",
     )
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
@@ -605,7 +605,7 @@ def main() -> None:
         # "948b6390b445d154ca6415b70b3ed9ed",
         # tsp
         # "0eacaa708f434fd1c0498e12c05eb3f9",
-        # "1b5c92eddf63406988f65d539e27b00f",
+        "1b5c92eddf63406988f65d539e27b00f",
         # "3429fa7aa5ea7720d9df32ee947e7c58",
         # "ef520a6c595c1cad0587a615c31c9a07",
         # "1a53cd20df6b6c44c14d32b934729f68",
@@ -619,7 +619,13 @@ def main() -> None:
         # "87542378170ccb2a477d3964eea9161e",
         # "49cc92b208e3b16fd4cb3becfc65438a",
         # "0d25dabb22875f5bed64b877e08dac15",
-        "0e77f1b1318b9d6eb64b0cd8e2364745",
+        # "0e77f1b1318b9d6eb64b0cd8e2364745",
+        # "0e441b4973e1fd4d803a2a91cd17c350",
+        # "0f1dbf8cfe4019cf366d1d90c327a2b0",
+        # "0fbb2d7414793189a572639592c6ee25",
+        # "2af57f532ce8e93b9ae200594721bb97",
+        # "2e4ac969834c686766ec84aa101516fd",
+        # "3ab8bdcb852a37695dba96d558b9a4d2",
     ]
     anchor_tokens = args.token or args.tokens
     if not anchor_tokens:

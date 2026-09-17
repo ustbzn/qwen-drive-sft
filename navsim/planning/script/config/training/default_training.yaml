@@ -31,6 +31,13 @@ seed: 0
 train_token_whitelist_path: '/NXT/lst/vla/recog_drive/navsim/local_config/data_selection/rl_grpo_n8000_selected_tokens_v1.txt' # optional train-only token whitelist for RL training; empty disables filtering
 # example: local_config/data_selection/rl_grpo_n2000_selected_tokens_v1.txt
 
+# 稀有场景过采样（默认关闭，零影响）。按 token 匹配，只作用于训练集，val 不受影响。
+# token 列表用 scripts/cache_dataset/gen_nudge_oversample_tokens.py 生成。
+# 过采样会拉长 epoch（step 数随总样本量增加），与 baseline 比较时需注意 lr schedule
+# 和 ckpt 频率的变化。
+train_oversample_tokens_path: ''
+train_oversample_factor: 1
+
 mogo_map:
   sqlite_path: ""
   map_name: "mogo"

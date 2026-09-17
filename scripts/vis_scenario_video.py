@@ -20,8 +20,8 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_0828/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_0828/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp")
 # os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset")
 # os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp")
 os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
@@ -54,8 +54,8 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/exp/v3_boundary_zhuhainudge_4cam_novlm_nav_station_IL/2026.09.10.08.38.40/lightning_logs/version_0/checkpoints/epoch=4-step=5.ckpt",
-    # "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_4cam_novlm_nav_station_IL/2026.09.10.05.11.31/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt",
+    # "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_nudgex20_IL/2026.09.15.08.15.46/lightning_logs/version_0/checkpoints/epoch=13-step=4340.ckpt",
+    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_IL/2026.09.10.09.40.06/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt",
     "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_RL/2026.08.18.11.59.28/lightning_logs/version_0/checkpoints/epoch=16-step=5321.ckpt",
 }
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"

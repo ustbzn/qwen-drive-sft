@@ -1287,6 +1287,8 @@ python scripts/evaluation/run_mogo_manifest_evaluation.py \
    `python "scripts/cache_dataset/remove_logs_from_split.py" --write`
    `python "scripts/cache_dataset/gen_mogo_multi_log_split.py" --manifest "navsim/planning/script/config/common/mogo_dataset/traffic_light.yaml" `
    `python "scripts/cache_dataset/gen_mogo_multi_log_split.py" --manifest "navsim/planning/script/config/common/mogo_dataset/nav_station.yaml" `
+   生成过采样 token 列表
+  `python scripts/cache_dataset/gen_nudge_oversample_tokens.py --manifest navsim/planning/script/config/common/mogo_dataset/nav_station.yaml`
 4. **训练/RL/评测命令都不用改**（脚本与 manifest 工具已默认 `mogo_multi`）：IL/RL 直接
    `bash scripts/training/run_recogdrive_qwen3_train_multi_node_2b.sh`（RL 换对应脚本）会自动把
    manifest 新增项的 `cache_path`/`metric_cache_path` 并入 `CACHE_PATHS`/`METRIC_CACHE_PATHS`；评测

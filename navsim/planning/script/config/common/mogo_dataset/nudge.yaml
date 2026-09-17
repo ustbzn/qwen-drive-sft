@@ -1,0 +1,34 @@
+# road-nudge 场景数据集，按城市聚合。共 491 个样本。
+# 筛选来源：
+#   珠海：0629-0701(107)、20260624(85)、20260709-20260714(188) 合计 380
+#   北京：0509_0626-0627(64)、0714-0716(47) 合计 111
+#
+# 每个派生 PKL 保留一个完整的 66 帧 10Hz 窗口；当前帧固定为索引 15，
+# 且其 scenario_type 归一化后严格等于 road-nudge。该窗口同时兼容
+# mogo_10hz 模型采样（4+10 帧，stride=5）和 Mogo metric cache（16+50 帧）。
+# PKL 位于各城市目录；地图及传感器目录通过软链复用原始数据。
+# 完整来源、中心 token 和输出路径见数据根目录 selection_manifest.json。
+
+merged_eval_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/merged_eval
+train_exp_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/exp
+
+datasets:
+  - name: zhuhai_road_nudge
+    city: zhuhai
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/zhuhai
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/zhuhai/dataset/maps/hm_zhuhai_1.4.2_20260604.sqlite
+    utm_zone: 49
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/zhuhai/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/zhuhai/exp/metric_cache_mogo_v1
+
+  # 北京两个源数据集在 2026-09-15 重新生成后带上了 road-nudge 标签，
+  # 由 0509_0626-0627（64）和 0714-0716（47）共筛出 111 个样本。
+  - name: beijing_road_nudge
+    city: beijing
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+    utm_zone: 50
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/exp/recogdrive_qwen3_notrain_obj_hdmap_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nudge/beijing/exp/metric_cache_mogo_v1

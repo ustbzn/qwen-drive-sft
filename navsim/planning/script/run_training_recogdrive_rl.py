@@ -12,7 +12,7 @@ import torch.distributed as dist
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
-from navsim.planning.training.dataset import Dataset
+from navsim.planning.training.dataset import Dataset, apply_train_oversample
 from navsim.planning.training.distributed_cache_dataset import (
     build_distributed_cache_only_datasets,
     cache_index_sync_group,
@@ -237,6 +237,15 @@ def main(cfg: DictConfig) -> None:
     else:
         logger.info("Building SceneLoader")
         train_data, val_data = build_datasets(cfg, agent, train_tokens)
+
+    # 稀有场景过采样：只作用于训练集。与 train_token_whitelist_path 是先后关系——
+    # 白名单先决定哪些 token 进训练集，过采样再在其中复制目标 token；被白名单
+    # 过滤掉的 token 不会因为出现在过采样列表里而回到训练集。
+    apply_train_oversample(
+        dataset=train_data,
+        tokens_path=str(cfg.get("train_oversample_tokens_path", "") or ""),
+        factor=int(cfg.get("train_oversample_factor", 1)),
+    )
 
     logger.info("Building Datasets")
     train_dataloader = DataLoader(train_data, collate_fn=custom_collate_fn,  **cfg.dataloader.params, shuffle=True)

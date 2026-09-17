@@ -61,7 +61,7 @@ SCENARIO_TYPE_CSV_PATH="${SCENARIO_TYPE_CSV_PATH:-${OPENSCENE_DATA_ROOT}/navsim_
 
 # Update CHECKPOINT to the HDMap RL run after training completes.
 # CHECKPOINT="${CHECKPOINT:-${NAVSIM_EXP_ROOT}/training_2603_ego_SDE_obj_hdmap_novlm_RL/2026.07.15.06.51.23/lightning_logs/version_0/checkpoints/epoch=19-step=140.ckpt}"
-CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_IL/2026.09.10.09.40.06/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt"
+CHECKPOINT="/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_nudgex20_IL/2026.09.15.08.15.46/lightning_logs/version_0/checkpoints/epoch=13-step=4340.ckpt"
 METRIC_CACHE_PATH="${METRIC_CACHE_PATH:-${NAVSIM_EXP_ROOT}/metric_cache_mogo_v1}"
 SQLITE_PATH="${SQLITE_PATH:-${OPENSCENE_DATA_ROOT}/maps/hm_beijing_3.4.9_20260521.sqlite}"
 MOGO_UTM_ZONE="${MOGO_UTM_ZONE:-50}"
@@ -150,7 +150,7 @@ torchrun \
   +use_gt_progress_reference="${USE_GT_PROGRESS_REFERENCE}" \
   +lane_change_centerline_full_score="${LANE_CHANGE_CENTERLINE_FULL_SCORE}" \
   +scenario_type_csv_path="${SCENARIO_TYPE_CSV_PATH}" \
-  experiment_name="${EXPERIMENT_NAME:-v3_boundary_saftyloss_4cam${VLM_TAG}${NAV_TAG}_IL_eval}" \
+  experiment_name="${EXPERIMENT_NAME:-v3_boundary_saftyloss_4cam_nudgex20${VLM_TAG}${NAV_TAG}_IL_eval}" \
   "$@"
 
 # "agent.view_list=[cam_f0]" \
