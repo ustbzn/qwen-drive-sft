@@ -1,0 +1,77 @@
+defaults:
+  - default_common
+  - default_evaluation
+  - log_split@_global_: nav_station
+  - agent: qwen_drive_agent
+  - override /train_test_split: mogo_qwen_drive
+  - _self_
+
+hydra:
+  run:
+    dir: ${output_dir}
+  output_subdir: code/hydra
+  job:
+    chdir: false
+  searchpath:
+    - pkg://navsim.planning.script.config.common
+
+experiment_name: qwen_drive_il
+seed: 0
+mogo_manifest: navsim/planning/script/config/common/mogo_dataset/nav_station.yaml
+mogo_dataset_names: null
+# 已核对原始 pkl：以下日志的全部 301 帧、全部相机 data_path 均为 null。
+# 在建立 train/val 索引前显式排除；修复源数据后可用 excluded_logs=[] 恢复。
+excluded_logs:
+  - JLBJA20073D_0717-0724__20260717152318_132__20260719130515_132
+  - JLBJA20073D_0717-0724__20260717152318_132__20260717152140_132
+navsim_log_path: null
+sensor_blobs_path: null
+cache_path: null
+cache_paths: null
+cache_index_dir: ${output_dir}/cache_index
+# 仅 use_cache_without_dataset=true 生效；MOGO 原始日志使用 log_load_workers。
+cache_index_workers: 96
+# indexed: rank 0 建立可复用的原始帧文件，各 rank/worker 按需读取。
+# null: 各 manifest 条目的 cache_path，缺省 <data_root>/exp/qwen35_drive_cache。
+# 显式设置 scene_cache_dir 则覆盖所有数据源；不能使用每次变化的 output_dir。
+scene_loading: indexed
+scene_cache_dir: null
+scene_cache_workers: 2
+prepare_scene_cache_only: false
+# 仅 scene_loading=eager 使用；该模式每个 rank 保存完整数据，限小数据调试。
+log_load_workers: 8
+cache_index_timeout_seconds: 86400
+rebuild_cache_index: false
+force_cache_computation: false
+use_cache_without_dataset: false
+train_token_whitelist_path: ''
+train_oversample_tokens_path: ''
+train_oversample_factor: 1
+use_deepspeed: false
+ckpt_path: null
+
+dataloader:
+  params:
+    # 每卡 micro-batch。优化超参是本仓库默认值，论文未公开对应数值。
+    batch_size: 8
+    num_workers: 8
+    pin_memory: true
+    prefetch_factor: null
+
+trainer:
+  params:
+    max_epochs: 20
+    accelerator: gpu
+    devices: 1
+    strategy: auto
+    precision: bf16-mixed
+    num_sanity_val_steps: 1
+    num_nodes: 1
+    check_val_every_n_epoch: 1
+    limit_train_batches: 1.0
+    limit_val_batches: 1.0
+    fast_dev_run: false
+    accumulate_grad_batches: 1
+    gradient_clip_val: 1.0
+    gradient_clip_algorithm: norm
+    default_root_dir: ${output_dir}

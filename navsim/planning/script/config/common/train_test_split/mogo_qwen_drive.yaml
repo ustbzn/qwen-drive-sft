@@ -1,0 +1,10 @@
+# Qwen-Drive-1.0 训练/评测用的 train_test_split。
+#
+# 与 mogo_trainval.yaml 结构一致，但 scene_filter 换成 mogo_qwen_drive
+# （16 history + 50 future @10Hz），与官方 Planning Expert 的轨迹几何对齐；
+# 与 mogo_trainval 的 mogo_10hz（4/10 帧 @2Hz）使用相同窗口和 token，
+# 但保留全部 10Hz 轨迹；日志拆分仍由 log_split 独立选择。
+defaults:
+  - scene_filter: mogo_qwen_drive
+
+data_split: trainval

@@ -805,7 +805,14 @@ class Dataset(torch.utils.data.Dataset):
         scene_feature_fn = getattr(builder, "compute_features_from_scene", None)
         if callable(scene_feature_fn):
             return scene_feature_fn(scene)
-        return builder.compute_features(agent_input)
+        try:
+            return builder.compute_features(agent_input)
+        except ValueError as error:
+            metadata = scene.scene_metadata
+            raise ValueError(
+                f"{error}；log_name={metadata.log_name}，token={metadata.initial_token}，"
+                f"feature_builder={builder.get_unique_name()}"
+            ) from error
 
     def load_token_cache(self, token: str) -> None:
         scene = self._scene_loader.get_scene_from_token(token)

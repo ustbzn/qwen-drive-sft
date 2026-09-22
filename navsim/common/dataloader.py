@@ -1,72 +1,127 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from typing import Any, Callable, Dict, Iterator, List, Optional
 from pathlib import Path
 import os
 
 from tqdm import tqdm
 import pickle
 import lzma
+import logging
+
+from navsim.common.scene_timestamps import timestamp_grid_error
+from navsim.common.scene_cameras import camera_grid_error, camera_presence_mask
+
+logger = logging.getLogger(__name__)
 
 from navsim.common.dataclasses import AgentInput, Scene, SceneFilter, SensorConfig
 from navsim.planning.metric_caching.metric_cache import MetricCache
 
 
-def filter_scenes(data_path: Path, scene_filter: SceneFilter) -> Dict[str, List[Dict[str, Any]]]:
+def _load_log_frames(log_path: Path) -> List[Dict[str, Any]]:
+    with log_path.open("rb") as stream:
+        return pickle.load(stream)
+
+
+def _iter_loaded_logs(
+    log_files: List[Path], num_workers: int,
+) -> Iterator[List[Dict[str, Any]]]:
+    """Prefetch at most num_workers logs, preserving the original log order.
+
+    Bound the queue: eagerly submitting every pickle can retain an entire extra
+    copy of the dataset while filtering is still consuming the early results.
+    Threads overlap storage I/O without serializing large frame dicts through IPC.
     """
-    Load a set of scenes from dataset, while applying scene filter configuration.
-    :param data_path: root directory of log folder
-    :param scene_filter: scene filtering configuration class
-    :return: dictionary of raw logs format
-    """
+    worker_count = min(num_workers, len(log_files))
+    if worker_count <= 1:
+        for log_path in log_files:
+            yield _load_log_frames(log_path)
+        return
 
-    def split_list(input_list: List[Any], scene_filter: SceneFilter) -> List[List[Any]]:
-        """Helper function to split frame list according to sampling specification."""
-        return [
-            input_list[i : i + scene_filter.num_raw_frames : scene_filter.frame_stride]
-            for i in range(0, len(input_list), scene_filter.frame_interval)
-        ]
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        remaining = iter(log_files)
+        pending = deque(executor.submit(_load_log_frames, next(remaining)) for _ in range(worker_count))
+        try:
+            while pending:
+                yield pending.popleft().result()
+                log_path = next(remaining, None)
+                if log_path is not None:
+                    pending.append(executor.submit(_load_log_frames, log_path))
+        finally:
+            # A max_scenes limit can stop consumption before the queue is empty.
+            for future in pending:
+                future.cancel()
 
-    filtered_scenes: Dict[str, Scene] = {}
-    stop_loading: bool = False
 
-    # filter logs
+def filter_scenes(
+    data_path: Path, scene_filter: SceneFilter, num_workers: int = 1,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Load filtered raw scenes; num_workers controls startup log I/O threads."""
+    if num_workers < 1:
+        raise ValueError("log loading num_workers must be positive")
+
+    filtered_scenes: Dict[str, List[Dict[str, Any]]] = {}
+    rejected_timestamps = 0
+    rejected_cameras = 0
     log_files = list(data_path.iterdir())
     if scene_filter.log_names is not None:
-        log_files = [log_file for log_file in log_files if log_file.name.replace(".pkl", "") in scene_filter.log_names]
+        log_names = set(scene_filter.log_names)
+        log_files = [log_file for log_file in log_files if log_file.name.replace(".pkl", "") in log_names]
+    tokens = set(scene_filter.tokens) if scene_filter.tokens is not None else None
+    description = f"Loading logs [workers={min(num_workers, len(log_files))}]"
 
-    if scene_filter.tokens is not None:
-        filter_tokens = True
-        tokens = set(scene_filter.tokens)
-    else:
-        filter_tokens = False
-
-    for log_pickle_path in tqdm(log_files, desc="Loading logs"):
-
-        scene_dict_list = pickle.load(open(log_pickle_path, "rb"))
-        for frame_list in split_list(scene_dict_list, scene_filter):
-            # Filter scenes which are too short
-            if len(frame_list) < scene_filter.num_frames:
-                continue
-
-            # Filter scenes with no route
-            if scene_filter.has_route and len(frame_list[scene_filter.num_history_frames - 1]["roadblock_ids"]) == 0:
-                continue
-
-            # Filter by token
-            token = frame_list[scene_filter.num_history_frames - 1]["token"]
-            if filter_tokens and token not in tokens:
-                continue
-
-            filtered_scenes[token] = frame_list
-
-            if (scene_filter.max_scenes is not None) and (len(filtered_scenes) >= scene_filter.max_scenes):
-                stop_loading = True
-                break
-
-        if stop_loading:
-            break
-
+    # Keep insertion order, duplicate-token handling and max_scenes identical to
+    # serial loading, irrespective of which worker finishes first.
+    with closing(_iter_loaded_logs(log_files, num_workers)) as loaded_logs:
+        for scene_dict_list in tqdm(loaded_logs, total=len(log_files), desc=description):
+            for offset in range(0, len(scene_dict_list), scene_filter.frame_interval):
+                frame_list = scene_dict_list[
+                    offset : offset + scene_filter.num_raw_frames : scene_filter.frame_stride
+                ]
+                if len(frame_list) < scene_filter.num_frames:
+                    continue
+                current_frame = frame_list[scene_filter.num_history_frames - 1]
+                if scene_filter.has_route and len(current_frame["roadblock_ids"]) == 0:
+                    continue
+                token = current_frame["token"]
+                if tokens is not None and token not in tokens:
+                    continue
+                if scene_filter.timestamp_interval_s is not None:
+                    error = timestamp_grid_error(
+                        [frame["timestamp"] for frame in frame_list],
+                        scene_filter.num_history_frames - 1,
+                        scene_filter.timestamp_interval_s, scene_filter.max_timestamp_error_s,
+                    )
+                    if error:
+                        rejected_timestamps += 1
+                        if rejected_timestamps <= 5:
+                            logger.warning("Excluding scene log=%s token=%s: %s",
+                                           current_frame["log_name"], token, error)
+                        continue
+                if scene_filter.required_camera_frames:
+                    error = camera_grid_error(
+                        [camera_presence_mask(frame.get("cams", {}))
+                         for frame in frame_list[:scene_filter.num_history_frames]],
+                        scene_filter.required_camera_frames,
+                    )
+                    if error:
+                        rejected_cameras += 1
+                        if rejected_cameras <= 5:
+                            logger.warning("Excluding scene log=%s token=%s: %s",
+                                           current_frame["log_name"], token, error)
+                        continue
+                filtered_scenes[token] = frame_list
+                if scene_filter.max_scenes is not None and len(filtered_scenes) >= scene_filter.max_scenes:
+                    return filtered_scenes
+    if rejected_cameras:
+        logger.warning("Excluded %d scenes with missing camera views from %s",
+                       rejected_cameras, data_path)
+    if rejected_timestamps:
+        logger.warning("Excluded %d scenes with invalid timestamps from %s",
+                       rejected_timestamps, data_path)
     return filtered_scenes
 
 
@@ -81,16 +136,18 @@ class SceneLoader:
         sensor_config: SensorConfig = SensorConfig.build_no_sensors(),
         load_image_path: bool = False,
         map_api_builder: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
+        log_load_workers: int = 1,
     ):
         """
         Initializes the scene data loader.
         :param data_path: root directory of log folder
         :param sensor_blobs_path: root directory of sensor data
         :param scene_filter: dataclass for scene filtering specification
+        :param log_load_workers: startup log I/O threads, separate from DataLoader workers
         :param sensor_config: dataclass for sensor loading specification, defaults to no sensors
         """
 
-        self.scene_frames_dicts = filter_scenes(data_path, scene_filter)
+        self.scene_frames_dicts = filter_scenes(data_path, scene_filter, num_workers=log_load_workers)
         self._sensor_blobs_path = sensor_blobs_path
         self._scene_filter = scene_filter
         self._sensor_config = sensor_config
@@ -132,10 +189,11 @@ class SceneLoader:
         :param token: scene identifier string.
         :return: scene dataclass
         """
-        assert token in self.tokens
-        map_api = self._map_api_builder(self.scene_frames_dicts[token]) if self._map_api_builder else None
+        assert token in self.scene_frames_dicts
+        scene_frames = self.scene_frames_dicts[token]
+        map_api = self._map_api_builder(scene_frames) if self._map_api_builder else None
         return Scene.from_scene_dict_list(
-            self.scene_frames_dicts[token],
+            scene_frames,
             self._sensor_blobs_path,
             num_history_frames=self._scene_filter.num_history_frames,
             num_future_frames=self._scene_filter.num_future_frames,
@@ -150,7 +208,7 @@ class SceneLoader:
         :param token: scene identifier string.
         :return: agent input dataclass
         """
-        assert token in self.tokens
+        assert token in self.scene_frames_dicts
         return AgentInput.from_scene_dict_list(
             self.scene_frames_dicts[token],
             self._sensor_blobs_path,

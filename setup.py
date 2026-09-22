@@ -20,6 +20,9 @@ setuptools.setup(
     python_requires=">=3.9",
     packages=setuptools.find_packages(script_folder),
     package_dir={"": "."},
+    package_data={
+        "navsim.agents.qwen_drive_planner.modeling": ["LICENSE", "UPSTREAM.json"],
+    },
     classifiers=[
         "Programming Language :: Python :: 3.9",
         "Operating System :: OS Independent",

@@ -1,0 +1,18 @@
+{
+  "name": "Qwen-Drive-1.0 planning core",
+  "source_repository": "Qwen-Drive-1.0-main",
+  "source_revision": "8fb42a32ca127b83ca647129392969b3afff1c8a",
+  "source_directory": "src/qwen_drive",
+  "vendored_on": "2026-09-18",
+  "license": "Apache-2.0",
+  "modifications": "No source changes; imported under navsim.agents.qwen_drive_planner.modeling. Training and multi-view adaptation remain in the parent package.",
+  "files_sha256": {
+    "__init__.py": "a652d3c63ed876d27245cad0ad07ec25d060f5c8d59b37de6764d0625ee15d9a",
+    "configuration_qwen_drive.py": "106ab3cd0eec8adac209321df36f13ab33d1f99f67ecdfc461367cc2f658d961",
+    "modeling_qwen_drive.py": "dd2dc3bad492f9f53030f66495b2159093d5565a040459fa5308ebe8c812a18c",
+    "planning_expert.py": "2d9330d71d4b7930ffedfdc2d842ece5d83d94d65960e26ea1473c80931c4ce1",
+    "scene.py": "5ebc976746f5c6ddbace1c18ef243c9b4b7ce4f1fcbb6224ce81a742d43aeee8",
+    "trajectory.py": "b62f3c678f5243d2b3339d2caa3581e753a45ae074a82ad23a995ce36f013bd5",
+    "LICENSE": "b69e73ac825394281fcf0de95d3caf73aa77ee4788351905082e632c8dc78ab2"
+  }
+}

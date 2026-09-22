@@ -1,0 +1,58 @@
+# Qwen-Drive-1.0 Planning Expert 训练/评测入口 agent 配置。
+#
+# 字段与 navsim.agents.qwen_drive_planner.qwen_drive_config.QwenDrivePlannerConfig
+# 逐一对应（QwenDriveAgent.__init__ 用 Hydra 扁平 kwargs 构造该 dataclass），
+# 默认值取自该 dataclass —— 改这两处任一处都必须同步改另一处。
+#
+# v1 目标：默认对齐官方 3 视角（<FRONT VIEW>/<FRONT LEFT VIEW>/<FRONT RIGHT VIEW>）
+# + 4 帧布局，才能期待复现官方权重的数值。把 view_list 换成
+# qwen_drive_config.FULL_VIEW_LIST（8 路，要求所选相机实际存在）即可做多视角实验，
+# 但那样已不再是"官方 3 视角对齐"配置，PE 需要重新训练/微调。
+
+_target_: navsim.agents.qwen_drive_planner.qwen_drive_agent.QwenDriveAgent
+_convert_: 'all'
+
+# --- 权重路径；模型源码使用仓库内 modeling/ ---
+vlm_path: /D2/NXT/vlm/miaobinqi/models/Qwen-Drive-1.0-4B
+planner_path: /D2/NXT/vlm/miaobinqi/models/Qwen-Drive-1.0-4B/planner-sft
+checkpoint_path: null
+
+# --- 视角 / 时序 ---
+# 官方 3 视角，顺序不可改（决定 prompt 里 <FRONT VIEW> 等标签的排列）。
+view_list: ['cam_f0', 'cam_l0', 'cam_r0']
+# 每个视角的相机帧数；官方训练用 4 帧（t-1.5s/t-1.0s/t-0.5s/t-0s）。
+num_camera_frames: 4
+
+# --- 轨迹几何（须与官方 planner-sft/config.json 一致；仅用于本仓库侧下标计算） ---
+num_history_points: 16
+num_future_points: 50
+trajectory_point_dim: 3
+
+# --- 训练（优化器超参是本仓库默认值，论文未公开）---
+lr: 1.0e-4
+weight_decay: 0.0
+# 官方 Fourier 和 mRoPE 的舍入依赖 bf16。
+train_dtype: bfloat16
+# VLM 恒 frozen + no_grad（v1 复现官方数值的前提）。
+freeze_vlm: true
+freeze_planner: false
+gradient_checkpointing: true
+
+# --- Flow matching（官方只发布了 sample，训练侧超参由本仓库确定） ---
+noise_beta_alpha: 1.5
+noise_beta_beta: 1.0
+# t_max 与官方推理端 min_one_minus_t=0.1 呼应，保证训练时 1-t >= 0.1。
+noise_t_max: 0.9
+
+# --- PDF 公式（8）：归一化空间中的 Huber 差分匹配 ---
+temporal_reg: true
+lambda_delta1: 2.0e-4
+lambda_delta2: 2.0e-5
+
+# --- 推理 ---
+num_inference_steps: 10
+num_samples: 1
+noise_seed: 42
+# 官方 PDM/NAVSIM 评测栅格：50@10Hz -> 8@2Hz。
+eval_num_poses: 8
+eval_horizon_s: 4.0

@@ -23,6 +23,8 @@ from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils imp
     convert_absolute_to_relative_se2_array,
 )
 
+from navsim.common.scene_cameras import CAMERA_BITS
+
 NAVSIM_INTERVAL_LENGTH: float = 0.5
 OPENSCENE_DATA_ROOT = os.environ.get("OPENSCENE_DATA_ROOT")
 NUPLAN_MAPS_ROOT = os.environ.get("NUPLAN_MAPS_ROOT")
@@ -671,6 +673,11 @@ class SceneFilter:
     max_scenes: Optional[int] = None
     log_names: Optional[List[str]] = None
     tokens: Optional[List[str]] = None
+    # Optional check on the retained frames (after frame_stride), in seconds.
+    timestamp_interval_s: Optional[float] = None
+    max_timestamp_error_s: float = 0.075
+    # At least one path must exist per view at these retained history indices.
+    required_camera_frames: Optional[Dict[str, List[int]]] = None
     # TODO: expand filter options
 
     def __post_init__(self):
@@ -682,6 +689,16 @@ class SceneFilter:
         assert self.num_future_frames >= 0, "SceneFilter: num_future_frames must greater equal zero."
         assert self.frame_interval >= 1, "SceneFilter: frame_interval must greater equal one."
         assert self.frame_stride >= 1, "SceneFilter: frame_stride must greater equal one."
+        for view, indices in (self.required_camera_frames or {}).items():
+            if view not in CAMERA_BITS or not indices:
+                raise ValueError(f"Invalid required_camera_frames entry: {view}={indices}")
+            if any(not isinstance(index, int) or not 0 <= index < self.num_history_frames for index in indices):
+                raise ValueError("required_camera_frames indices must be within retained history")
+        if self.timestamp_interval_s is not None:
+            if not np.isfinite(self.timestamp_interval_s) or self.timestamp_interval_s <= 0:
+                raise ValueError("timestamp_interval_s must be finite and positive")
+            if not np.isfinite(self.max_timestamp_error_s) or self.max_timestamp_error_s < 0:
+                raise ValueError("max_timestamp_error_s must be finite and nonnegative")
 
     @property
     def num_frames(self) -> int:

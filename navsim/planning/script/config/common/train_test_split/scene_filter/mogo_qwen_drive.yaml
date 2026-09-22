@@ -1,0 +1,28 @@
+_target_: navsim.common.dataclasses.SceneFilter
+_convert_: 'all'
+
+# Qwen-Drive-1.0 用的 scene filter。官方 Planning Expert 的轨迹几何是
+#   16 history points + 50 future points @ 10Hz
+# Mogo pkl 是原始约 10Hz 数据，保留每一帧轨迹；相机另取下标 0/5/10/15。
+# mogo_10hz 的 4/10/5 与这里的 16/50/1 使用相同原始窗口及当前帧 token：
+#   原始窗口：(4+10-1)*5+1 = (16+50-1)*1+1 = 66
+#   当前帧下标：(4-1)*5 = (16-1)*1 = 15
+#
+# 差别只在保留的轨迹密度；用 4/10/5 会丢失官方规划头所需的 10Hz 监督点。
+num_history_frames: 16
+num_future_frames: 50
+frame_stride: 1
+
+# 采样中心仍按 0.5s 推进（10Hz 下每 5 帧），与 mogo_10hz 一致，避免样本量爆炸。
+frame_interval: 5
+
+# 建索引时过滤与目标构造相同的异常时间窗口，保持 10Hz 监督契约。
+# 仅过滤样本，不修改原始时间戳/轨迹，不在 DataLoader worker 内随机换样本。
+timestamp_interval_s: 0.1
+max_timestamp_error_s: 0.075
+
+has_route: true
+
+max_scenes: null
+log_names: null
+tokens: null
