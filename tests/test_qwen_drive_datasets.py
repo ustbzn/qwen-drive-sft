@@ -4,6 +4,7 @@ import os
 import pickle
 import subprocess
 from contextlib import closing
+from io import BytesIO
 from threading import Event
 from pathlib import Path
 from types import SimpleNamespace
@@ -428,6 +429,19 @@ def test_indexed_filters_match_eager_raw_frames(tmp_path):
                 assert [frame["token"] for frame in actual] == [frame["token"] for frame in eager[token]]
                 np.testing.assert_array_equal(actual[0]["cams"]["CAM_F0"]["cam_intrinsic"],
                                               eager[token][0]["cams"]["CAM_F0"]["cam_intrinsic"])
+
+
+def test_numpy2_pickle_module_paths_load_on_numpy1():
+    from navsim.common import dataloader
+
+    # Simulate the module path emitted by NumPy 2 in a real array pickle.
+    payload = pickle.dumps(np.arange(3), protocol=5).replace(
+        b"\x8c\x12numpy.core.numeric", b"\x8c\x13numpy._core.numeric"
+    )
+    np.testing.assert_array_equal(dataloader._pickle_loads_compatible(payload), np.arange(3))
+    np.testing.assert_array_equal(
+        dataloader._pickle_load_compatible(BytesIO(payload)), np.arange(3)
+    )
 
 
 def test_raw_pack_resume_after_partial_failure(tmp_path, monkeypatch):

@@ -6,5 +6,6 @@
 # 但保留全部 10Hz 轨迹；日志拆分仍由 log_split 独立选择。
 defaults:
   - scene_filter: mogo_qwen_drive
+  - _self_
 
 data_split: trainval

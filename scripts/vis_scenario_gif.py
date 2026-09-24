@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import math
 import os
 import sys
@@ -22,6 +23,8 @@ import tempfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+
+import torch
 
 _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
@@ -120,7 +123,7 @@ def _save_trajectory_frame(
     scene,
     scene_traj,
     center_idx: int,
-    agent: video.ReCogDriveAgent,
+    agent,
     trajectory: Trajectory,
     trajectory_name: str,
     frame_path: Path,
@@ -159,7 +162,7 @@ def _save_trajectory_frame(
 
 def render_frames(
     tokens: list[str],
-    agent: video.ReCogDriveAgent,
+    agent,
     scene_loader: video.SceneLoader,
     scene_loader_traj: video.SceneLoader,
     prediction_frame_dir: Path,
@@ -179,7 +182,7 @@ def render_frames(
     for i, token in enumerate(tqdm(tokens, desc=description)):
         scene = scene_loader.get_scene_from_token(token)
         scene_traj = scene_loader_traj.get_scene_from_token(token)
-        agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input(), scene_traj)
+        agent_trajectory = video.compute_agent_trajectory(agent, scene_traj)
         lqr_trajectory = build_lqr_rollout_trajectory(
             scene,
             center_idx,
@@ -385,55 +388,9 @@ def frames_to_gif(
             )
 
 
-def _build_agent(model: str, args) -> video.ReCogDriveAgent:
-    agent = video.ReCogDriveAgent(
-        video.TrajectorySampling(time_horizon=4, interval_length=0.5),
-        checkpoint_path=video.CHECKPOINTS[model],
-        vlm_path=video.VLM_PATH,
-        cam_type="single",
-        vlm_type=str(args.vlm_type),
-        vl_hidden_dim=int(args.vl_hidden_dim),
-        dit_type=str(args.dit_type),
-        sampling_method=str(args.sampling_method),
-        cache_mode=False,
-        cache_hidden_state=False,
-        vlm_size="small",
-        grpo=False,
-        use_vlm=bool(args.use_vlm),
-        vlm_ablation=str(args.vlm_ablation),
-        ego_status_encoder_type=str(args.ego_status_encoder_type),
-        use_hdmap_vector=bool(args.use_hdmap_vector),
-        use_lane_boundaries=bool(args.use_lane_boundaries),
-        encode_boundary_constraint=bool(args.encode_boundary_constraint),
-        use_object_vector=bool(args.use_object_vector),
-        object_encoder_type=str(args.object_encoder_type),
-        static_speed_threshold=float(args.static_speed_threshold),
-        max_obj_tokens=int(args.max_obj_tokens),
-        include_static_objects=bool(args.include_static_objects),
-        object_token_dropout=float(args.object_token_dropout),
-        eval_deterministic=bool(args.eval_deterministic),
-        # 进出站导航 / 站点 token（对齐 nav_station ckpt）
-        use_navigation_command=bool(args.use_navigation_command),
-        use_station_token=bool(args.use_station_token),
-        max_station_tokens=int(args.max_station_tokens),
-        use_image_encoder=bool(args.use_image_encoder),
-        image_encoder_arch=str(args.image_encoder_arch),
-        image_encoder_pretrained=bool(args.image_encoder_pretrained),
-        image_encoder_pretrained_path=(
-            str(args.image_encoder_pretrained_path)
-            if args.image_encoder_pretrained_path
-            else None
-        ),
-        image_height=int(args.image_height),
-        image_width=int(args.image_width),
-        image_grid_h=int(args.image_grid_h),
-        image_grid_w=int(args.image_grid_w),
-        image_token_dropout=float(args.image_token_dropout),
-        image_view=args.image_view,
-        image_view_list=args.image_view_list,
-    )
-    agent.initialize()
-    return agent
+def _build_agent(model: str, args):
+    device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+    return video.build_visualization_agent(model, args, device)
 
 
 def generate_gifs_for_tokens(
@@ -446,26 +403,24 @@ def generate_gifs_for_tokens(
     openscene_root: Path,
     mogo_map_sqlite_path: Path,
 ) -> None:
-    image_views = video.normalize_image_view_list(args.image_view, args.image_view_list)
-    token_to_log = video.resolve_log_names(
-        anchor_tokens, scene_filter, openscene_root, image_views
-    )
-    log_names = sorted(set(token_to_log.values()))
-    scene_loader, scene_loader_traj = video.load_scene_loaders(
-        log_names,
-        scene_filter,
-        openscene_root,
-        mogo_map_sqlite_path,
-        args.mogo_map_utm_zone,
-        args.mogo_map_utm_south,
-        image_views,
-    )
-    log_to_tokens = video.build_log_token_sequences(scene_loader)
     frames_root.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     simulator = PDMSimulator(proposal_sampling=LQR_ROLLOUT_SAMPLING)
-
     for model in models:
         agent = _build_agent(model, args)
+        sensor_config = video.visualization_sensor_config(agent, args)
+        model_scene_filter = copy.deepcopy(scene_filter)
+        token_to_log = video.resolve_log_names(
+            anchor_tokens, model_scene_filter, openscene_root,
+            sensor_config=sensor_config, split=args.split,
+        )
+        log_names = sorted(set(token_to_log.values()))
+        scene_loader, scene_loader_traj = video.load_scene_loaders(
+            log_names, model_scene_filter, openscene_root, mogo_map_sqlite_path,
+            args.mogo_map_utm_zone, args.mogo_map_utm_south,
+            sensor_config=sensor_config, split=args.split,
+        )
+        log_to_tokens = video.build_log_token_sequences(scene_loader)
         for anchor in anchor_tokens:
             log_name = token_to_log[anchor]
             tokens = video.slice_tokens(log_to_tokens[log_name], anchor, args.window, args.full_log)
@@ -528,7 +483,6 @@ def generate_gifs_for_tokens(
                 if temporary_frames is not None:
                     temporary_frames.cleanup()
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="将 scenario token 所在 log 渲染为不超过指定大小的 GIF")
     parser.add_argument("tokens", nargs="*", help="anchor scenario token（兼容位置参数，可传多个）")
@@ -536,7 +490,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["il", "rl", "both"], default="il", help="IL / RL / 两者")
     parser.add_argument(
         "--output-dir",
-        default="vis_output/gifs/v3_boundary_safetyloss_4cam_novlm_IL_0828",
+        default="vis_output/gifs/qwen_drive_IL",
         help="GIF 输出目录",
     )
     parser.add_argument("--frames-dir", default="vis_output/gif_frames", help="中间帧目录")
@@ -562,15 +516,18 @@ def main() -> None:
     parser.add_argument(
         "--mogo-map-utm-zone",
         type=int,
-        default=50,
+        default=51,
         help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致",
     )
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
+    video._add_agent_family_args(parser)
     video._add_model_arch_args(parser)
     args = parser.parse_args()
 
     if args.gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    if args.agent_family == "qwen_drive" and args.model != "il":
+        parser.error("Qwen-Drive 当前只适配 IL checkpoint，请使用 --model il")
     if args.window < 0:
         parser.error("--window 不能为负数")
     if args.fps <= 0:
@@ -605,7 +562,7 @@ def main() -> None:
         # "948b6390b445d154ca6415b70b3ed9ed",
         # tsp
         # "0eacaa708f434fd1c0498e12c05eb3f9",
-        "1b5c92eddf63406988f65d539e27b00f",
+        # "1b5c92eddf63406988f65d539e27b00f",
         # "3429fa7aa5ea7720d9df32ee947e7c58",
         # "ef520a6c595c1cad0587a615c31c9a07",
         # "1a53cd20df6b6c44c14d32b934729f68",
@@ -618,11 +575,11 @@ def main() -> None:
         # "29286be540c6ad4b7d3141f50708b63d",
         # "87542378170ccb2a477d3964eea9161e",
         # "49cc92b208e3b16fd4cb3becfc65438a",
-        # "0d25dabb22875f5bed64b877e08dac15",
-        # "0e77f1b1318b9d6eb64b0cd8e2364745",
+        "0d25dabb22875f5bed64b877e08dac15",
+        "0e77f1b1318b9d6eb64b0cd8e2364745",
         # "0e441b4973e1fd4d803a2a91cd17c350",
         # "0f1dbf8cfe4019cf366d1d90c327a2b0",
-        # "0fbb2d7414793189a572639592c6ee25",
+        "0fbb2d7414793189a572639592c6ee25",
         # "2af57f532ce8e93b9ae200594721bb97",
         # "2e4ac969834c686766ec84aa101516fd",
         # "3ab8bdcb852a37695dba96d558b9a4d2",
@@ -635,7 +592,9 @@ def main() -> None:
     models = ["il", "rl"] if args.model == "both" else [args.model]
     output_dir = Path(args.output_dir)
     frames_root = Path(args.frames_dir)
-    openscene_root = Path(os.environ["OPENSCENE_DATA_ROOT"])
+    openscene_root = video.resolve_openscene_data_root(args)
+    args.split = args.split or ("trainval" if args.agent_family == "qwen_drive" else video.DATA_SPLIT)
+    args.mogo_map_utm_zone = args.mogo_map_utm_zone or 50
     mogo_map_sqlite_path = (
         Path(args.mogo_map_sqlite_path)
         if args.mogo_map_sqlite_path
@@ -643,7 +602,8 @@ def main() -> None:
     )
 
     hydra.initialize(config_path=video.HYDRA_CONFIG_PATH, version_base=None)
-    cfg = hydra.compose(config_name="mogo_trainval")
+    config_name = "mogo_qwen_drive" if args.agent_family == "qwen_drive" else "mogo_trainval"
+    cfg = hydra.compose(config_name=config_name)
     scene_filter: video.SceneFilter = instantiate(cfg.scene_filter)
     generate_gifs_for_tokens(
         anchor_tokens,

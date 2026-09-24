@@ -121,32 +121,32 @@ datasets:
     cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0804/exp/qwen35_drive_cache
     metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0804/exp/metric_cache_mogo_v1
 
-  # - name: beijing_0806-0809
-  #   city: beijing
-  #   data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809
-  #   sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
-  #   utm_zone: 50
-  #   utm_south: false
-  #   cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809/exp/qwen35_drive_cache
-  #   metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809/exp/metric_cache_mogo_v1
+  - name: beijing_0806-0809
+    city: beijing
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809/dataset/maps/hm_beijing_3.4.9_20260521.sqlite
+    utm_zone: 50
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809/exp/qwen35_drive_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0806-0809/exp/metric_cache_mogo_v1
 
-  # - name: shanghai_0818-0819
-  #   city: shanghai
-  #   data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819
-  #   sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819/dataset/maps/hm_shanghai_1.9.1_20260522.sqlite
-  #   utm_zone: 51
-  #   utm_south: false
-  #   cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819/exp/qwen35_drive_cache
-  #   metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819/exp/metric_cache_mogo_v1
+  - name: shanghai_0818-0819
+    city: shanghai
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819/dataset/maps/hm_shanghai_1.9.1_20260522.sqlite
+    utm_zone: 51
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819/exp/qwen35_drive_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0818-0819/exp/metric_cache_mogo_v1
 
-  # - name: shanghai_0820-0824
-  #   city: shanghai
-  #   data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824
-  #   sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824/dataset/maps/hm_shanghai_1.9.1_20260522.sqlite
-  #   utm_zone: 51
-  #   utm_south: false
-  #   cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824/exp/qwen35_drive_cache
-  #   metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824/exp/metric_cache_mogo_v1
+  - name: shanghai_0820-0824
+    city: shanghai
+    data_root: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824
+    sqlite_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824/dataset/maps/hm_shanghai_1.9.1_20260522.sqlite
+    utm_zone: 51
+    utm_south: false
+    cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824/exp/qwen35_drive_cache
+    metric_cache_path: /pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0820-0824/exp/metric_cache_mogo_v1
 
   - name: zhuhai_road_nudge
     city: zhuhai

@@ -29,11 +29,11 @@ fi
 # 以下优化参数是本仓库的实验起点，论文未公开 Stage 3 的 batch size / LR。
 # BATCH_SIZE 是每卡 micro-batch；有效全局 batch = BATCH_SIZE * GPUS * GRAD_ACCUM。
 GPUS="${GPUS:-8}"
-BATCH_SIZE="${BATCH_SIZE:-24}"
+BATCH_SIZE="${BATCH_SIZE:-56}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
 LR="${LR:-2e-5}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
-MAX_EPOCHS="${MAX_EPOCHS:-20}"
+MAX_EPOCHS="${MAX_EPOCHS:-5}"
 GRAD_CLIP="${GRAD_CLIP:-1.0}"
 PRECISION="${PRECISION:-bf16-mixed}"
 SEED="${SEED:-0}"
@@ -49,6 +49,29 @@ SCENE_CACHE_ONLY="${SCENE_CACHE_ONLY:-false}"
 LOG_LOAD_WORKERS="${LOG_LOAD_WORKERS:-16}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 CACHE_INDEX_WORKERS="${CACHE_INDEX_WORKERS:-96}"
+
+IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_l1,cam_r1]}"
+
+# Optional token-level rare-scene oversampling. The online Qwen dataset uses a
+# token-aware repeated-index view, so this works for both one source and manifests.
+OVERSAMPLE_FACTOR="${OVERSAMPLE_FACTOR:-20}"
+OVERSAMPLE_TOKENS="${OVERSAMPLE_TOKENS:-${REPO_ROOT}/navsim/local_config/data_selection/nudge_oversample_tokens_v1.txt}"
+OVERSAMPLE_ARGS=()
+if [[ ! "${OVERSAMPLE_FACTOR}" =~ ^[0-9]+$ ]] || (( OVERSAMPLE_FACTOR < 1 )); then
+  echo "ERROR: OVERSAMPLE_FACTOR must be a positive integer; got '${OVERSAMPLE_FACTOR}'" >&2
+  exit 2
+fi
+if (( OVERSAMPLE_FACTOR > 1 )); then
+  if [[ ! -f "${OVERSAMPLE_TOKENS}" ]]; then
+    echo "ERROR: OVERSAMPLE_FACTOR=${OVERSAMPLE_FACTOR} but token list not found: ${OVERSAMPLE_TOKENS}" >&2
+    echo "       generate it with scripts/cache_dataset/gen_nudge_oversample_tokens.py" >&2
+    exit 2
+  fi
+  OVERSAMPLE_ARGS=(
+    "train_oversample_tokens_path=${OVERSAMPLE_TOKENS}"
+    "train_oversample_factor=${OVERSAMPLE_FACTOR}"
+  )
+fi
 
 # 默认继续微调发布的 SFT expert；PLANNER_PATH=null 则随机初始化 PE。
 VLM_PATH="${VLM_PATH:-/D2/NXT/vlm/miaobinqi/models/Qwen-Drive-1.0-4B}"
@@ -71,6 +94,7 @@ exec "${PYTHON}" -m torch.distributed.run \
   "agent.planner_path=${PLANNER_PATH}" \
   "agent.lr=${LR}" \
   "agent.weight_decay=${WEIGHT_DECAY}" \
+  "agent.view_list=${IMAGE_VIEW_LIST}" \
   "seed=${SEED}" \
   "trainer.params.max_epochs=${MAX_EPOCHS}" \
   "trainer.params.devices=${GPUS}" \
@@ -86,6 +110,7 @@ exec "${PYTHON}" -m torch.distributed.run \
   "prepare_scene_cache_only=${SCENE_CACHE_ONLY}" \
   "log_load_workers=${LOG_LOAD_WORKERS}" \
   "cache_index_workers=${CACHE_INDEX_WORKERS}" \
+  "${OVERSAMPLE_ARGS[@]}" \
   "$@"
 
 

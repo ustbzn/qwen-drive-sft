@@ -236,6 +236,7 @@ class MultiViewScene:
     view_order: Tuple[str, ...]
     instruction_text: Optional[str] = None
     token: str = ""
+    navigation_instruction: Optional[str] = None
 
     def __post_init__(self) -> None:
         import numpy as np
@@ -299,14 +300,18 @@ class MultiViewScene:
         )
         text = proxy.instruction()
         if in_range:
-            return text
-        head, marker, _ = text.rpartition(NAV_COMMAND_TEXT_MARKER)
-        if not marker:
-            raise RuntimeError(
-                "官方 instruction 文案格式已变（未找到 "
-                f"{NAV_COMMAND_TEXT_MARKER!r}），无法安全改写越界 nav_command"
-            )
-        return f"{head}{marker}{NAV_COMMAND_NONE_TEXT}]"
+            pass
+        else:
+            head, marker, _ = text.rpartition(NAV_COMMAND_TEXT_MARKER)
+            if not marker:
+                raise RuntimeError(
+                    "官方 instruction 文案格式已变（未找到 "
+                    f"{NAV_COMMAND_TEXT_MARKER!r}），无法安全改写越界 nav_command"
+                )
+            text = f"{head}{marker}{NAV_COMMAND_NONE_TEXT}]"
+        if self.navigation_instruction:
+            text += f"\n3. {self.navigation_instruction}"
+        return text
 
 
 def make_multi_view_processor(base_processor: Any) -> Any:

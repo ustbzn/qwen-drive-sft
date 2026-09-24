@@ -214,6 +214,7 @@ class QwenDriveAgent(AbstractAgent):
         history_acceleration: torch.Tensor,
         ego_status: torch.Tensor,
         nav_command: int,
+        navigation_instruction: Optional[str] = None,
     ) -> MultiViewScene:
         """把一个样本的特征拼成官方 processor 可消费的 scene（train/eval 同源）。
 
@@ -249,6 +250,7 @@ class QwenDriveAgent(AbstractAgent):
             driving_command=ego[4:8],
             nav_command=int(nav_command),
             view_order=tuple(labels),
+            navigation_instruction=navigation_instruction,
         )
 
     # ------------------------------------------------------------------ VLM 前向
@@ -274,6 +276,7 @@ class QwenDriveAgent(AbstractAgent):
         view_frame_paths = features[QWEN_DRIVE_IMAGE_KEY]
         batch = len(view_frame_paths)
         nav_command = features["nav_command"].reshape(-1)
+        navigation_instructions = features.get("navigation_instruction", [None] * batch)
 
         per_sample_cache: List[List[Tuple[torch.Tensor, torch.Tensor]]] = []
         anchors: List[torch.Tensor] = []
@@ -287,6 +290,7 @@ class QwenDriveAgent(AbstractAgent):
                 features["history_acceleration"][index],
                 features["ego_status"][index],
                 int(nav_command[index].item()),
+                navigation_instructions[index],
             )
             inputs = self._processor(scene, with_reasoning=False, device=device)
             # 官方 `_prefill` 内部就是 VLM 前向 + `_scene_cache` + anchor，直接复用。
@@ -477,10 +481,14 @@ class QwenDriveAgent(AbstractAgent):
         for builder in self.get_feature_builders():
             features.update(builder.compute_features(agent_input))
 
-        # 加 batch 维：tensor 用 unsqueeze，图像路径矩阵是嵌套 list，包一层即可。
+        # 加 batch 维：tensor 用 unsqueeze；图像路径与导航文本按样本作为 list 传递。
         batched: Dict[str, Any] = {}
         for key, value in features.items():
-            batched[key] = [value] if key == QWEN_DRIVE_IMAGE_KEY else value.unsqueeze(0)
+            batched[key] = (
+                [value]
+                if key in (QWEN_DRIVE_IMAGE_KEY, "navigation_instruction")
+                else value.unsqueeze(0)
+            )
 
         trajectory = self.predict_trajectory_10hz(batched)[0].float().cpu().numpy()
         poses = resample_10hz_to_2hz(

@@ -522,6 +522,97 @@ def apply_train_oversample(
     return oversample_train_dataset(dataset, tokens, factor)
 
 
+class _IndexMappedDataset(torch.utils.data.Dataset):
+    """Expose a dataset through a possibly repeated sequence of source indices."""
+
+    def __init__(self, dataset: torch.utils.data.Dataset, indices: Sequence[int]):
+        self.dataset = dataset
+        self.indices = list(indices)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, index: int):
+        return self.dataset[self.indices[index]]
+
+
+def _scene_tokens_for_dataset(dataset: torch.utils.data.Dataset) -> List[str]:
+    """Return token order for Qwen's online Dataset, including concatenated sources."""
+    if isinstance(dataset, torch.utils.data.ConcatDataset):
+        return [
+            token
+            for child in dataset.datasets
+            for token in _scene_tokens_for_dataset(child)
+        ]
+
+    scene_loader = getattr(dataset, "_scene_loader", None)
+    tokens = getattr(scene_loader, "tokens", None)
+    if tokens is None:
+        raise TypeError(
+            "Qwen scene oversampling expects Dataset/ConcatDataset children with "
+            "_scene_loader.tokens; got "
+            f"{type(dataset)!r}"
+        )
+    tokens = list(tokens)
+    if len(tokens) != len(dataset):
+        raise ValueError(
+            f"Scene token count ({len(tokens)}) does not match dataset length ({len(dataset)})"
+        )
+    return tokens
+
+
+def oversample_qwen_train_dataset(
+    dataset: torch.utils.data.Dataset,
+    tokens: Optional[Sequence[str]],
+    factor: int,
+) -> Tuple[torch.utils.data.Dataset, int]:
+    """Return a Qwen online dataset view with selected scene tokens repeated.
+
+    The regular cache-only helper mutates token lists in CacheOnlyDataset classes.
+    Qwen IL computes features from raw scenes and uses Dataset/ConcatDataset instead,
+    so it needs an index view. Repetition is performed before DataLoader shuffling;
+    the validation dataset is never passed here.
+    """
+    if not tokens or factor <= 1:
+        return dataset, 0
+
+    source_tokens = _scene_tokens_for_dataset(dataset)
+    target_tokens = set(tokens)
+    matched_indices = [
+        index for index, token in enumerate(source_tokens) if token in target_tokens
+    ]
+    if not matched_indices:
+        logger.warning(
+            "Oversampling requested for %d token(s), but none are in the Qwen training set; "
+            "check the token list and train split",
+            len(target_tokens),
+        )
+        return dataset, 0
+
+    expanded_indices = list(range(len(dataset))) + matched_indices * (factor - 1)
+    added = len(matched_indices) * (factor - 1)
+    matched_tokens = {source_tokens[index] for index in matched_indices}
+    logger.info(
+        "Oversampled %d Qwen training sample(s) by %dx (+%d samples); "
+        "%d/%d requested token(s) present",
+        len(matched_indices), factor, added, len(matched_tokens), len(target_tokens),
+    )
+    return _IndexMappedDataset(dataset, expanded_indices), added
+
+
+def apply_qwen_train_oversample(
+    dataset: torch.utils.data.Dataset,
+    tokens_path: str,
+    factor: int,
+) -> Tuple[torch.utils.data.Dataset, int]:
+    """Load a token file and return the oversampled Qwen training dataset view."""
+    if not tokens_path or factor <= 1:
+        return dataset, 0
+    tokens = load_oversample_tokens(tokens_path)
+    logger.info("Loaded %d Qwen oversample token(s) from %s", len(tokens), tokens_path)
+    return oversample_qwen_train_dataset(dataset, tokens, factor)
+
+
 def oversample_train_dataset(
     dataset: torch.utils.data.Dataset,
     tokens: Optional[Sequence[str]],

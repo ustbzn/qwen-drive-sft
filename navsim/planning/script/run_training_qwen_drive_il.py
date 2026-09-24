@@ -50,7 +50,7 @@ from navsim.common.dataclasses import SceneFilter
 from navsim.common.scene_cameras import camera_requirements
 from navsim.common.dataloader import SceneLoader
 from navsim.common.indexed_scene_loader import IndexedSceneLoader, prepare_scene_index
-from navsim.planning.training.dataset import Dataset, apply_train_oversample
+from navsim.planning.training.dataset import Dataset, apply_qwen_train_oversample
 from navsim.planning.training.distributed_cache_dataset import (
     build_distributed_cache_only_datasets,
     cache_index_sync_group,
@@ -105,7 +105,7 @@ def custom_collate_fn(
     f0 = features_list[0]
 
     features: Dict[str, Any] = {}
-    required_keys = set(tensor_feature_keys) | {QWEN_DRIVE_IMAGE_KEY}
+    required_keys = set(tensor_feature_keys) | {QWEN_DRIVE_IMAGE_KEY, "navigation_instruction"}
     for sample in features_list:
         if not required_keys.issubset(sample):
             raise ValueError(f"Missing Qwen-Drive features: {sorted(required_keys - set(sample))}")
@@ -116,6 +116,10 @@ def custom_collate_fn(
         # 图像路径矩阵是嵌套 list，不是 tensor；QwenDriveAgent._encode_scenes 按 batch
         # 维逐样本取用，这里只需保持 list 顺序与其余 tensor 特征的 batch 维一致。
         features[QWEN_DRIVE_IMAGE_KEY] = [f[QWEN_DRIVE_IMAGE_KEY] for f in features_list]
+
+    # Per-sample natural-language commands have varying lengths and stay as Python
+    # strings; QwenDriveAgent adds each one to the matching scene prompt before VLM prefill.
+    features["navigation_instruction"] = [f["navigation_instruction"] for f in features_list]
 
     # Targets: stack generically (trajectory [B, 50, 3] included).
     target_keys = set(targets_list[0])
@@ -445,11 +449,13 @@ def main(cfg: DictConfig) -> None:
     # Rare-scene oversampling applies only to the training set; val stays intact
     # so val/loss_epoch and checkpoint selection are not biased. Applied after the
     # cache index is built so the index spec signature is unchanged.
-    apply_train_oversample(
+    train_data, added_oversample_samples = apply_qwen_train_oversample(
         dataset=train_data,
         tokens_path=str(cfg.get("train_oversample_tokens_path", "") or ""),
         factor=int(cfg.get("train_oversample_factor", 1)),
     )
+    if added_oversample_samples:
+        logger.info("Qwen training set includes %d added oversampled sample(s)", added_oversample_samples)
 
     logger.info("Building Datasets")
     train_dataloader = DataLoader(train_data, collate_fn=custom_collate_fn, **cfg.dataloader.params, shuffle=True)

@@ -16,12 +16,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+import torch
+
 _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_0828/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_0828/exp")
 # os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset")
 # os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp")
 os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
@@ -37,12 +39,15 @@ import matplotlib.pyplot as plt
 from hydra.utils import instantiate
 from tqdm import tqdm
 
-from navsim.agents.recogdrive.recogdrive_agent import (
-    DEFAULT_IMAGE_ENCODER_ARCH,
-    DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH,
-    ReCogDriveAgent,
-)
+DEFAULT_IMAGE_ENCODER_ARCH = "resnet101"
+DEFAULT_IMAGE_ENCODER_PRETRAINED_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/resnet101-cd907fc2.pth"
 from navsim.agents.recogdrive.front_image_features import normalize_image_view_list
+from navsim.agents.qwen_drive_planner.qwen_drive_agent import QwenDriveAgent
+from navsim.agents.qwen_drive_planner.qwen_drive_config import (
+    DEFAULT_PLANNER_PATH,
+    DEFAULT_VLM_PATH,
+    QwenDrivePlannerConfig,
+)
 from navsim.common.dataloader import SceneLoader
 from navsim.common.dataclasses import SceneFilter, SensorConfig
 from navsim.planning.scenario_builder.mogo_sqlite_map_adapter import (
@@ -54,13 +59,33 @@ from navsim.visualization.plots import plot_bev_and_camera_with_agent
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
 CHECKPOINTS = {
-    # "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_nudgex20_IL/2026.09.15.08.15.46/lightning_logs/version_0/checkpoints/epoch=13-step=4340.ckpt",
-    "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_IL/2026.09.10.09.40.06/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt",
+    "il": "/pcpt/pcpt/project/jiangjunyuan/code/VLA/qwenDrive_recogdrive/qwen_drive_runs/nav_station/qwen_drive_il/2026.09.21.02.50.50/lightning_logs/version_0/checkpoints/epoch=2-step=2955.ckpt",
+    # "il": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/nav_station/exp/v3_boundary_safetyloss_4cam_novlm_nav_station_IL/2026.09.10.09.40.06/lightning_logs/version_0/checkpoints/epoch=16-step=5032.ckpt",
     "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_RL/2026.08.18.11.59.28/lightning_logs/version_0/checkpoints/epoch=16-step=5321.ckpt",
 }
+DEFAULT_QWEN_DRIVE_CHECKPOINT = str(
+    _root
+    / "qwen_drive_runs/nav_station/qwen_drive_il/2026.09.21.02.50.50/"
+      "lightning_logs/version_0/checkpoints/epoch=4-step=4925.ckpt"
+)
+DEFAULT_QWEN_DRIVE_DATA_ROOT = "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset"
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"
 HYDRA_CONFIG_PATH = "../navsim/planning/script/config/common/train_test_split"
+
+
+def resolve_openscene_data_root(args) -> Path:
+    """Resolve the dataset root consistently for both scenario visualizers."""
+    if args.openscene_data_root:
+        return Path(args.openscene_data_root)
+    if args.agent_family == "qwen_drive":
+        root = (
+            os.environ.get("QWEN_DRIVE_OPENSCENE_DATA_ROOT")
+            or os.environ.get("OPENSCENE_DATA_ROOT")
+            or DEFAULT_QWEN_DRIVE_DATA_ROOT
+        )
+        return Path(root)
+    return Path(os.environ["OPENSCENE_DATA_ROOT"])
 
 
 def _default_mogo_map_sqlite_path(openscene_root: Path) -> Path:
@@ -121,9 +146,21 @@ def slice_tokens(sorted_tokens: list[str], anchor: str, window: int | None, full
     return sorted_tokens[start:end]
 
 
+def compute_agent_trajectory(agent, scene_traj):
+    """Dispatch NAVSIM input through the selected agent's inference API."""
+    agent_input = scene_traj.get_agent_input()
+    if isinstance(agent, QwenDriveAgent):
+        return agent.compute_trajectory(agent_input)
+    from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+
+    if not isinstance(agent, ReCogDriveAgent):
+        raise TypeError(f"Unsupported visualization agent: {type(agent).__name__}")
+    return agent.compute_trajectory_vis(agent_input, scene_traj)
+
+
 def render_frames(
     tokens: list[str],
-    agent: ReCogDriveAgent,
+    agent,
     scene_loader: SceneLoader,
     scene_loader_traj: SceneLoader,
     frame_dir: Path,
@@ -135,17 +172,25 @@ def render_frames(
     for i, token in enumerate(tqdm(tokens, desc=f"渲染帧 -> {frame_dir.name}")):
         scene = scene_loader.get_scene_from_token(token)
         scene_traj = scene_loader_traj.get_scene_from_token(token)
-        missing_views = [
-            view
-            for view in agent.image_view_list
-            if getattr(scene_traj.frames[center_idx].cameras, view).image is None
-        ] if agent.use_image_encoder else []
-        if agent.use_image_encoder and len(missing_views) == len(agent.image_view_list):
-            raise RuntimeError(
-                "Image Encoder 已启用，但 SceneLoader 没有提供任何配置视角图像: "
-                f"{missing_views}。请确认 sensor_config 与 scene_loader_traj 使用 load_image_path=True。"
-            )
-        agent_trajectory = agent.compute_trajectory_vis(scene_traj.get_agent_input(), scene_traj)
+        if not isinstance(agent, QwenDriveAgent):
+            from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+
+            if not isinstance(agent, ReCogDriveAgent):
+                raise TypeError(f"Unsupported visualization agent: {type(agent).__name__}")
+            missing_views = [
+                view
+                for view in agent.image_view_list
+                if getattr(scene_traj.frames[center_idx].cameras, view).image is None
+            ] if agent.use_image_encoder else []
+            if agent.use_image_encoder and len(missing_views) == len(agent.image_view_list):
+                raise RuntimeError(
+                    "Image Encoder 已启用，但 SceneLoader 没有提供任何配置视角图像: "
+                    f"{missing_views}。请确认 sensor_config 与 scene_loader_traj 使用 load_image_path=True。"
+                )
+        # Qwen-Drive consumes its 16-frame / three-view AgentInput and returns
+        # NAVSIM's 8-pose, 2 Hz trajectory directly.
+        agent_trajectory = compute_agent_trajectory(agent, scene_traj)
+
         fig, _, _ = plot_bev_and_camera_with_agent(
             scene,
             scene_traj,
@@ -158,7 +203,6 @@ def render_frames(
         plt.close(fig)
         frame_paths.append(frame_path)
     return frame_paths
-
 
 def frames_to_video(frame_paths: list[Path], out_path: Path, fps: float) -> None:
     if not frame_paths:
@@ -197,17 +241,19 @@ def resolve_log_names(
     scene_filter: SceneFilter,
     openscene_root: Path,
     image_view_list=None,
+    sensor_config: SensorConfig | None = None,
+    split: str = DATA_SPLIT,
 ) -> dict[str, str]:
     scene_filter.tokens = anchor_tokens
-    navsim_logs = openscene_root / "navsim_logs" / DATA_SPLIT
-    sensor_blobs = openscene_root / "sensor_blobs" / DATA_SPLIT
-    sensor_config = _front_camera_sensor_config(image_view_list)
+    navsim_logs = openscene_root / "navsim_logs" / split
+    sensor_blobs = openscene_root / "sensor_blobs" / split
+    sensor_config = sensor_config or _front_camera_sensor_config(image_view_list)
     scene_loader = SceneLoader(navsim_logs, sensor_blobs, scene_filter, sensor_config=sensor_config)
 
     token_to_log = {}
     for token in anchor_tokens:
         if token not in scene_loader.tokens:
-            raise ValueError(f"Token {token} 不在 navtest 数据中")
+            raise ValueError(f"Token {token} 不在 {split} 数据集中")
         token_to_log[token] = scene_loader.token_to_log_file[token]
     return token_to_log
 
@@ -220,13 +266,15 @@ def load_scene_loaders(
     mogo_map_utm_zone: int,
     mogo_map_utm_south: bool,
     image_view_list=None,
+    sensor_config: SensorConfig | None = None,
+    split: str = DATA_SPLIT,
 ) -> tuple[SceneLoader, SceneLoader]:
     scene_filter.tokens = None
     scene_filter.log_names = log_names
 
-    navsim_logs = openscene_root / "navsim_logs" / DATA_SPLIT
-    sensor_blobs = openscene_root / "sensor_blobs" / DATA_SPLIT
-    sensor_config = _front_camera_sensor_config(image_view_list)
+    navsim_logs = openscene_root / "navsim_logs" / split
+    sensor_blobs = openscene_root / "sensor_blobs" / split
+    sensor_config = sensor_config or _front_camera_sensor_config(image_view_list)
     map_api_builder = _build_mogo_map_api_builder(
         mogo_map_sqlite_path,
         scene_filter.num_history_frames,
@@ -251,6 +299,87 @@ def load_scene_loaders(
     )
     return scene_loader, scene_loader_traj
 
+def build_visualization_agent(model: str, args, device: torch.device):
+    """Build either the legacy ReCogDrive agent or the current Qwen-Drive IL agent."""
+    if args.agent_family == "qwen_drive":
+        if model != "il":
+            raise ValueError("Qwen-Drive visualization supports --model il; there is no RL checkpoint here")
+        checkpoint = args.checkpoint or DEFAULT_QWEN_DRIVE_CHECKPOINT
+        config = QwenDrivePlannerConfig(
+            vlm_path=args.qwen_drive_vlm_path,
+            planner_path=args.planner_path or None,
+            checkpoint_path=checkpoint,
+            view_list=list(args.qwen_view_list),
+            num_camera_frames=int(args.qwen_num_camera_frames),
+            num_inference_steps=int(args.num_inference_steps),
+            num_samples=int(args.num_samples),
+            noise_seed=int(args.noise_seed),
+            train_dtype=str(args.train_dtype),
+        )
+        agent = QwenDriveAgent(config)
+        agent.initialize()
+        agent.to(device)
+        return agent.eval()
+
+    from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
+
+    checkpoint = args.checkpoint or CHECKPOINTS[model]
+    agent = ReCogDriveAgent(
+        TrajectorySampling(time_horizon=4, interval_length=0.5),
+        checkpoint_path=checkpoint,
+        vlm_path=VLM_PATH,
+        cam_type="single",
+        vlm_type=str(args.vlm_type),
+        vl_hidden_dim=int(args.vl_hidden_dim),
+        dit_type=str(args.dit_type),
+        sampling_method=str(args.sampling_method),
+        cache_mode=False,
+        cache_hidden_state=False,
+        vlm_size="small",
+        grpo=False,
+        use_vlm=bool(args.use_vlm),
+        vlm_ablation=str(args.vlm_ablation),
+        ego_status_encoder_type=str(args.ego_status_encoder_type),
+        use_hdmap_vector=bool(args.use_hdmap_vector),
+        use_lane_boundaries=bool(args.use_lane_boundaries),
+        encode_boundary_constraint=bool(args.encode_boundary_constraint),
+        use_object_vector=bool(args.use_object_vector),
+        object_encoder_type=str(args.object_encoder_type),
+        static_speed_threshold=float(args.static_speed_threshold),
+        max_obj_tokens=int(args.max_obj_tokens),
+        include_static_objects=bool(args.include_static_objects),
+        object_token_dropout=float(args.object_token_dropout),
+        eval_deterministic=bool(args.eval_deterministic),
+        use_navigation_command=bool(args.use_navigation_command),
+        use_station_token=bool(args.use_station_token),
+        max_station_tokens=int(args.max_station_tokens),
+        use_image_encoder=bool(args.use_image_encoder),
+        image_encoder_arch=str(args.image_encoder_arch),
+        image_encoder_pretrained=bool(args.image_encoder_pretrained),
+        image_encoder_pretrained_path=(
+            str(args.image_encoder_pretrained_path) if args.image_encoder_pretrained_path else None
+        ),
+        image_height=int(args.image_height),
+        image_width=int(args.image_width),
+        image_grid_h=int(args.image_grid_h),
+        image_grid_w=int(args.image_grid_w),
+        image_token_dropout=float(args.image_token_dropout),
+        image_view=args.image_view,
+        image_view_list=args.image_view_list,
+    )
+    agent.initialize()
+    agent.to(device)
+    return agent
+
+
+def visualization_sensor_config(agent, args) -> SensorConfig:
+    if isinstance(agent, QwenDriveAgent):
+        return agent.get_sensor_config()
+    return _front_camera_sensor_config(
+        normalize_image_view_list(image_view=args.image_view, image_view_list=args.image_view_list)
+    )
+
+
 def generate_videos_for_tokens(
     anchor_tokens: list[str],
     models: list[str],
@@ -261,71 +390,22 @@ def generate_videos_for_tokens(
     openscene_root: Path,
     mogo_map_sqlite_path: Path,
 ):
-    image_views = normalize_image_view_list(args.image_view, args.image_view_list)
-    token_to_log = resolve_log_names(
-        anchor_tokens, scene_filter, openscene_root, image_views
-    )
-    log_names = sorted(set(token_to_log.values()))
-    scene_loader, scene_loader_traj = load_scene_loaders(
-        log_names,
-        scene_filter,
-        openscene_root,
-        mogo_map_sqlite_path,
-        args.mogo_map_utm_zone,
-        args.mogo_map_utm_south,
-        image_views,
-    )
-    log_to_tokens = build_log_token_sequences(scene_loader)
-
+    device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+    output_dir.mkdir(parents=True, exist_ok=True)
     for model in models:
-        agent = ReCogDriveAgent(
-            TrajectorySampling(time_horizon=4, interval_length=0.5),
-            checkpoint_path=CHECKPOINTS[model],
-            vlm_path=VLM_PATH,
-            cam_type="single",
-            vlm_type=str(args.vlm_type),
-            vl_hidden_dim=int(args.vl_hidden_dim),
-            dit_type=str(args.dit_type),
-            sampling_method=str(args.sampling_method),
-            cache_mode=False,
-            cache_hidden_state=False,
-            vlm_size="small",
-            grpo=False,
-            # 模型架构开关（来自 CLI，默认对齐历史 qwen3 ego-SDE+obj+hdmap 配置）
-            use_vlm=bool(args.use_vlm),
-            vlm_ablation=str(args.vlm_ablation),
-            ego_status_encoder_type=str(args.ego_status_encoder_type),
-            use_hdmap_vector=bool(args.use_hdmap_vector),
-            use_lane_boundaries=bool(args.use_lane_boundaries),
-            encode_boundary_constraint=bool(args.encode_boundary_constraint),
-            use_object_vector=bool(args.use_object_vector),
-            object_encoder_type=str(args.object_encoder_type),
-            static_speed_threshold=float(args.static_speed_threshold),
-            max_obj_tokens=int(args.max_obj_tokens),
-            include_static_objects=bool(args.include_static_objects),
-            object_token_dropout=float(args.object_token_dropout),
-            eval_deterministic=bool(args.eval_deterministic),
-            # 进出站导航 / 站点 token（对齐 nav_station ckpt）
-            use_navigation_command=bool(args.use_navigation_command),
-            use_station_token=bool(args.use_station_token),
-            max_station_tokens=int(args.max_station_tokens),
-            use_image_encoder=bool(args.use_image_encoder),
-            image_encoder_arch=str(args.image_encoder_arch),
-            image_encoder_pretrained=bool(args.image_encoder_pretrained),
-            image_encoder_pretrained_path=(
-                str(args.image_encoder_pretrained_path)
-                if args.image_encoder_pretrained_path
-                else None
-            ),
-            image_height=int(args.image_height),
-            image_width=int(args.image_width),
-            image_grid_h=int(args.image_grid_h),
-            image_grid_w=int(args.image_grid_w),
-            image_token_dropout=float(args.image_token_dropout),
-            image_view=args.image_view,
-            image_view_list=args.image_view_list,
+        agent = build_visualization_agent(model, args, device)
+        sensor_config = visualization_sensor_config(agent, args)
+        token_to_log = resolve_log_names(
+            anchor_tokens, scene_filter, openscene_root,
+            sensor_config=sensor_config, split=args.split,
         )
-        agent.initialize()
+        log_names = sorted(set(token_to_log.values()))
+        scene_loader, scene_loader_traj = load_scene_loaders(
+            log_names, scene_filter, openscene_root, mogo_map_sqlite_path,
+            args.mogo_map_utm_zone, args.mogo_map_utm_south,
+            sensor_config=sensor_config, split=args.split,
+        )
+        log_to_tokens = build_log_token_sequences(scene_loader)
 
         for anchor in anchor_tokens:
             log_name = token_to_log[anchor]
@@ -341,6 +421,21 @@ def generate_videos_for_tokens(
 
             if not args.keep_frames:
                 shutil.rmtree(frame_dir)
+
+def _add_agent_family_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("agent family")
+    group.add_argument("--agent-family", choices=["recogdrive", "qwen_drive"], default="qwen_drive")
+    group.add_argument("--checkpoint", default="", help="覆盖默认模型 checkpoint")
+    group.add_argument("--qwen-drive-vlm-path", default=DEFAULT_VLM_PATH)
+    group.add_argument("--planner-path", default=DEFAULT_PLANNER_PATH)
+    group.add_argument("--qwen-view-list", nargs="+", default=["cam_f0", "cam_l0", "cam_r0"])
+    group.add_argument("--qwen-num-camera-frames", type=int, default=4)
+    group.add_argument("--num-inference-steps", type=int, default=10)
+    group.add_argument("--num-samples", type=int, default=1)
+    group.add_argument("--noise-seed", type=int, default=42)
+    group.add_argument("--train-dtype", default="bfloat16")
+    group.add_argument("--openscene-data-root", default="")
+    group.add_argument("--split", default="", help="navsim_logs/sensor_blobs 子目录；Qwen-Drive 默认 trainval")
 
 
 def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
@@ -422,12 +517,13 @@ def main():
     parser.add_argument("--keep-frames", action="store_true", help="保留中间 PNG 帧")
     parser.add_argument("--gpu", type=int, default=None, help="指定 GPU")
     parser.add_argument("--mogo-map-sqlite-path", default="", help="MOGO sqlite 地图路径；默认使用 OPENSCENE_DATA_ROOT/maps 下第一个 .sqlite")
-    parser.add_argument("--mogo-map-utm-zone", type=int, default=51, help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致")
+    parser.add_argument("--mogo-map-utm-zone", type=int, default=None, help="MOGO 地图经纬度转 UTM 的 zone，需和 metric caching 一致")
     parser.add_argument("--mogo-map-utm-south", action="store_true", help="使用 UTM 南半球坐标系")
+    _add_agent_family_args(parser)
     _add_model_arch_args(parser)
     args = parser.parse_args()
 
-    if args.use_image_encoder:
+    if args.agent_family == "recogdrive" and args.use_image_encoder:
         if args.image_height <= 0 or args.image_width <= 0:
             parser.error("--image-height/--image-width 必须大于 0")
         if args.image_grid_h <= 0 or args.image_grid_w <= 0:
@@ -443,10 +539,14 @@ def main():
     if args.gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
+    if args.agent_family == "qwen_drive" and args.model != "il":
+        parser.error("Qwen-Drive 当前只适配 IL checkpoint，请使用 --model il")
     models = ["il", "rl"] if args.model == "both" else [args.model]
     output_dir = Path(args.output_dir)
     frames_root = Path(args.frames_dir)
-    openscene_root = Path(os.environ["OPENSCENE_DATA_ROOT"])
+    openscene_root = resolve_openscene_data_root(args)
+    args.split = args.split or ("trainval" if args.agent_family == "qwen_drive" else DATA_SPLIT)
+    args.mogo_map_utm_zone = args.mogo_map_utm_zone or (50 if args.agent_family == "qwen_drive" else 51)
     mogo_map_sqlite_path = (
         Path(args.mogo_map_sqlite_path)
         if args.mogo_map_sqlite_path
@@ -454,7 +554,8 @@ def main():
     )
 
     hydra.initialize(config_path=HYDRA_CONFIG_PATH, version_base=None)
-    cfg = hydra.compose(config_name="mogo_trainval")
+    config_name = "mogo_qwen_drive" if args.agent_family == "qwen_drive" else "mogo_trainval"
+    cfg = hydra.compose(config_name=config_name)
     scene_filter: SceneFilter = instantiate(cfg.scene_filter)
     
     default_token_list = [

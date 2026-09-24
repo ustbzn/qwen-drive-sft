@@ -22,7 +22,8 @@ from navsim.agents.qwen_drive_planner.qwen_drive_config import (
 )
 from navsim.agents.qwen_drive_planner.qwen_drive_features import (
     build_qwen_drive_ego_features, collect_qwen_drive_view_frames,
-    nav_command_from_driving_command, QwenDriveTrajectoryTargetBuilder,
+    format_navigation_instruction, nav_command_from_driving_command,
+    QwenDriveTrajectoryTargetBuilder,
 )
 from navsim.agents.qwen_drive_planner.qwen_drive_flow import (
     endpoint_loss, interpolate_noisy_trajectory, sample_flow_time, temporal_smoothness_loss,
@@ -94,6 +95,7 @@ def make_features(offset=0.0):
         "history_acceleration": torch.zeros(16, 2),
         "ego_status": torch.tensor([1., 0., 0., 0., 0., 1., 0., 0.]),
         "nav_command": torch.tensor(0),
+        "navigation_instruction": None,
         "view_frame_paths": [
             [np.full((64, 64, 3), 30 + index, dtype=np.uint8) for index in range(4)]
             for _ in range(3)
@@ -151,6 +153,58 @@ def test_temporal_huber_coefficients_and_mask():
 ])
 def test_navigation_mapping(code, expected):
     assert nav_command_from_driving_command(code) == expected
+
+
+def test_full_navigation_instruction_formats_actions_distance_and_station_side():
+    text = format_navigation_instruction([
+        ["turn left", 46.0, 2, 3],
+        ["park", 8.5, 1, 1],
+    ])
+
+    assert "entry 1: action=turn left" in text
+    assert "distance=46.0 m" in text
+    assert "lane_range=[2, 3]" in text
+    assert "entry 2: action=park at the station" in text
+    assert "distance=8.5 m" in text
+    assert "station_side=left" in text
+
+
+def test_qwen_feature_builder_emits_structured_navigation_text():
+    statuses = [SimpleNamespace(
+        ego_pose=[0.0, 0.0, 0.0], ego_velocity=[1.0, 0.0],
+        ego_acceleration=[0.0, 0.0], driving_command=[0, 1, 0, 0],
+        navigation_command=None,
+    ) for _ in range(16)]
+    statuses[-1].navigation_command = [["turn right", 31.0, -1, -2]]
+
+    features = build_qwen_drive_ego_features(SimpleNamespace(ego_statuses=statuses))
+
+    assert "action=turn right" in features["navigation_instruction"]
+    assert "distance=31.0 m" in features["navigation_instruction"]
+
+
+def test_navigation_text_is_collated_and_added_to_qwen_prompt(tiny_model):
+    navigation_text = format_navigation_instruction([
+        ["turn left", 28.0, 1, 2],
+    ])
+    sample = make_features()
+    sample["navigation_instruction"] = navigation_text
+    target = {"trajectory": torch.zeros(50, 3)}
+    features, _, _ = custom_collate_fn([(sample, target)])
+
+    agent = make_agent(tiny_model)
+    scene = agent._build_scene(
+        features["view_frame_paths"][0], features["history"][0],
+        features["history_velocity"][0], features["history_acceleration"][0],
+        features["ego_status"][0], int(features["nav_command"][0]),
+        features["navigation_instruction"][0],
+    )
+
+    prompt = scene.instruction()
+    assert "Active navigation command: [GO STRAIGHT]" in prompt
+    assert "Detailed navigation instructions" in prompt
+    assert "action=turn left" in prompt
+    assert "distance=28.0 m" in prompt
 
 
 def test_eight_views_and_sparse_camera_loading():
@@ -222,7 +276,8 @@ def test_prompt_and_pixels_equal_official(tiny_model, official):
         features["history_acceleration"], features["ego_status"], 0,
     )
     standard_scene = official.DrivingScene(**{
-        key: value for key, value in vars(scene).items() if key != "view_order"
+        key: value for key, value in vars(scene).items()
+        if key not in {"view_order", "navigation_instruction"}
     })
     base = tiny_model.processor
     for reasoning in (False, True):

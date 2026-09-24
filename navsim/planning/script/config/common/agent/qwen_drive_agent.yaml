@@ -19,7 +19,7 @@ checkpoint_path: null
 
 # --- 视角 / 时序 ---
 # 官方 3 视角，顺序不可改（决定 prompt 里 <FRONT VIEW> 等标签的排列）。
-view_list: ['cam_f0', 'cam_l0', 'cam_r0']
+view_list: ['cam_f0', 'cam_l1', 'cam_r1']
 # 每个视角的相机帧数；官方训练用 4 帧（t-1.5s/t-1.0s/t-0.5s/t-0s）。
 num_camera_frames: 4
 

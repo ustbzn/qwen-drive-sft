@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import io
 from typing import Any, Callable, Dict, Iterator, List, Optional
 from pathlib import Path
 import os
@@ -21,9 +22,42 @@ from navsim.common.dataclasses import AgentInput, Scene, SceneFilter, SensorConf
 from navsim.planning.metric_caching.metric_cache import MetricCache
 
 
+class _NumpyCoreCompatUnpickler(pickle.Unpickler):
+    """Resolve NumPy 2 module paths when reading data with NumPy 1.x."""
+
+    def find_class(self, module: str, name: str) -> Any:
+        if module == "numpy._core" or module.startswith("numpy._core."):
+            module = "numpy.core" + module[len("numpy._core"):]
+        return super().find_class(module, name)
+
+
+def _pickle_load_compatible(stream) -> Any:
+    """Read a pickle, retrying NumPy 2 module paths on NumPy 1.x."""
+    position = stream.tell()
+    try:
+        return pickle.load(stream)
+    except ModuleNotFoundError as error:
+        missing_module = error.name or ""
+        if missing_module != "numpy._core" and not missing_module.startswith("numpy._core."):
+            raise
+        stream.seek(position)
+        return _NumpyCoreCompatUnpickler(stream).load()
+
+
+def _pickle_loads_compatible(payload) -> Any:
+    """Load a pickle payload without copying unless compatibility is needed."""
+    try:
+        return pickle.loads(payload)
+    except ModuleNotFoundError as error:
+        missing_module = error.name or ""
+        if missing_module != "numpy._core" and not missing_module.startswith("numpy._core."):
+            raise
+        return _NumpyCoreCompatUnpickler(io.BytesIO(payload)).load()
+
+
 def _load_log_frames(log_path: Path) -> List[Dict[str, Any]]:
     with log_path.open("rb") as stream:
-        return pickle.load(stream)
+        return _pickle_load_compatible(stream)
 
 
 def _iter_loaded_logs(

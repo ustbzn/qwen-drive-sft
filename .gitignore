@@ -62,3 +62,5 @@ docs
 *.md
 *.pdf
 .claude/
+
+!navsim/local_config/data_selection/nudge_oversample_tokens_v1.txt

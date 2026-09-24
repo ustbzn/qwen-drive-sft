@@ -83,6 +83,82 @@ def nav_command_from_driving_command(driving_command: Any) -> int:
     return _TEXT_TO_NAV_INDEX.get(text, NAV_COMMAND_NONE)
 
 
+def _finite_navigation_number(value: Any) -> Optional[float]:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if np.isfinite(result) else None
+
+
+def format_navigation_instruction(navigation_command: Any) -> Optional[str]:
+    """Render every structured Mogo navigation slot as explicit prompt text.
+
+    Each source entry is ``[type, distance_m, lane_a, lane_b]``. Distances and
+    lane bounds are kept visible as text so the frozen VLM can place them in the
+    same context K/V consumed by the planning expert.
+    """
+    if navigation_command is None:
+        return None
+    try:
+        entries = list(navigation_command)
+    except TypeError:
+        return None
+
+    action_labels = {
+        "straight": "go straight",
+        "turn left": "turn left",
+        "left": "turn left",
+        "turn right": "turn right",
+        "right": "turn right",
+        "u turn": "make a U-turn",
+        "u-turn": "make a U-turn",
+        "uturn": "make a U-turn",
+        "park": "park at the station",
+    }
+    rendered = []
+    for slot, entry in enumerate(entries, start=1):
+        try:
+            raw_type = entry[0]
+            distance = entry[1] if len(entry) > 1 else None
+            lane_a = entry[2] if len(entry) > 2 else None
+            lane_b = entry[3] if len(entry) > 3 else None
+        except (TypeError, IndexError, KeyError):
+            continue
+        if raw_type is None:
+            continue
+        raw_action = str(raw_type).strip().lower().replace("_", " ")
+        if raw_action in ("", "none", "null", "nan", "unknown"):
+            continue
+
+        action = action_labels.get(raw_action, str(raw_type).strip())
+        distance_m = _finite_navigation_number(distance)
+        fields = [f"entry {slot}: action={action}"]
+        fields.append(
+            f"distance={distance_m:.1f} m" if distance_m is not None else "distance=unspecified"
+        )
+        a_value = _finite_navigation_number(lane_a)
+        b_value = _finite_navigation_number(lane_b)
+        if a_value is not None or b_value is not None:
+            if raw_action == "park":
+                if a_value is not None and b_value is not None and a_value > 0 and b_value > 0:
+                    side = "left"
+                elif a_value is not None and b_value is not None and a_value < 0 and b_value < 0:
+                    side = "right"
+                else:
+                    side = "unknown"
+                fields.append(f"station_side={side}")
+            else:
+                a_text = f"{a_value:g}" if a_value is not None else "unspecified"
+                b_text = f"{b_value:g}" if b_value is not None else "unspecified"
+                fields.append(f"lane_range=[{a_text}, {b_text}]")
+        rendered.append("; ".join(fields))
+
+    if not rendered:
+        return None
+    return "Detailed navigation instructions, in source order: " + "; ".join(rendered) + "."
+
+
 def _edge_pad_front(array: np.ndarray, count: int) -> np.ndarray:
     """把序列首部按最早一行复制补齐到 count 行，并只保留最后 count 行。
 
@@ -97,7 +173,7 @@ def _edge_pad_front(array: np.ndarray, count: int) -> np.ndarray:
 def build_qwen_drive_ego_features(
     agent_input: AgentInput,
     num_history_points: int = 16,
-) -> Dict[str, torch.Tensor]:
+) -> Dict[str, Any]:
     """构造官方 PE 需要的自车张量（history 三分支 + ego_status + nav_command）。
 
     所有量都在当前帧 ego 坐标系下，oldest -> newest，最后一行是当前帧。
@@ -151,6 +227,9 @@ def build_qwen_drive_ego_features(
         "history_acceleration": torch.from_numpy(history_acceleration).float(),
         "ego_status": torch.from_numpy(ego_status).float(),
         "nav_command": torch.tensor(nav_command, dtype=torch.long),
+        "navigation_instruction": format_navigation_instruction(
+            getattr(current, "navigation_command", None)
+        ),
     }
 
 
@@ -242,7 +321,7 @@ class QwenDriveFeatureBuilder(AbstractFeatureBuilder):
     def get_unique_name(self) -> str:
         views = "-".join(self._config.view_list)
         return (
-            f"qwen_drive_feature_v2_h{self._config.num_history_points}"
+            f"qwen_drive_feature_v3_h{self._config.num_history_points}"
             f"_f{self._config.num_camera_frames}_{views}"
         )
 

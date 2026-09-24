@@ -4,6 +4,7 @@ from __future__ import annotations
 import gzip
 import pickle
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from navsim.planning.training.dataset import (  # noqa: E402
     CacheOnlyDataset,
     MultiCacheOnlyDataset,
     apply_train_oversample,
+    oversample_qwen_train_dataset,
     load_oversample_tokens,
     oversample_train_dataset,
 )
@@ -192,6 +194,57 @@ def test_apply_train_oversample_empty_path_is_noop(tmp_path, builders):
     )
     assert apply_train_oversample(dataset, "", factor=5) == 0
     assert len(dataset) == 1
+
+
+class _SceneBackedDataset(torch.utils.data.Dataset):
+    """Small stand-in for Qwen's raw-scene Dataset and its token ordering."""
+
+    def __init__(self, tokens):
+        self._scene_loader = SimpleNamespace(tokens=list(tokens))
+
+    def __len__(self):
+        return len(self._scene_loader.tokens)
+
+    def __getitem__(self, index):
+        return self._scene_loader.tokens[index]
+
+
+def test_qwen_online_dataset_oversamples_matching_tokens():
+    dataset = _SceneBackedDataset(["ordinary-a", "nudge-a", "ordinary-b"])
+
+    oversampled, added = oversample_qwen_train_dataset(dataset, ["nudge-a"], factor=4)
+
+    assert added == 3
+    assert len(oversampled) == 6
+    values = [oversampled[index] for index in range(len(oversampled))]
+    assert values.count("nudge-a") == 4
+    assert values.count("ordinary-a") == values.count("ordinary-b") == 1
+
+
+def test_qwen_concat_dataset_oversamples_tokens_across_sources():
+    dataset = torch.utils.data.ConcatDataset([
+        _SceneBackedDataset(["ordinary-a", "nudge-a"]),
+        _SceneBackedDataset(["ordinary-b", "nudge-b"]),
+    ])
+
+    oversampled, added = oversample_qwen_train_dataset(
+        dataset, ["nudge-b"], factor=3,
+    )
+
+    assert added == 2
+    values = [oversampled[index] for index in range(len(oversampled))]
+    assert values.count("nudge-b") == 3
+    assert values.count("ordinary-a") == values.count("nudge-a") == values.count("ordinary-b") == 1
+
+
+def test_qwen_oversampling_with_no_matching_token_is_noop():
+    dataset = _SceneBackedDataset(["ordinary-a"])
+
+    oversampled, added = oversample_qwen_train_dataset(dataset, ["missing"], factor=5)
+
+    assert oversampled is dataset
+    assert added == 0
+    assert len(oversampled) == 1
 
 
 # --- gen_mogo_multi_log_split.py 的派生窗口处理 ---------------------------------

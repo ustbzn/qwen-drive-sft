@@ -25,7 +25,12 @@ from typing import Any, Dict, Iterator, List, Optional
 from tqdm import tqdm
 
 from navsim.common.dataclasses import SceneFilter, SensorConfig
-from navsim.common.dataloader import SceneLoader, _load_log_frames
+from navsim.common.dataloader import (
+    SceneLoader,
+    _load_log_frames,
+    _pickle_load_compatible,
+    _pickle_loads_compatible,
+)
 from navsim.common.scene_timestamps import timestamp_grid_error
 from navsim.common.scene_cameras import camera_grid_error, camera_presence_mask
 
@@ -107,7 +112,7 @@ def _read_pack_frame_metadata(packed: PackedLog) -> list:
     metadata = []
     with open(packed.path, "rb") as stream:
         for _ in range(len(packed.offsets) - 1):
-            block = pickle.load(stream)
+            block = _pickle_load_compatible(stream)
             metadata.extend((int(frame["timestamp"]), camera_presence_mask(frame.get("cams", {})))
                             for frame in block)
             del block
@@ -325,7 +330,7 @@ class _IndexedFrames(Mapping):
         for block in range(first, last + 1):
             payload = memoryview(mapping)[pack.offsets[block]:pack.offsets[block + 1]]
             try:
-                frames.extend(pickle.loads(payload))
+                frames.extend(_pickle_loads_compatible(payload))
             finally:
                 payload.release()
         offset = start - first * _BLOCK_FRAMES

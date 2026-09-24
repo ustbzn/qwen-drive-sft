@@ -80,6 +80,10 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
     ), "Simulator and scorer proposal sampling has to be identical"
     agent: AbstractAgent = instantiate(cfg.agent)
     agent.initialize()
+    # QwenDriveAgent creates its VLM/planning expert during initialize(); move
+    # the newly-created module to the rank-local GPU before online inference.
+    if torch.cuda.is_available():
+        agent.to(torch.device("cuda", torch.cuda.current_device()))
 
     metric_cache_loader = MetricCacheLoader(Path(cfg.metric_cache_path))
     scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
