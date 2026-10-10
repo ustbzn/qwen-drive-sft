@@ -3,24 +3,57 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/qwen-drive/bin/python}"
-MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/nav_station.yaml}"
-MOGO_NAMES="${MOGO_NAMES:-}"
-if [[ -n "${MOGO_MANIFEST}" ]]; then
-  LOG_SPLIT="${LOG_SPLIT:-$(basename "${MOGO_MANIFEST}" .yaml)}"
-  DATA_ARGS=("mogo_manifest=${MOGO_MANIFEST}" "mogo_dataset_names=[${MOGO_NAMES}]")
-else
-  DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset}"
-  LOG_SPLIT="${LOG_SPLIT:-mogo}"
-  DATA_ARGS=(
-    "mogo_manifest=null"
-    "navsim_log_path=${DATA_ROOT}/navsim_logs/train"
-    "sensor_blobs_path=${DATA_ROOT}/sensor_blobs/train"
-  )
-fi
+DATASET_MODE="${DATASET_MODE:-mogo}"
+PHYSICALAI_ROOT="${PHYSICALAI_ROOT:-/pcpt/pcpt/data/VLA/PhysicalAI-AV}"
+PHYSICALAI_VIEW_LIST="${PHYSICALAI_VIEW_LIST:-[cam_f0,cam_l0,cam_r0]}"
+PHYSICALAI_ANCHOR_TIME_S="${PHYSICALAI_ANCHOR_TIME_S:-10.0}"
+PHYSICALAI_MAX_SAMPLES_PER_SPLIT="${PHYSICALAI_MAX_SAMPLES_PER_SPLIT:-null}"
+PHYSICALAI_SCAN_WORKERS="${PHYSICALAI_SCAN_WORKERS:-48}"
+PHYSICALAI_MIXTURE_RATIO="${PHYSICALAI_MIXTURE_RATIO:-proportional}"
+
+case "${DATASET_MODE}" in
+  mix|mixed)
+    DATASET_MODE="mixed"
+    ;;
+esac
+
+case "${DATASET_MODE}" in
+  mogo|mixed)
+    MOGO_MANIFEST="${MOGO_MANIFEST-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/nav_station.yaml}"
+    MOGO_NAMES="${MOGO_NAMES:-}"
+    if [[ -n "${MOGO_MANIFEST}" ]]; then
+      LOG_SPLIT="${LOG_SPLIT:-$(basename "${MOGO_MANIFEST}" .yaml)}"
+      DATA_ARGS=("mogo_manifest=${MOGO_MANIFEST}" "mogo_dataset_names=[${MOGO_NAMES}]")
+    else
+      DATA_ROOT="${DATA_ROOT:-/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0312_0319/dataset}"
+      LOG_SPLIT="${LOG_SPLIT:-mogo}"
+      DATA_ARGS=(
+        "mogo_manifest=null"
+        "navsim_log_path=${DATA_ROOT}/navsim_logs/train"
+        "sensor_blobs_path=${DATA_ROOT}/sensor_blobs/train"
+      )
+    fi
+    TRAINING_DATA_LABEL="${LOG_SPLIT}"
+    if [[ "${DATASET_MODE}" == "mixed" ]]; then
+      TRAINING_DATA_LABEL="${LOG_SPLIT}_mixed"
+    fi
+    ;;
+  physicalai)
+    # This config is still required by the Qwen IL Hydra defaults, but the
+    # PhysicalAI builder uses its official clip_index split directly.
+    LOG_SPLIT="${LOG_SPLIT:-nav_station}"
+    DATA_ARGS=("mogo_manifest=null")
+    TRAINING_DATA_LABEL="physicalai"
+    ;;
+  *)
+    echo "ERROR: DATASET_MODE must be mogo, physicalai, mix, or mixed; got '${DATASET_MODE}'" >&2
+    exit 2
+    ;;
+esac
 # 训练说明与论文已公开/未公开的参数见 docs/qwen_drive_stage3_training.md。
 # output_dir 是最终目录；未显式设置时，按 experiment_name / 时间戳隔离实验。
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen_drive_il}"
-RUNS_ROOT="${RUNS_ROOT:-${REPO_ROOT}/qwen_drive_runs/${LOG_SPLIT}}"
+RUNS_ROOT="${RUNS_ROOT:-${REPO_ROOT}/qwen_drive_runs/${TRAINING_DATA_LABEL}}"
 RUN_ID="${RUN_ID:-$(date +%Y.%m.%d.%H.%M.%S)}"
 if [[ -z "${OUTPUT_DIR:-}" ]]; then
   OUTPUT_DIR="${RUNS_ROOT}/"'${experiment_name}/${experiment_uid}'
@@ -54,7 +87,11 @@ IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_l1,cam_r1]}"
 
 # Optional token-level rare-scene oversampling. The online Qwen dataset uses a
 # token-aware repeated-index view, so this works for both one source and manifests.
-OVERSAMPLE_FACTOR="${OVERSAMPLE_FACTOR:-20}"
+if [[ "${DATASET_MODE}" == "mogo" ]]; then
+  OVERSAMPLE_FACTOR="${OVERSAMPLE_FACTOR:-20}"
+else
+  OVERSAMPLE_FACTOR="${OVERSAMPLE_FACTOR:-1}"
+fi
 OVERSAMPLE_TOKENS="${OVERSAMPLE_TOKENS:-${REPO_ROOT}/navsim/local_config/data_selection/nudge_oversample_tokens_v1.txt}"
 OVERSAMPLE_ARGS=()
 if [[ ! "${OVERSAMPLE_FACTOR}" =~ ^[0-9]+$ ]] || (( OVERSAMPLE_FACTOR < 1 )); then
@@ -62,6 +99,10 @@ if [[ ! "${OVERSAMPLE_FACTOR}" =~ ^[0-9]+$ ]] || (( OVERSAMPLE_FACTOR < 1 )); th
   exit 2
 fi
 if (( OVERSAMPLE_FACTOR > 1 )); then
+  if [[ "${DATASET_MODE}" != "mogo" ]]; then
+    echo "ERROR: token oversampling currently requires DATASET_MODE=mogo; set OVERSAMPLE_FACTOR=1 for ${DATASET_MODE} training" >&2
+    exit 2
+  fi
   if [[ ! -f "${OVERSAMPLE_TOKENS}" ]]; then
     echo "ERROR: OVERSAMPLE_FACTOR=${OVERSAMPLE_FACTOR} but token list not found: ${OVERSAMPLE_TOKENS}" >&2
     echo "       generate it with scripts/cache_dataset/gen_nudge_oversample_tokens.py" >&2
@@ -87,6 +128,13 @@ exec "${PYTHON}" -m torch.distributed.run \
   --module navsim.planning.script.run_training_qwen_drive_il \
   "log_split@_global_=${LOG_SPLIT}" \
   "${DATA_ARGS[@]}" \
+  "dataset_mode=${DATASET_MODE}" \
+  "physicalai_root=${PHYSICALAI_ROOT}" \
+  "physicalai_view_list=${PHYSICALAI_VIEW_LIST}" \
+  "physicalai_anchor_time_s=${PHYSICALAI_ANCHOR_TIME_S}" \
+  "physicalai_max_samples_per_split=${PHYSICALAI_MAX_SAMPLES_PER_SPLIT}" \
+  "physicalai_scan_workers=${PHYSICALAI_SCAN_WORKERS}" \
+  "physicalai_mixture_ratio=${PHYSICALAI_MIXTURE_RATIO}" \
   "experiment_name=${EXPERIMENT_NAME}" \
   "experiment_uid=${RUN_ID}" \
   "output_dir=${OUTPUT_DIR}" \

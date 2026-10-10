@@ -1,6 +1,6 @@
 """Qwen-Drive 适配契约：论文损失、官方前向、在线 VLM 和训练 checkpoint。"""
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -324,12 +324,70 @@ def test_online_vlm_backward_optimizer_and_checkpoint(tiny_model, official, tmp_
     wrapper.load_state_dict(checkpoint["state_dict"], strict=True)
 
 
+def test_qwen_lightning_transfer_preserves_frozen_lazy_image_frames():
+    @dataclass(frozen=True)
+    class FrozenFrame:
+        value: int
+
+        def __call__(self):
+            return self.value
+
+    frame = FrozenFrame(7)
+    features = {
+        "history": torch.zeros(1, 16, 3),
+        "view_frame_paths": [[frame]],
+    }
+    targets = {"trajectory": torch.zeros(1, 50, 3)}
+    tokens = (None,)
+    transferred = QwenDriveLightningModule(SimpleNamespace()).transfer_batch_to_device(
+        (features, targets, tokens), torch.device("cpu"), 0,
+    )
+
+    moved_features, moved_targets, moved_tokens = transferred
+    assert moved_features["history"].device.type == "cpu"
+    assert moved_targets["trajectory"].device.type == "cpu"
+    assert moved_features["view_frame_paths"][0][0] is frame
+    assert moved_tokens is tokens
+
+
+def test_mixed_source_views_use_per_sample_prompt_labels(monkeypatch):
+    agent = QwenDriveAgent(QwenDrivePlannerConfig(view_list=["cam_f0", "cam_l1", "cam_r1"]))
+    mogo = make_features()
+    public = make_features()
+    public["view_list"] = ("cam_f0", "cam_l0", "cam_r0")
+    features, _, _ = custom_collate_fn([
+        (mogo, {"trajectory": torch.zeros(50, 3)}),
+        (public, {"trajectory": torch.zeros(50, 3)}),
+    ])
+
+    scenes = []
+    agent._processor = lambda scene, **kwargs: scenes.append(scene) or {}
+    model = SimpleNamespace(
+        parameters=lambda: iter([torch.nn.Parameter(torch.zeros(1))]),
+        _prefill=lambda _: (
+            [(torch.zeros(1, 1, 1, 1), torch.zeros(1, 1, 1, 1))],
+            torch.zeros(3, 1),
+        ),
+    )
+    monkeypatch.setattr(agent, "_require_model", lambda: model)
+    _, anchor, valid = agent._encode_scenes(features)
+
+    assert anchor.shape == (3, 2)
+    assert valid.shape == (2, 1)
+    assert scenes[0].view_order == ("<FRONT VIEW>", "<BACK LEFT VIEW>", "<BACK RIGHT VIEW>")
+    assert scenes[1].view_order == ("<FRONT VIEW>", "<FRONT LEFT VIEW>", "<FRONT RIGHT VIEW>")
+
+
 def test_hydra_defaults_match_agent_config():
     root = Path(__file__).resolve().parents[1]
     with initialize_config_dir(config_dir=str(root / "navsim/planning/script/config/training"), version_base=None):
         config = compose(config_name="qwen_drive_il")
     defaults = asdict(QwenDrivePlannerConfig())
-    assert {key: config.agent[key] for key in defaults} == defaults
+    assert {key: config.agent[key] for key in defaults if key != "view_list"} == {
+        key: value for key, value in defaults.items() if key != "view_list"
+    }
+    assert config.agent.view_list == ["cam_f0", "cam_l1", "cam_r1"]
+    assert config.physicalai_view_list == defaults["view_list"]
     assert config.train_test_split.scene_filter.num_history_frames == 16
     assert config.train_test_split.scene_filter.num_future_frames == 50
     assert config.trainer.params.precision == "bf16-mixed"

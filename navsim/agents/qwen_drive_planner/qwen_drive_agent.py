@@ -53,7 +53,7 @@ from .modeling.trajectory import (
     normalize_trajectory,
     resample_10hz_to_2hz,
 )
-from .qwen_drive_config import QwenDrivePlannerConfig
+from .qwen_drive_config import MOGO_VIEW_TO_OFFICIAL_LABEL, QwenDrivePlannerConfig
 from .qwen_drive_features import (
     QWEN_DRIVE_IMAGE_KEY,
     QwenDriveFeatureBuilder,
@@ -215,20 +215,22 @@ class QwenDriveAgent(AbstractAgent):
         ego_status: torch.Tensor,
         nav_command: int,
         navigation_instruction: Optional[str] = None,
+        view_list: Optional[Sequence[str]] = None,
     ) -> MultiViewScene:
         """把一个样本的特征拼成官方 processor 可消费的 scene（train/eval 同源）。
 
-        `view_frame_paths` 是 `[view][frame]` 的路径矩阵，顺序与 `view_list` 一致；
+        `view_frame_paths` 是 `[view][frame]` 的路径矩阵，顺序与样本的
+        `view_list` 一致；无样本视角时使用 agent 配置。
         官方 prompt 按"视角分组、组内按时间"排列，`frames_in_order` 会照此展开。
         """
-        view_list = list(self._config.view_list)
+        view_list = list(view_list if view_list is not None else self._config.view_list)
         if len(view_frame_paths) != len(view_list):
             raise ValueError(
                 f"view_frame_paths 有 {len(view_frame_paths)} 个视角，"
-                f"config.view_list 有 {len(view_list)} 个"
+                f"view_list 有 {len(view_list)} 个"
             )
 
-        labels = self._config.view_labels
+        labels = [MOGO_VIEW_TO_OFFICIAL_LABEL[view] for view in view_list]
         views = {
             label: [
                 CameraFrame(image=Image.fromarray(path) if isinstance(path, np.ndarray) else path)
@@ -277,6 +279,7 @@ class QwenDriveAgent(AbstractAgent):
         batch = len(view_frame_paths)
         nav_command = features["nav_command"].reshape(-1)
         navigation_instructions = features.get("navigation_instruction", [None] * batch)
+        view_lists = features.get("view_lists", [None] * batch)
 
         per_sample_cache: List[List[Tuple[torch.Tensor, torch.Tensor]]] = []
         anchors: List[torch.Tensor] = []
@@ -291,6 +294,7 @@ class QwenDriveAgent(AbstractAgent):
                 features["ego_status"][index],
                 int(nav_command[index].item()),
                 navigation_instructions[index],
+                view_lists[index],
             )
             inputs = self._processor(scene, with_reasoning=False, device=device)
             # 官方 `_prefill` 内部就是 VLM 前向 + `_scene_cache` + anchor，直接复用。

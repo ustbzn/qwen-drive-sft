@@ -2,10 +2,32 @@
 
 from typing import Any, Dict
 
+import torch
+
 from navsim.planning.training.agent_lightning_module import AgentLightningModule
 
 
 class QwenDriveLightningModule(AgentLightningModule):
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        """Move tensor features while leaving lazy image loaders on the CPU.
+
+        PhysicalAI camera entries are callable frozen dataclasses. Lightning's
+        generic collection walker tries to rebuild every dataclass while moving
+        a batch and rejects those frozen instances. The Qwen batch contract has
+        flat tensor dictionaries, so moving those tensors explicitly preserves
+        the lazy image objects and avoids rebuilding their container graph.
+        """
+        features, targets, tokens = batch
+        features = {
+            key: value.to(device) if torch.is_tensor(value) else value
+            for key, value in features.items()
+        }
+        targets = {
+            key: value.to(device) if torch.is_tensor(value) else value
+            for key, value in targets.items()
+        }
+        return features, targets, tokens
+
     def _step(self, batch, logging_prefix):
         features, targets, tokens = batch
         prediction = self.agent(features, targets, tokens)

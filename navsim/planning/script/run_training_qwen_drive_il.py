@@ -55,6 +55,11 @@ from navsim.planning.training.distributed_cache_dataset import (
     build_distributed_cache_only_datasets,
     cache_index_sync_group,
 )
+from navsim.planning.training.physicalai_dataset import (
+    MixedSourceDataset,
+    PhysicalAIDataset,
+    parse_mixed_ratio,
+)
 from navsim.agents.qwen_drive_planner.qwen_drive_lightning import QwenDriveLightningModule
 from navsim.planning.scenario_builder.mogo_map_api_builder import build_mogo_map_api_builder_from_cfg
 import torch
@@ -93,13 +98,19 @@ def custom_collate_fn(
     if not batch:
         raise ValueError("Cannot collate an empty batch")
 
-    if len(batch[0]) == 3:
-        features_list, targets_list, tokens_list = zip(*batch)
-    elif len(batch[0]) == 2:
-        features_list, targets_list = zip(*batch)
-        tokens_list = tuple(None for _ in features_list)
-    else:
-        raise ValueError(f"Unexpected sample tuple length {len(batch[0])}; expected 2 or 3")
+    features_list, targets_list, tokens = [], [], []
+    for sample in batch:
+        if len(sample) == 3:
+            features, targets, token = sample
+        elif len(sample) == 2:
+            features, targets = sample
+            token = None
+        else:
+            raise ValueError(f"Unexpected sample tuple length {len(sample)}; expected 2 or 3")
+        features_list.append(features)
+        targets_list.append(targets)
+        tokens.append(token)
+    tokens_list = tuple(tokens)
 
     tensor_feature_keys = ("history", "history_velocity", "history_acceleration", "ego_status", "nav_command")
     f0 = features_list[0]
@@ -116,6 +127,11 @@ def custom_collate_fn(
         # 图像路径矩阵是嵌套 list，不是 tensor；QwenDriveAgent._encode_scenes 按 batch
         # 维逐样本取用，这里只需保持 list 顺序与其余 tensor 特征的 batch 维一致。
         features[QWEN_DRIVE_IMAGE_KEY] = [f[QWEN_DRIVE_IMAGE_KEY] for f in features_list]
+
+    # MOGO and PhysicalAI use different camera fields for the same three
+    # semantic prompt slots. Keep the source view list per sample so mixed
+    # batches can generate the correct labels without changing the model.
+    features["view_lists"] = [sample.get("view_list") for sample in features_list]
 
     # Per-sample natural-language commands have varying lengths and stay as Python
     # strings; QwenDriveAgent adds each one to the matching scene prompt before VLM prefill.
@@ -285,7 +301,7 @@ def _build_source_datasets(
     return train_data, val_data
 
 
-def build_datasets(
+def _build_mogo_datasets(
     cfg: DictConfig, agent: AbstractAgent, *, prepared_indexes=None, read_only_indexes=False,
 ) -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
     """Combine online datasets with per-source paths and disjoint train/val tokens."""
@@ -331,6 +347,79 @@ def build_datasets(
     train_data = train_parts[0] if len(train_parts) == 1 else ConcatDataset(train_parts)
     val_data = val_parts[0] if len(val_parts) == 1 else ConcatDataset(val_parts)
     return train_data, val_data
+
+
+def _physicalai_view_list(cfg: DictConfig) -> Sequence[str]:
+    views = cfg.get("physicalai_view_list")
+    if views is None:
+        return ("cam_f0", "cam_l0", "cam_r0")
+    views = [str(view) for view in views]
+    if not views:
+        raise ValueError("physicalai_view_list must contain at least one camera view")
+    return views
+
+
+def _build_physicalai_datasets(
+    cfg: DictConfig, agent: AbstractAgent,
+) -> Tuple[PhysicalAIDataset, PhysicalAIDataset]:
+    root = cfg.get("physicalai_root")
+    if not root:
+        raise ValueError("physicalai_root must point to the PhysicalAI-AV dataset directory")
+    max_samples = cfg.get("physicalai_max_samples_per_split")
+    if max_samples in (None, "", "null"):
+        max_samples = None
+    else:
+        max_samples = int(max_samples)
+    requested_scan_workers = int(cfg.get("physicalai_scan_workers", 48))
+    if requested_scan_workers < 1:
+        raise ValueError("physicalai_scan_workers must be positive")
+    world_size = max(1, int(os.getenv("WORLD_SIZE", "1")))
+    scan_workers_per_rank = max(1, requested_scan_workers // world_size)
+    common = dict(
+        root=str(root),
+        view_list=_physicalai_view_list(cfg),
+        anchor_time_s=float(cfg.get("physicalai_anchor_time_s", 10.0)),
+        max_samples=max_samples,
+        shard_check_workers=scan_workers_per_rank,
+    )
+    return (
+        PhysicalAIDataset(split="train", **common),
+        PhysicalAIDataset(split="val", **common),
+    )
+
+
+def _normalize_dataset_mode(mode: Any) -> str:
+    normalized = str(mode).lower()
+    return "mixed" if normalized == "mix" else normalized
+
+
+def build_datasets(
+    cfg: DictConfig, agent: AbstractAgent, *, prepared_indexes=None, read_only_indexes=False,
+) -> Tuple[torch.utils.data.Dataset, torch.utils.data.Dataset]:
+    """Build MOGO, PhysicalAI-AV, or mixed Qwen datasets behind one batch contract."""
+    mode = _normalize_dataset_mode(cfg.get("dataset_mode", "mogo"))
+    if mode == "mogo":
+        return _build_mogo_datasets(
+            cfg, agent, prepared_indexes=prepared_indexes, read_only_indexes=read_only_indexes,
+        )
+    if mode == "physicalai":
+        return _build_physicalai_datasets(cfg, agent)
+    if mode != "mixed":
+        raise ValueError("dataset_mode must be one of: mogo, physicalai, mixed")
+
+    mogo_train, mogo_val = _build_mogo_datasets(
+        cfg, agent, prepared_indexes=prepared_indexes, read_only_indexes=read_only_indexes,
+    )
+    public_train, public_val = _build_physicalai_datasets(cfg, agent)
+    ratio = parse_mixed_ratio(str(cfg.get("physicalai_mixture_ratio", "proportional")))
+    if ratio is None:
+        return ConcatDataset((mogo_train, public_train)), ConcatDataset((mogo_val, public_val))
+    return (
+        MixedSourceDataset(mogo_train, public_train, ratio),
+        # Keep validation representative of each source's official split; a
+        # training mixture ratio must not duplicate either validation set.
+        ConcatDataset((mogo_val, public_val)),
+    )
 
 
 def build_distributed_indexed_datasets(cfg, agent, rank, world_size, sync_group=None):
@@ -402,8 +491,9 @@ def main(cfg: DictConfig) -> None:
     logger.info("Building Agent")
     agent: AbstractAgent = instantiate(cfg.agent)
 
+    dataset_mode = _normalize_dataset_mode(cfg.get("dataset_mode", "mogo"))
     if cfg.use_cache_without_dataset:
-        if cfg.get("mogo_manifest"):
+        if dataset_mode != "mogo" or cfg.get("mogo_manifest"):
             raise ValueError("MOGO manifest training requires use_cache_without_dataset=false")
         logger.info("Using cached data without building SceneLoader")
         assert (
@@ -420,7 +510,10 @@ def main(cfg: DictConfig) -> None:
                 world_size=world_size,
                 cache_sync_group=cache_sync_group,
             )
-    elif str(cfg.get("scene_loading", "eager")) == "indexed":
+    elif (
+        str(cfg.get("scene_loading", "eager")) == "indexed"
+        and dataset_mode in ("mogo", "mixed")
+    ):
         logger.info(
             "Using shared raw scene packs: directory=%s; rank 0 builds with %d workers; "
             "log_load_workers is inactive. Other ranks load only scene indexes.",
@@ -432,14 +525,14 @@ def main(cfg: DictConfig) -> None:
             )
     else:
         logger.info(
-            "Building SceneLoader: log_load_workers=%d per rank; "
-            "cache_index_workers=%d applies only to cache-only mode. "
-            "DataLoader num_workers=%d starts after scene loading.",
-            int(cfg.get("log_load_workers", 1)), cfg.cache_index_workers, cfg.dataloader.params.num_workers,
+            "Building %s datasets; DataLoader num_workers=%d.",
+            dataset_mode, cfg.dataloader.params.num_workers,
         )
         train_data, val_data = build_datasets(cfg, agent)
 
     if cfg.get("prepare_scene_cache_only", False):
+        if dataset_mode != "mogo":
+            raise ValueError("prepare_scene_cache_only is available only for dataset_mode=mogo")
         if str(cfg.get("scene_loading", "eager")) != "indexed":
             raise ValueError("prepare_scene_cache_only requires scene_loading=indexed")
         logger.info("Raw scene cache ready: train=%d val=%d. Skipping model loading/training.",
@@ -449,6 +542,11 @@ def main(cfg: DictConfig) -> None:
     # Rare-scene oversampling applies only to the training set; val stays intact
     # so val/loss_epoch and checkpoint selection are not biased. Applied after the
     # cache index is built so the index spec signature is unchanged.
+    if dataset_mode != "mogo" and int(cfg.get("train_oversample_factor", 1)) > 1:
+        raise ValueError(
+            "train_oversample_factor currently supports dataset_mode=mogo only; "
+            "set it to 1 for PhysicalAI or mixed training"
+        )
     train_data, added_oversample_samples = apply_qwen_train_oversample(
         dataset=train_data,
         tokens_path=str(cfg.get("train_oversample_tokens_path", "") or ""),
