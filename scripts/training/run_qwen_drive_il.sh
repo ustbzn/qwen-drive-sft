@@ -3,9 +3,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/qwen-drive/bin/python}"
-DATASET_MODE="${DATASET_MODE:-mogo}"
+DATASET_MODE="${DATASET_MODE:-mixed}"
 PHYSICALAI_ROOT="${PHYSICALAI_ROOT:-/pcpt/pcpt/data/VLA/PhysicalAI-AV}"
-PHYSICALAI_VIEW_LIST="${PHYSICALAI_VIEW_LIST:-[cam_f0,cam_l0,cam_r0]}"
+PHYSICALAI_VIEW_LIST="${PHYSICALAI_VIEW_LIST:-[cam_f0,cam_l0,cam_r0,cam_b0]}"
 PHYSICALAI_ANCHOR_TIME_S="${PHYSICALAI_ANCHOR_TIME_S:-10.0}"
 PHYSICALAI_MAX_SAMPLES_PER_SPLIT="${PHYSICALAI_MAX_SAMPLES_PER_SPLIT:-null}"
 PHYSICALAI_SCAN_WORKERS="${PHYSICALAI_SCAN_WORKERS:-48}"
@@ -52,7 +52,7 @@ case "${DATASET_MODE}" in
 esac
 # 训练说明与论文已公开/未公开的参数见 docs/qwen_drive_stage3_training.md。
 # output_dir 是最终目录；未显式设置时，按 experiment_name / 时间戳隔离实验。
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen_drive_il}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen_drive_il_4cam}"
 RUNS_ROOT="${RUNS_ROOT:-${REPO_ROOT}/qwen_drive_runs/${TRAINING_DATA_LABEL}}"
 RUN_ID="${RUN_ID:-$(date +%Y.%m.%d.%H.%M.%S)}"
 if [[ -z "${OUTPUT_DIR:-}" ]]; then
@@ -62,7 +62,7 @@ fi
 # 以下优化参数是本仓库的实验起点，论文未公开 Stage 3 的 batch size / LR。
 # BATCH_SIZE 是每卡 micro-batch；有效全局 batch = BATCH_SIZE * GPUS * GRAD_ACCUM。
 GPUS="${GPUS:-8}"
-BATCH_SIZE="${BATCH_SIZE:-56}"
+BATCH_SIZE="${BATCH_SIZE:-80}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
 LR="${LR:-2e-5}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
@@ -83,7 +83,7 @@ LOG_LOAD_WORKERS="${LOG_LOAD_WORKERS:-16}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 CACHE_INDEX_WORKERS="${CACHE_INDEX_WORKERS:-96}"
 
-IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_l1,cam_r1]}"
+IMAGE_VIEW_LIST="${IMAGE_VIEW_LIST:-[cam_f0,cam_l1,cam_r1,cam_b0]}"
 
 # Optional token-level rare-scene oversampling. The online Qwen dataset uses a
 # token-aware repeated-index view, so this works for both one source and manifests.
