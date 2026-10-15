@@ -381,6 +381,7 @@ def _build_physicalai_datasets(
         anchor_time_s=float(cfg.get("physicalai_anchor_time_s", 10.0)),
         max_samples=max_samples,
         shard_check_workers=scan_workers_per_rank,
+        storage=str(cfg.get("physicalai_storage", "auto")),
     )
     return (
         PhysicalAIDataset(split="train", **common),

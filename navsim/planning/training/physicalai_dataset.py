@@ -9,6 +9,7 @@ from math import ceil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import logging
+import json
 import os
 import tempfile
 import zipfile
@@ -68,12 +69,13 @@ def _write_member_to_fd(archive: zipfile.ZipFile, member: str, fd: int) -> None:
 
 
 @dataclass
-class _ZipVideoFrameGroup:
+class _VideoFrameGroup:
     """Decode four requested frames once, when the Qwen processor asks for them."""
 
     archive_path: str
     member: str
     frame_indices: Tuple[int, ...]
+    file_path: Optional[str] = None
     _decoded: Optional[np.ndarray] = None
 
     def frames(self) -> np.ndarray:
@@ -91,18 +93,20 @@ class _ZipVideoFrameGroup:
         temporary_path: Optional[str] = None
         reader = None
         try:
-            with zipfile.ZipFile(self.archive_path, "r") as archive:
-                if hasattr(os, "memfd_create"):
-                    fd = os.memfd_create("physicalai-video", 0)
-                    _write_member_to_fd(archive, self.member, fd)
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    video_path = f"/proc/self/fd/{fd}"
-                else:  # pragma: no cover - Linux training hosts use memfd
-                    handle = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-                    temporary_path = handle.name
-                    with handle:
-                        _write_member_to_fd(archive, self.member, handle.fileno())
-                    video_path = temporary_path
+            video_path = self.file_path
+            if video_path is None:
+                with zipfile.ZipFile(self.archive_path, "r") as archive:
+                    if hasattr(os, "memfd_create"):
+                        fd = os.memfd_create("physicalai-video", 0)
+                        _write_member_to_fd(archive, self.member, fd)
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        video_path = f"/proc/self/fd/{fd}"
+                    else:  # pragma: no cover - Linux training hosts use memfd
+                        handle = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+                        temporary_path = handle.name
+                        with handle:
+                            _write_member_to_fd(archive, self.member, handle.fileno())
+                        video_path = temporary_path
 
             reader = VideoReader(
                 video_path,
@@ -121,7 +125,7 @@ class _ZipVideoFrameGroup:
             if isinstance(error, (ValueError, RuntimeError)):
                 raise
             raise RuntimeError(
-                f"Unable to decode {self.member} from {self.archive_path}: {error}"
+                f"Unable to decode {self.file_path or self.member} from {self.archive_path}: {error}"
             ) from error
         finally:
             reader = None
@@ -138,10 +142,10 @@ class _ZipVideoFrameGroup:
 
 
 @dataclass(frozen=True)
-class _ZipVideoFrame:
+class _VideoFrame:
     """Pickle-friendly callable consumed by the existing CameraFrame loader."""
 
-    group: _ZipVideoFrameGroup
+    group: _VideoFrameGroup
     index: int
 
     def __call__(self) -> Image.Image:
@@ -154,10 +158,8 @@ class _ZipVideoFrame:
 class PhysicalAIDataset(torch.utils.data.Dataset):
     """One 10 Hz Qwen planning sample per public dataset clip.
 
-    Metadata is read eagerly (small Parquet indexes); egomotion and camera data
-    are read from ZIP shards only for requested samples. Video members stay in
-    memory-backed temporary files and are decoded lazily by the existing Qwen
-    image processor, so worker queues carry frame references rather than images.
+    ZIP mode reads members on demand. Files mode uses the completed extraction
+    manifest to exclude damaged clips and decodes MP4 files directly.
     """
 
     def __init__(
@@ -168,6 +170,7 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
         anchor_time_s: float = 10.0,
         max_samples: Optional[int] = None,
         shard_check_workers: int = 48,
+        storage: str = "auto",
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.split = str(split)
@@ -190,6 +193,10 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
         if int(shard_check_workers) < 1:
             raise ValueError("physicalai_scan_workers must be positive")
         self.shard_check_workers = int(shard_check_workers)
+        if storage not in ("auto", "zip", "files"):
+            raise ValueError(f"physicalai_storage must be auto, zip, or files; got {storage!r}")
+        self.storage = ("files" if (self.root / ".physicalai_extract/summary.json").is_file()
+                        else "zip") if storage == "auto" else storage
 
         for relative in (
             "clip_index.parquet",
@@ -199,6 +206,13 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
         ):
             if not (self.root / relative).exists():
                 raise FileNotFoundError(f"PhysicalAI dataset path does not exist: {self.root / relative}")
+
+        if self.storage == "files":
+            self.samples = self._load_extracted_samples(max_samples)
+            self.excluded_missing_features = 0
+            self.excluded_missing_shards = 0
+            self._zip_cache = OrderedDict()
+            return
 
         clip_table = pq.read_table(
             self.root / "clip_index.parquet",
@@ -247,6 +261,61 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
         self.excluded_missing_shards = 0
         self._zip_cache: OrderedDict[str, zipfile.ZipFile] = OrderedDict()
         self._validate_shards()
+
+    def _load_extracted_samples(self, max_samples: Optional[int]) -> List[Tuple[str, int]]:
+        state_dir = self.root / ".physicalai_extract"
+        try:
+            with (state_dir / "summary.json").open() as stream:
+                summary = json.load(stream)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"PhysicalAI extracted data requires a readable summary.json in {state_dir}") from error
+        plan = summary.get("plan", {})
+        requested_cameras = {PHYSICALAI_CAMERA_BY_VIEW[view] for view in self.view_list}
+        if summary.get("destination") != str(self.root):
+            raise ValueError(f"PhysicalAI extraction summary belongs to another directory: {state_dir}")
+        if not summary.get("complete") or summary.get("selected_chunks") != summary.get("total_chunks"):
+            raise ValueError(f"PhysicalAI extraction is incomplete: {state_dir / 'summary.json'}")
+        if (not requested_cameras.issubset(set(plan.get("cameras", [])))
+                or self.split not in plan.get("splits", [])
+                or self.anchor_time_us != plan.get("anchor_us")
+                or plan.get("video_check") != "frames"):
+            raise ValueError(
+                "PhysicalAI extraction does not cover the requested split, views, anchor, "
+                "and decoded video frames"
+            )
+        if len(plan.get("metadata", [])) != 2:
+            raise ValueError(f"PhysicalAI extraction summary has no metadata signatures: {state_dir}")
+        for relative, expected in zip(
+            ("clip_index.parquet", "metadata/feature_presence.parquet"),
+            plan.get("metadata", []),
+        ):
+            path = self.root / relative
+            if expected != [path.stat().st_size, path.stat().st_mtime_ns]:
+                raise ValueError(f"PhysicalAI extraction metadata changed since validation: {path}")
+        samples = []
+        seen = set()
+        manifest = state_dir / "valid_clips.jsonl"
+        try:
+            with manifest.open() as stream:
+                for line in stream:
+                    row = json.loads(line)
+                    clip_id, split, chunk = row["clip_id"], row["split"], row["chunk"]
+                    if clip_id in seen:
+                        raise ValueError(f"Duplicate PhysicalAI clip {clip_id} in {manifest}")
+                    seen.add(clip_id)
+                    if split == self.split:
+                        samples.append((str(clip_id), int(chunk)))
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValueError(f"Invalid PhysicalAI extraction manifest {manifest}: {error}") from error
+        if len(seen) != summary.get("valid_clips"):
+            raise ValueError(f"PhysicalAI extraction manifest count differs from summary: {manifest}")
+        if max_samples is not None:
+            samples = samples[:int(max_samples)]
+        if not samples:
+            raise ValueError(f"No validated PhysicalAI clips in split={self.split!r}: {manifest}")
+        logger.info("PhysicalAI split=%s using %d validated extracted clips from %s",
+                    self.split, len(samples), manifest)
+        return samples
 
     def _archive_path(self, kind: str, name: str, chunk: int) -> Path:
         if kind == "camera":
@@ -313,16 +382,21 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
             raise ValueError(f"Unable to parse a PhysicalAI Parquet member: {error}") from error
 
     def _egomotion(self, clip_id: str, chunk: int) -> Dict[str, List[Any]]:
-        archive_path = self._archive_path("labels", "egomotion", chunk)
         member = f"{clip_id}.egomotion.parquet"
+        if self.storage == "files":
+            return pq.read_table(self.root / "labels" / "egomotion" / member).to_pydict()
+        archive_path = self._archive_path("labels", "egomotion", chunk)
         return self._parquet_member(self._read_member(archive_path, member))
 
     def _camera_frames(
         self, clip_id: str, chunk: int, camera_name: str,
-    ) -> Tuple[_ZipVideoFrame, ...]:
-        archive_path = self._archive_path("camera", camera_name, chunk)
+    ) -> Tuple[_VideoFrame, ...]:
         timestamp_member = f"{clip_id}.{camera_name}.timestamps.parquet"
-        timestamps = self._parquet_member(self._read_member(archive_path, timestamp_member))
+        if self.storage == "files":
+            timestamps = pq.read_table(self.root / "camera" / camera_name / timestamp_member).to_pydict()
+        else:
+            archive_path = self._archive_path("camera", camera_name, chunk)
+            timestamps = self._parquet_member(self._read_member(archive_path, timestamp_member))
         stamp_values = np.asarray(timestamps["timestamp"], dtype=np.int64)
         frame_values = np.asarray(timestamps["frame_index"], dtype=np.int64)
         if not len(stamp_values) or np.any(np.diff(stamp_values) <= 0):
@@ -341,12 +415,14 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
             )
 
         video_member = f"{clip_id}.{camera_name}.mp4"
-        group = _ZipVideoFrameGroup(
-            archive_path=str(archive_path),
+        video_path = self.root / "camera" / camera_name / video_member
+        group = _VideoFrameGroup(
+            archive_path=str(video_path if self.storage == "files" else archive_path),
             member=video_member,
             frame_indices=tuple(int(index) for index in frame_values[positions]),
+            file_path=str(video_path) if self.storage == "files" else None,
         )
-        return tuple(_ZipVideoFrame(group, index) for index in range(len(positions)))
+        return tuple(_VideoFrame(group, index) for index in range(len(positions)))
 
     def _sample_ego(self, data: Dict[str, List[Any]]) -> Tuple[List[EgoStatus], np.ndarray]:
         timestamps = np.asarray(data["timestamp"], dtype=np.int64)

@@ -20,11 +20,12 @@ seed: 0
 dataset_mode: mogo # mogo | physicalai | mix (alias for mixed) | mixed
 mogo_manifest: navsim/planning/script/config/common/mogo_dataset/nav_station.yaml
 mogo_dataset_names: null
-physicalai_root: /pcpt/pcpt/data/VLA/PhysicalAI-AV
-physicalai_view_list: [cam_f0, cam_l0, cam_r0] # Public front/left/right views; MOGO uses agent.view_list.
+physicalai_root: /pcpt/pcpt/data/VLA/PhysicalAI-AV_unzip
+physicalai_storage: files # files uses the validated extraction manifest; zip reads the original archives.
+physicalai_view_list: [cam_f0, cam_l0, cam_r0] # The training shell script selects four public views.
 physicalai_anchor_time_s: 10.0
 physicalai_max_samples_per_split: null # Set a positive value for a short I/O smoke run.
-physicalai_scan_workers: 48 # Concurrent checks for ZIP shards referenced by the selected split.
+physicalai_scan_workers: 48 # Concurrent ZIP shard checks; unused for extracted files.
 physicalai_mixture_ratio: proportional # proportional keeps original sample counts; integer MOGO:PhysicalAI weights (e.g. 1:1) repeat samples to rebalance
 # 已核对原始 pkl：以下日志的全部 301 帧、全部相机 data_path 均为 null。
 # 在建立 train/val 索引前显式排除；修复源数据后可用 excluded_logs=[] 恢复。

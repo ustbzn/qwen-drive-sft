@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 from pathlib import Path
 import pickle
+import shutil
 import sys
 from types import SimpleNamespace
 import zipfile
@@ -12,6 +14,7 @@ import zipfile
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from PIL import Image
 import torch
 
@@ -168,6 +171,75 @@ def test_physicalai_default_views_are_independent_of_mogo_views(tmp_path):
     assert features["view_frame_paths"][1][0].group.member.endswith("camera_cross_left_120fov.mp4")
     assert features["view_frame_paths"][2][0].group.member.endswith("camera_cross_right_120fov.mp4")
     assert mogo_agent.config.view_list == ["cam_f0", "cam_l1", "cam_r1"]
+
+
+def test_extracted_files_use_valid_manifest_and_direct_video_paths(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    _make_physicalai_fixture(source)
+    root = tmp_path / "extracted"
+    for relative in ("clip_index.parquet", "metadata/feature_presence.parquet"):
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / relative, target)
+    for archive_path in source.rglob("*.zip"):
+        target_dir = root / archive_path.parent.relative_to(source)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(target_dir)
+
+    state_dir = root / ".physicalai_extract"
+    state_dir.mkdir()
+    rows = [
+        {"clip_id": f"clip-{split}", "chunk": 0, "split": split}
+        for split in ("train", "val", "test")
+    ]
+    (state_dir / "valid_clips.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+    plan = {
+        "cameras": list(FIXTURE_CAMERAS), "splits": ["train", "val", "test"],
+        "anchor_us": 10_000_000, "video_check": "frames",
+        "metadata": [
+            [path.stat().st_size, path.stat().st_mtime_ns]
+            for path in (root / "clip_index.parquet", root / "metadata/feature_presence.parquet")
+        ],
+    }
+    summary = {"destination": str(root), "complete": True, "selected_chunks": 1, "total_chunks": 1,
+               "valid_clips": len(rows), "plan": plan}
+    (state_dir / "summary.json").write_text(json.dumps(summary))
+
+    dataset = PhysicalAIDataset(root, "train", VIEWS, storage="files")
+    assert len(dataset) == 1
+    features, targets, token = dataset[0]
+    assert token == "clip-train"
+    assert targets["trajectory"].shape == (50, 3)
+    group = features["view_frame_paths"][0][0].group
+    assert group.file_path == str(root / "camera" / CAMERAS[0] / f"clip-train.{CAMERAS[0]}.mp4")
+
+    class FakeReader:
+        def __init__(self, path, **kwargs):
+            assert path == group.file_path
+            assert Path(path).read_bytes() == b"synthetic-video-payload"
+
+        def __len__(self):
+            return 300
+
+        def get_batch(self, indices):
+            return SimpleNamespace(asnumpy=lambda: np.full((4, 8, 8, 3), 23, dtype=np.uint8))
+
+    monkeypatch.setitem(sys.modules, "decord", SimpleNamespace(VideoReader=FakeReader, cpu=lambda _: None))
+    image = pickle.loads(pickle.dumps(features))["view_frame_paths"][0][0]()
+    assert image.getpixel((0, 0)) == (23, 23, 23)
+    train, val = _build_physicalai_datasets(
+        {"physicalai_root": str(root), "physicalai_storage": "files"}, object()
+    )
+    assert len(train) == len(val) == 1
+
+    summary["complete"] = False
+    (state_dir / "summary.json").write_text(json.dumps(summary))
+    with pytest.raises(ValueError, match="incomplete"):
+        PhysicalAIDataset(root, "train", VIEWS, storage="files")
 
 
 class _TaggedDataset(torch.utils.data.Dataset):
