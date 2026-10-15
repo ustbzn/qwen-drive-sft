@@ -1,0 +1,24 @@
+docs/cookbook_zh.md
+  h_5b9bd4da8532f7 1-169
+docs/data_zh.md
+  h_5b9bd4da8532f7 1-192
+docs/evaluation_zh.md
+  h_5b9bd4da8532f7 1-137
+docs/model_zh.md
+  h_5b9bd4da8532f7 1-144
+docs/perception_zh.md
+  h_5b9bd4da8532f7 1-92
+docs/training_zh.md
+  h_5b9bd4da8532f7 1-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9fed51576670715b0acfaf92516106664279018a",
+  "prompts": {},
+  "humans": {
+    "h_5b9bd4da8532f7": {
+      "author": "liqinbu <liqinbu@zhidaoauto.com>"
+    }
+  }
+}
