@@ -1,0 +1,3 @@
+python scripts/training/extract_physicalai_av.py
+
+python scripts/training/cache_physicalai_images.py

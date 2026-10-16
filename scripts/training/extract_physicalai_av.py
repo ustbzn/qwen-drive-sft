@@ -34,7 +34,7 @@ CAMERAS = {
     "cam_l1": "camera_rear_left_70fov",
     "cam_r1": "camera_rear_right_70fov",
 }
-DEFAULT_VIEWS = ("cam_f0", "cam_l0", "cam_r0", "cam_b0")
+DEFAULT_VIEWS = ("cam_f0", "cam_l0", "cam_r0", "cam_l1", "cam_r1", "cam_b0")
 OFFSETS_US = np.asarray([-1_500_000, -1_000_000, -500_000, 0], dtype=np.int64)
 EGO_COLUMNS = ("timestamp", "x", "y", "vx", "vy", "ax", "ay", "qx", "qy", "qz", "qw")
 LOG = logging.getLogger("physicalai_extract")
