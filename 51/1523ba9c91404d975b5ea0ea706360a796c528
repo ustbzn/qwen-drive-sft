@@ -1,0 +1,47 @@
+scripts/training/run_qwen_drive_il.sh
+  s_036257d606b9fa::t_a1cfecca132287 9,136
+navsim/agents/qwen_drive_planner/qwen_drive_agent.py
+  s_036257d606b9fa::t_a1cfecca132287 236-239
+navsim/planning/script/run_training_qwen_drive_il.py
+  s_036257d606b9fa::t_a1cfecca132287 385-390
+  s_036257d606b9fa::t_d4c6c522b35adf 566-569,571
+navsim/planning/script/config/training/qwen_drive_il.yaml
+  s_036257d606b9fa::t_a1cfecca132287 25
+tests/test_cache_physicalai_images.py
+  s_036257d606b9fa::t_5453af5a8bbd6d 6,104,111-115,172-193,207-210,212,214-215,217
+  s_036257d606b9fa::t_78ade9059998d0 16,19-20,138-144,158,161-163
+  s_036257d606b9fa::t_993057f040df36 216
+  s_036257d606b9fa::t_5abd627916b9aa 37-41,75,194-206,211,213,218
+  s_036257d606b9fa::t_0f9ca1c210ac00 8,22,27,49,54-66,76,131-137,153,169
+  s_036257d606b9fa::t_94ecc44f46eb0f 145
+scripts/training/cache_physicalai_images.py
+  s_036257d606b9fa::t_f98e3ec06774c4 35,93-94,96
+navsim/planning/training/physicalai_dataset.py
+  s_036257d606b9fa::t_7bb0f708bfad7a 22-23,26,190,199-200,212-213,215,220-267,305,309-311,313-318,322,331-349,354-359,361-365,367,375,378-379,385,415-417,420,423-427,431-439,442-443,445,447
+  s_036257d606b9fa::t_40bdf19c5b7d3d 495-496,498-501
+  s_036257d606b9fa::t_ff5da1e13fa205 8,182-189,191-198,201-211,219,360,366,369-374,376-377,380-384,386-403,406,410-414,418,421-422,444,446,448-449,466,493-494,497,790-793
+  s_036257d606b9fa::t_153189fe7cbc4d 214,268-270,272-295,297-298,302-304,306,323-327,329-330
+  s_036257d606b9fa::t_a7d860a4f1f9c0 440-441
+  s_036257d606b9fa::t_183a56fe60c023 51-71,216-218,404-405,702-704,711,714
+  s_036257d606b9fa::t_d4c6c522b35adf 368,419
+  s_036257d606b9fa::t_b6aa618cfc8694 271,296,299-301,307-308,312,319-321,328,350-353,407-409,428-430
+navsim/agents/qwen_drive_planner/modeling/scene.py
+  s_036257d606b9fa::t_a1cfecca132287 109,231-252
+  s_036257d606b9fa::t_f98e3ec06774c4 90-96,253-254
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "511523ba9c91404d975b5ea0ea706360a796c528",
+  "prompts": {},
+  "sessions": {
+    "s_036257d606b9fa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13e99-de82-7de3-a378-d44bec9c92be",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "jiangjunyuan <jiangjunayuan@zhidaoauto.com>"
+    }
+  }
+}
