@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from io import BytesIO
 from math import ceil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -18,9 +19,11 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
-from PIL import Image
+from PIL import Image, __version__ as pillow_version
+from torchvision import __version__ as torchvision_version
 
 from navsim.common.dataclasses import EgoStatus
+from navsim.agents.qwen_drive_planner.modeling.scene import resize_image_to_grid
 from navsim.agents.qwen_drive_planner.qwen_drive_features import (
     build_qwen_drive_ego_features,
 )
@@ -43,6 +46,27 @@ _CAMERA_OFFSETS_US = np.asarray([-1_500_000, -1_000_000, -500_000, 0], dtype=np.
 _MAX_OPEN_ARCHIVES = 8
 _VIDEO_READ_CHUNK = 8 * 1024 * 1024
 logger = logging.getLogger(__name__)
+
+
+def _selected_camera_indices(timestamps: Dict[str, List[Any]], anchor_us: int, clip_id: str,
+                             camera_name: str) -> Tuple[int, ...]:
+    stamp_values = np.asarray(timestamps["timestamp"], dtype=np.int64)
+    frame_values = np.asarray(timestamps["frame_index"], dtype=np.int64)
+    if not len(stamp_values) or np.any(np.diff(stamp_values) <= 0):
+        raise ValueError(f"Invalid or empty camera timestamps for clip {clip_id}, camera {camera_name}")
+    desired = anchor_us + _CAMERA_OFFSETS_US
+    positions = np.searchsorted(stamp_values, desired)
+    positions = np.clip(positions, 0, len(stamp_values) - 1)
+    previous = np.maximum(positions - 1, 0)
+    use_previous = np.abs(stamp_values[previous] - desired) < np.abs(stamp_values[positions] - desired)
+    positions = np.where(use_previous, previous, positions)
+    errors_s = np.abs(stamp_values[positions] - desired) / 1_000_000.0
+    if np.any(errors_s > 0.05):
+        raise ValueError(
+            f"Camera frame alignment exceeds 50 ms for clip {clip_id}, {camera_name}: "
+            f"{errors_s.tolist()}"
+        )
+    return tuple(int(index) for index in frame_values[positions])
 
 
 def _relative_poses(poses: np.ndarray, origin: np.ndarray) -> np.ndarray:
@@ -155,6 +179,274 @@ class _VideoFrame:
         return frame
 
 
+@dataclass(frozen=True)
+class _CachedFrame:
+    """Read one pre-resized PNG by its byte range in an uncompressed tar shard."""
+
+    tar_path: str
+    offset: int
+    size: int
+    pre_resized: Tuple[int, int, int, int]
+    expected_size: Tuple[int, int]
+
+    def __call__(self) -> Image.Image:
+        with open(self.tar_path, "rb") as stream:
+            stream.seek(self.offset)
+            payload = stream.read(self.size)
+        if len(payload) != self.size:
+            raise OSError(f"Truncated PhysicalAI image cache: {self.tar_path} at {self.offset}")
+        with Image.open(BytesIO(payload)) as image:
+            if image.size != self.expected_size:
+                raise ValueError(f"PhysicalAI image cache has unexpected size: {image.size}")
+            return image.convert("RGB")
+
+
+class _ImageCache:
+    """Look up published shards lazily, keeping only a few JSON indexes per worker."""
+
+    def __init__(self, root: Path, directory: Path, split: str, anchor_us: int) -> None:
+        self.root = root
+        self.directory = directory
+        self.split = split
+        self.anchor_us = anchor_us
+        self._indexes: OrderedDict[int, Tuple[Tuple[int, int], Dict[str, Any]]] = OrderedDict()
+        self._verified_sources: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
+        self._extraction_states: OrderedDict[int, Tuple[Tuple[int, int], Dict[str, Any]]] = OrderedDict()
+        self.shard_size: Optional[int] = None
+        summary_path = root / ".physicalai_extract" / "summary.json"
+        with summary_path.open() as stream:
+            self.extraction_plan = json.load(stream)["plan"]
+
+    def _shard_size(self) -> Optional[int]:
+        if self.shard_size is not None:
+            return self.shard_size
+        # Shards are published out of order; discover the size again when a new one appears.
+        for path in sorted((self.directory / "shards").glob(f"{self.split}-*.json")):
+            try:
+                with path.open() as stream:
+                    index = json.load(stream)
+                count = len(index["clip_ids"])
+                if count > 0 and count == len(index["records"]):
+                    self.shard_size = count
+                    return count
+            except (OSError, KeyError, TypeError, ValueError):
+                continue
+        return None
+
+    def _index(self, shard_number: int) -> Optional[Dict[str, Any]]:
+        path = self.directory / "shards" / f"{self.split}-{shard_number:06d}.json"
+        try:
+            stat = path.stat()
+            signature = (stat.st_size, stat.st_mtime_ns)
+            saved = self._indexes.get(shard_number)
+            if saved is not None and saved[0] == signature:
+                self._indexes.move_to_end(shard_number)
+                return saved[1]
+            with path.open() as stream:
+                index = json.load(stream)
+        except (OSError, ValueError):
+            return None
+        self._indexes[shard_number] = (signature, index)
+        self._indexes.move_to_end(shard_number)
+        while len(self._indexes) > 2:
+            self._indexes.popitem(last=False)
+        return index
+
+    def _compatible_extraction(self, cached: Any, view: str) -> bool:
+        current = self.extraction_plan
+        camera = PHYSICALAI_CAMERA_BY_VIEW[view]
+        return (isinstance(cached, dict)
+                and cached.get("source") == current.get("source")
+                and cached.get("metadata") == current.get("metadata")
+                and cached.get("anchor_us") == current.get("anchor_us") == self.anchor_us
+                and cached.get("video_check") == current.get("video_check") == "frames"
+                and self.split in cached.get("splits", [])
+                and self.split in current.get("splits", [])
+                and camera in cached.get("cameras", [])
+                and camera in current.get("cameras", []))
+
+    def _validated_reextraction(
+        self, clip_id: str, chunk: int, camera: str,
+        timestamp_path: Path, video_path: Path, signatures: List[List[int]],
+        current: List[List[int]], source_stats: Tuple[os.stat_result, os.stat_result],
+    ) -> bool:
+        path = self.root / ".physicalai_extract" / "chunks" / f"chunk_{chunk:04d}.json"
+        try:
+            state_stat = path.stat()
+            state_signature = (state_stat.st_size, state_stat.st_mtime_ns)
+            saved = self._extraction_states.get(chunk)
+            if saved is not None and saved[0] == state_signature:
+                state = saved[1]
+                self._extraction_states.move_to_end(chunk)
+            else:
+                with path.open() as stream:
+                    state = json.load(stream)
+                self._extraction_states[chunk] = (state_signature, state)
+                while len(self._extraction_states) > 2:
+                    self._extraction_states.popitem(last=False)
+            archive = Path(self.extraction_plan["source"]) / "camera" / camera / f"{camera}.chunk_{chunk:04d}.zip"
+            archive_stat = archive.stat()
+            source_signature = [archive_stat.st_size, archive_stat.st_mtime_ns]
+            relative = [str(path.relative_to(self.root)) for path in (timestamp_path, video_path)]
+            return (state.get("plan") == self.extraction_plan
+                    and clip_id in state.get("valid", [])
+                    and state.get("signatures", {}).get(camera) == source_signature
+                    and all(state.get("outputs", {}).get(name) == entry[0]
+                            for name, entry in zip(relative, current))
+                    and all(max(archive_stat.st_mtime_ns, archive_stat.st_ctime_ns) <= old[1]
+                            for old in signatures)
+                    and all(now[1] <= state_stat.st_mtime_ns
+                            for now in current)
+                    and all(stat.st_ctime_ns <= state_stat.st_ctime_ns
+                            for stat in source_stats))
+        except (OSError, KeyError, TypeError, ValueError):
+            return False
+
+    def _verify_source(
+        self, clip_id: str, chunk: int, view: str, camera: str, video_path: Path,
+        signatures: Any, current: List[List[int]],
+        source_stats: Tuple[os.stat_result, os.stat_result], entries: List[Dict[str, Any]],
+        frames: Tuple[_CachedFrame, ...], tar_signature: Tuple[int, int],
+        index_signature: Tuple[int, int],
+    ) -> bool:
+        if signatures == current and all(stat.st_ctime_ns <= tar_signature[1] for stat in source_stats):
+            return True
+        if (not isinstance(signatures, list) or len(signatures) != 2
+                or any(not isinstance(old, list) or len(old) != 2 or old[0] != now[0]
+                       for old, now in zip(signatures, current))):
+            return False
+        key = (clip_id, view)
+        proof = (tuple(tuple(part) for part in current),
+                 tuple(stat.st_ctime_ns for stat in source_stats),
+                 tar_signature, index_signature)
+        if self._verified_sources.get(key) == proof:
+            return True
+        source = video_path.with_suffix("")
+        timestamp_path = Path(f"{source}.timestamps.parquet")
+        if self._validated_reextraction(
+            clip_id, chunk, camera, timestamp_path, video_path, signatures, current,
+            source_stats,
+        ):
+            self._verified_sources[key] = proof
+            return True
+        group = _VideoFrameGroup(
+            archive_path=str(video_path), member=video_path.name,
+            frame_indices=tuple(entry["frame_index"] for entry in entries),
+            file_path=str(video_path),
+        )
+        try:
+            decoded = group.frames()
+            history_pixels, current_pixels, patch_size, merge_size = frames[0].pre_resized
+            factor = patch_size * merge_size
+            for position, (raw, cached) in enumerate(zip(decoded, frames)):
+                expected = resize_image_to_grid(
+                    Image.fromarray(raw.copy()).convert("RGB"),
+                    current_pixels if position == len(frames) - 1 else history_pixels,
+                    factor,
+                )
+                if not np.array_equal(np.asarray(expected), np.asarray(cached())):
+                    return False
+            # An extraction job may replace the source while verification is in flight.
+            latest = (timestamp_path.stat(), video_path.stat())
+            if ([[stat.st_size, stat.st_mtime_ns] for stat in latest] != current
+                    or any(after.st_ctime_ns != before.st_ctime_ns
+                           for after, before in zip(latest, source_stats))):
+                return False
+            self._verified_sources[key] = proof
+            return True
+        finally:
+            group.release()
+
+    def frames(self, sample_index: int, clip_id: str, chunk: int, view: str) -> Optional[Tuple[_CachedFrame, ...]]:
+        shard_size = self._shard_size()
+        if shard_size is None:
+            return None
+        shard_number = sample_index // shard_size
+        index = self._index(shard_number)
+        if index is None:
+            return None
+        stem = f"{self.split}-{shard_number:06d}"
+
+        plan = index.get("plan", {})
+        resize = plan.get("resize", {})
+        if (plan.get("cache_version") != 1
+                or plan.get("source_root") != str(self.root)
+                or plan.get("anchor_us") != self.anchor_us
+                or not self._compatible_extraction(plan.get("extraction_plan"), view)
+                or plan.get("format") != "png_rgb_uint8_post_resize"
+                or plan.get("interpolation") != "torchvision_pil_bicubic"
+                or plan.get("pillow_version") != pillow_version
+                or plan.get("torchvision_version") != torchvision_version
+                or view not in plan.get("views", [])
+                or any(not isinstance(resize.get(key), int) or resize[key] < 1 for key in (
+                    "history_image_pixels", "current_image_pixels", "patch_size", "merge_size"
+                ))):
+            return None
+        position = sample_index % shard_size
+        records = index.get("records", [])
+        if position >= len(records):
+            return None
+        record = records[position]
+        if record.get("clip_id") != clip_id or record.get("chunk") != chunk:
+            return None
+        entries = record.get("frames", {}).get(view)
+        if not isinstance(entries, list) or len(entries) != len(_CAMERA_OFFSETS_US):
+            return None
+
+        tar_path = self.directory / "shards" / f"{stem}.tar"
+        try:
+            stat = tar_path.stat()
+            if (index.get("tar_bytes") != stat.st_size
+                    or index.get("tar_mtime_ns") != stat.st_mtime_ns):
+                return None
+            camera = PHYSICALAI_CAMERA_BY_VIEW[view]
+            source = self.root / "camera" / camera / f"{clip_id}.{camera}"
+            timestamp_path = Path(f"{source}.timestamps.parquet")
+            video_path = Path(f"{source}.mp4")
+            signatures = index["source_signatures"][clip_id][view]
+            source_stats = (timestamp_path.stat(), video_path.stat())
+            current = [[source_stat.st_size, source_stat.st_mtime_ns]
+                       for source_stat in source_stats]
+            settings = tuple(resize[key] for key in (
+                "history_image_pixels", "current_image_pixels", "patch_size", "merge_size"
+            ))
+            if any(not isinstance(entry.get("offset"), int)
+                   or not isinstance(entry.get("bytes"), int)
+                   or not isinstance(entry.get("width"), int)
+                   or not isinstance(entry.get("height"), int)
+                   or not isinstance(entry.get("frame_index"), int)
+                   or entry["offset"] < 0 or entry["bytes"] < 1
+                   or entry["frame_index"] < 0
+                   or entry["width"] < 1 or entry["height"] < 1
+                   or entry["offset"] + entry["bytes"] > stat.st_size
+                   for entry in entries):
+                return None
+            frames = tuple(_CachedFrame(
+                str(tar_path), entry["offset"], entry["bytes"], settings,
+                (entry["width"], entry["height"]),
+            ) for entry in entries)
+            if (signatures != current
+                    or any(source_stat.st_ctime_ns > stat.st_mtime_ns
+                           for source_stat in source_stats)):
+                selected = _selected_camera_indices(
+                    pq.read_table(timestamp_path).to_pydict(), self.anchor_us,
+                    clip_id, camera,
+                )
+                if selected != tuple(entry["frame_index"] for entry in entries):
+                    return None
+            index_path = self.directory / "shards" / f"{stem}.json"
+            index_stat = index_path.stat()
+            if not self._verify_source(
+                clip_id, chunk, view, camera, video_path, signatures, current,
+                source_stats, entries, frames, (stat.st_size, stat.st_mtime_ns),
+                (index_stat.st_size, index_stat.st_mtime_ns),
+            ):
+                return None
+        except (OSError, KeyError, TypeError, ValueError, RuntimeError):
+            return None
+        return frames
+
+
 class PhysicalAIDataset(torch.utils.data.Dataset):
     """One 10 Hz Qwen planning sample per public dataset clip.
 
@@ -171,6 +463,7 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
         max_samples: Optional[int] = None,
         shard_check_workers: int = 48,
         storage: str = "auto",
+        image_cache_dir: Optional[str | Path] = None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.split = str(split)
@@ -197,6 +490,15 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
             raise ValueError(f"physicalai_storage must be auto, zip, or files; got {storage!r}")
         self.storage = ("files" if (self.root / ".physicalai_extract/summary.json").is_file()
                         else "zip") if storage == "auto" else storage
+        self._image_cache = None
+        if image_cache_dir is not None:
+            cache_path = Path(image_cache_dir).expanduser().resolve()
+            if self.storage != "files" and cache_path.is_dir():
+                raise ValueError("PhysicalAI image cache requires files storage")
+            if self.storage == "files":
+                self._image_cache = _ImageCache(
+                    self.root, cache_path, self.split, self.anchor_time_us,
+                )
 
         for relative in (
             "clip_index.parquet",
@@ -397,32 +699,19 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
         else:
             archive_path = self._archive_path("camera", camera_name, chunk)
             timestamps = self._parquet_member(self._read_member(archive_path, timestamp_member))
-        stamp_values = np.asarray(timestamps["timestamp"], dtype=np.int64)
-        frame_values = np.asarray(timestamps["frame_index"], dtype=np.int64)
-        if not len(stamp_values) or np.any(np.diff(stamp_values) <= 0):
-            raise ValueError(f"Invalid or empty camera timestamps for clip {clip_id}, camera {camera_name}")
-        desired = self.anchor_time_us + _CAMERA_OFFSETS_US
-        positions = np.searchsorted(stamp_values, desired)
-        positions = np.clip(positions, 0, len(stamp_values) - 1)
-        previous = np.maximum(positions - 1, 0)
-        use_previous = np.abs(stamp_values[previous] - desired) < np.abs(stamp_values[positions] - desired)
-        positions = np.where(use_previous, previous, positions)
-        errors_s = np.abs(stamp_values[positions] - desired) / 1_000_000.0
-        if np.any(errors_s > 0.05):
-            raise ValueError(
-                f"Camera frame alignment exceeds 50 ms for clip {clip_id}, {camera_name}: "
-                f"{errors_s.tolist()}"
-            )
+        frame_indices = _selected_camera_indices(
+            timestamps, self.anchor_time_us, clip_id, camera_name,
+        )
 
         video_member = f"{clip_id}.{camera_name}.mp4"
         video_path = self.root / "camera" / camera_name / video_member
         group = _VideoFrameGroup(
             archive_path=str(video_path if self.storage == "files" else archive_path),
             member=video_member,
-            frame_indices=tuple(int(index) for index in frame_values[positions]),
+            frame_indices=frame_indices,
             file_path=str(video_path) if self.storage == "files" else None,
         )
-        return tuple(_VideoFrame(group, index) for index in range(len(positions)))
+        return tuple(_VideoFrame(group, index) for index in range(len(frame_indices)))
 
     def _sample_ego(self, data: Dict[str, List[Any]]) -> Tuple[List[EgoStatus], np.ndarray]:
         timestamps = np.asarray(data["timestamp"], dtype=np.int64)
@@ -498,7 +787,10 @@ class PhysicalAIDataset(torch.utils.data.Dataset):
         view_frame_paths = []
         for view in self.view_list:
             camera_name = PHYSICALAI_CAMERA_BY_VIEW[view]
-            view_frame_paths.append(list(self._camera_frames(clip_id, chunk, camera_name)))
+            cached = (self._image_cache.frames(index, clip_id, chunk, view)
+                      if self._image_cache is not None else None)
+            view_frame_paths.append(list(cached if cached is not None else
+                                         self._camera_frames(clip_id, chunk, camera_name)))
         features["view_frame_paths"] = view_frame_paths
         features["view_list"] = self.view_list
 

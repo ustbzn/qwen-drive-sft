@@ -382,6 +382,12 @@ def _build_physicalai_datasets(
         max_samples=max_samples,
         shard_check_workers=scan_workers_per_rank,
         storage=str(cfg.get("physicalai_storage", "auto")),
+        image_cache_dir=(
+            None if str(cfg.get("physicalai_image_cache_dir", "auto")).lower() in ("null", "none", "false", "")
+            else Path(root) / ".physicalai_image_cache"
+            if str(cfg.get("physicalai_image_cache_dir", "auto")).lower() == "auto"
+            else cfg.get("physicalai_image_cache_dir")
+        ),
     )
     return (
         PhysicalAIDataset(split="train", **common),
@@ -557,9 +563,12 @@ def main(cfg: DictConfig) -> None:
         logger.info("Qwen training set includes %d added oversampled sample(s)", added_oversample_samples)
 
     logger.info("Building Datasets")
-    train_dataloader = DataLoader(train_data, collate_fn=custom_collate_fn, **cfg.dataloader.params, shuffle=True)
+    dataloader_params = dict(cfg.dataloader.params)
+    if dataset_mode in ("physicalai", "mixed") and int(dataloader_params["num_workers"]) > 0:
+        dataloader_params.setdefault("persistent_workers", True)
+    train_dataloader = DataLoader(train_data, collate_fn=custom_collate_fn, **dataloader_params, shuffle=True)
     logger.info("Num training samples: %d", len(train_data))
-    val_dataloader = DataLoader(val_data, collate_fn=custom_collate_fn, **cfg.dataloader.params, shuffle=False)
+    val_dataloader = DataLoader(val_data, collate_fn=custom_collate_fn, **dataloader_params, shuffle=False)
     logger.info("Num validation samples: %d", len(val_data))
 
     agent.initialize()

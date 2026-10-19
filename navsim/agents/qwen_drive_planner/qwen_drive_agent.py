@@ -233,7 +233,10 @@ class QwenDriveAgent(AbstractAgent):
         labels = [MOGO_VIEW_TO_OFFICIAL_LABEL[view] for view in view_list]
         views = {
             label: [
-                CameraFrame(image=Image.fromarray(path) if isinstance(path, np.ndarray) else path)
+                CameraFrame(
+                    image=Image.fromarray(path) if isinstance(path, np.ndarray) else path,
+                    pre_resized=getattr(path, "pre_resized", None),
+                )
                 for path in per_view
             ]
             for label, per_view in zip(labels, view_frame_paths)

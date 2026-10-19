@@ -6,6 +6,7 @@ PYTHON="${PYTHON:-/root/miniconda3/envs/qwen-drive/bin/python}"
 DATASET_MODE="${DATASET_MODE:-mixed}"
 PHYSICALAI_ROOT="${PHYSICALAI_ROOT:-/pcpt/pcpt/data/VLA/PhysicalAI-AV_unzip}"
 PHYSICALAI_STORAGE="${PHYSICALAI_STORAGE:-files}"
+PHYSICALAI_IMAGE_CACHE_DIR="${PHYSICALAI_IMAGE_CACHE_DIR:-auto}"
 PHYSICALAI_VIEW_LIST="${PHYSICALAI_VIEW_LIST:-[cam_f0,cam_l0,cam_r0,cam_b0]}"
 PHYSICALAI_ANCHOR_TIME_S="${PHYSICALAI_ANCHOR_TIME_S:-10.0}"
 PHYSICALAI_MAX_SAMPLES_PER_SPLIT="${PHYSICALAI_MAX_SAMPLES_PER_SPLIT:-null}"
@@ -132,6 +133,7 @@ exec "${PYTHON}" -m torch.distributed.run \
   "dataset_mode=${DATASET_MODE}" \
   "physicalai_root=${PHYSICALAI_ROOT}" \
   "physicalai_storage=${PHYSICALAI_STORAGE}" \
+  "physicalai_image_cache_dir=${PHYSICALAI_IMAGE_CACHE_DIR}" \
   "physicalai_view_list=${PHYSICALAI_VIEW_LIST}" \
   "physicalai_anchor_time_s=${PHYSICALAI_ANCHOR_TIME_S}" \
   "physicalai_max_samples_per_split=${PHYSICALAI_MAX_SAMPLES_PER_SPLIT}" \

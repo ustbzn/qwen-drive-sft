@@ -22,6 +22,7 @@ mogo_manifest: navsim/planning/script/config/common/mogo_dataset/nav_station.yam
 mogo_dataset_names: null
 physicalai_root: /pcpt/pcpt/data/VLA/PhysicalAI-AV_unzip
 physicalai_storage: files # files uses the validated extraction manifest; zip reads the original archives.
+physicalai_image_cache_dir: auto # auto reads published shards under physicalai_root; null disables image cache.
 physicalai_view_list: [cam_f0, cam_l0, cam_r0] # The training shell script selects four public views.
 physicalai_anchor_time_s: 10.0
 physicalai_max_samples_per_split: null # Set a positive value for a short I/O smoke run.

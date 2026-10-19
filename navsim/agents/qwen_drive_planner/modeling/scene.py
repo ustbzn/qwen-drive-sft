@@ -87,6 +87,13 @@ def smart_resize(
     return bar_h, bar_w
 
 
+def resize_image_to_grid(image: Image.Image, max_pixels: int, factor: int) -> Image.Image:
+    height, width = smart_resize(
+        image.height, image.width, factor, 4 * factor**2, max_pixels,
+    )
+    return TF.resize(image, [height, width], interpolation=InterpolationMode.BICUBIC)
+
+
 @dataclass
 class CameraFrame:
     """One camera image.
@@ -99,6 +106,7 @@ class CameraFrame:
 
     image: str | Path | Image.Image | Callable[[], Image.Image]
     target_size: tuple[int, int] | None = None
+    pre_resized: tuple[int, int, int, int] | None = None
 
     def load(self) -> Image.Image:
         if isinstance(self.image, Image.Image):
@@ -220,18 +228,30 @@ class QwenDriveProcessor:
         it is snapped to the grid without being shrunk further.
         """
         image = frame.load()
-        max_pixels = budget
-        if frame.target_size is not None:
-            width, height = frame.target_size
-            image = TF.resize(image, [height, width], interpolation=InterpolationMode.BICUBIC)
-            max_pixels = self.grid_pixel_limit
-        width, height = image.size
-        grid_height, grid_width = smart_resize(
-            height, width, self.factor, self.min_pixels, max_pixels
-        )
-        image = TF.resize(
-            image, [grid_height, grid_width], interpolation=InterpolationMode.BICUBIC
-        )
+        if frame.pre_resized is not None:
+            expected = (
+                self.config.history_image_pixels, self.config.current_image_pixels,
+                self.patch_size, self.merge_size,
+            )
+            if frame.pre_resized != expected:
+                raise ValueError(
+                    f"PhysicalAI image cache resize settings {frame.pre_resized} "
+                    f"do not match model settings {expected}"
+                )
+            if frame.target_size is not None:
+                raise ValueError("A pre-resized camera frame cannot also have target_size")
+            width, height = image.size
+            if width % self.factor or height % self.factor:
+                raise ValueError(f"Cached image size {image.size} is not on the patch grid")
+            grid_height, grid_width = height, width
+        else:
+            max_pixels = budget
+            if frame.target_size is not None:
+                width, height = frame.target_size
+                image = TF.resize(image, [height, width], interpolation=InterpolationMode.BICUBIC)
+                max_pixels = self.grid_pixel_limit
+            image = resize_image_to_grid(image, max_pixels, self.factor)
+            grid_width, grid_height = image.size
         pixels = TF.pil_to_tensor(image).float().div_(255.0).sub_(0.5).div_(0.5)
 
         rows = grid_height // self.patch_size

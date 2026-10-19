@@ -32,10 +32,7 @@ if __package__ in (None, ""):
 
 from PIL import Image, __version__ as pillow_version
 from torchvision import __version__ as torchvision_version
-from torchvision.transforms import InterpolationMode
-from torchvision.transforms import functional as TF
-
-from navsim.agents.qwen_drive_planner.modeling.scene import smart_resize
+from navsim.agents.qwen_drive_planner.modeling.scene import resize_image_to_grid
 from navsim.planning.training.physicalai_dataset import (
     PHYSICALAI_CAMERA_BY_VIEW,
     PhysicalAIDataset,
@@ -92,13 +89,12 @@ def _manifest_hash(path: Path) -> str:
 
 def _resized_image(frame, *, current: bool, resize: dict[str, int]) -> Image.Image:
     image = Image.fromarray(frame.copy()).convert("RGB")
-    width, height = image.size
     factor = resize["patch_size"] * resize["merge_size"]
-    grid_height, grid_width = smart_resize(
-        height, width, factor, 4 * factor**2,
+    return resize_image_to_grid(
+        image,
         resize["current_image_pixels"] if current else resize["history_image_pixels"],
+        factor,
     )
-    return TF.resize(image, [grid_height, grid_width], interpolation=InterpolationMode.BICUBIC)
 
 
 def _reusable(
