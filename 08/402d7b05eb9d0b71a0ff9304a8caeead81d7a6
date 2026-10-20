@@ -1,0 +1,29 @@
+scripts/filter_badcase_pkl.py
+  s_0cce62a06fede4::t_f397e59e9898b0 1-192
+scripts/infer_badcase.py
+  s_0cce62a06fede4::t_ce63fbf3e087bc 72-76,138-160,162-165,167-170,172-211,232-233,262-267,437-438,454,469-473,522-541,636-637
+scripts/mogo_map.py
+  s_0cce62a06fede4::t_9a069c32e47ca0 33,374-513
+scripts/run_badcase_gif.sh
+  s_0cce62a06fede4::t_ab6f11273d82a2 13-15,18-21,23,28-29,36-37,57-62,100-101,136-146,199,248
+scripts/visualize_badcase.py
+  s_0cce62a06fede4::t_1ee9a1e69dc6a0 352-353,356-358,367-370,372-376,378-380,382,414,435-437,451,453-454
+scripts/visualize_badcase_perception.py
+  s_0cce62a06fede4::t_1e85ab0e5d5efc 85,91-92,101-103,105-109,111-113,115,155,168-169,195-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "08402d7b05eb9d0b71a0ff9304a8caeead81d7a6",
+  "prompts": {},
+  "sessions": {
+    "s_0cce62a06fede4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6aa6c2ac-948a-4db3-95e6-5f2561f4e5f1",
+        "model": "unknown"
+      },
+      "human_author": "zhuning <zhuning@zhidaoauto.com>"
+    }
+  }
+}
