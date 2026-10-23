@@ -206,6 +206,10 @@ class QwenDriveForPlanning(PreTrainedModel):
             image_grid_thw=inputs["image_grid_thw"],
             mm_token_type_ids=self._modality_ids(input_ids),
             use_cache=True,
+            # Prefill only consumes the attention cache and rotary anchor. Computing
+            # logits for every prompt token materializes a very large [B, S, vocab]
+            # tensor (especially with six camera views) and serves no purpose here.
+            logits_to_keep=1,
         )
         anchor = self._rope_positions(input_ids, inputs["image_grid_thw"])[:, :, -1]
         return self._scene_cache(outputs.past_key_values), anchor

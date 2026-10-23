@@ -22,12 +22,12 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_0828/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_0828/exp")
+os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset")
+os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/exp")
 # os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset")
 # os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/exp")
-os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
-os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
+# os.environ.setdefault("OPENSCENE_DATA_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/dataset")
+# os.environ.setdefault("NAVSIM_EXP_ROOT", "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/worldsim/shanghai/exp")
 os.environ.setdefault("NUPLAN_MAPS_ROOT", "/NXT/lst/vla/navsim/download/nuplan-maps-v1.1/nuplan-maps-v1.0")
 os.environ.setdefault("NUPLAN_MAP_VERSION", "nuplan-maps-v1.0")
 
@@ -64,11 +64,17 @@ CHECKPOINTS = {
     "rl": "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/traffic_light_multi/exp/v3_imgencoder_4cam_novlm_RL/2026.08.18.11.59.28/lightning_logs/version_0/checkpoints/epoch=16-step=5321.ckpt",
 }
 DEFAULT_QWEN_DRIVE_CHECKPOINT = str(
-    _root
-    / "qwen_drive_runs/nav_station/qwen_drive_il/2026.09.21.02.50.50/"
-      "lightning_logs/version_0/checkpoints/epoch=4-step=4925.ckpt"
+    Path(os.environ.get(
+        "QWEN_DRIVE_CHECKPOINT",
+        _root
+        / "qwen_drive_runs/nav_station_mixed/qwen_drive_il_6cam/2026.10.19.09.29.48/"
+          "lightning_logs/version_0/checkpoints/epoch=1-step=1784.ckpt",
+    ))
 )
-DEFAULT_QWEN_DRIVE_DATA_ROOT = "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/badcase_TSP/dataset"
+DEFAULT_QWEN_DRIVE_DATA_ROOT = os.environ.get(
+    "QWEN_DRIVE_OPENSCENE_DATA_ROOT",
+    "/pcpt/pcpt/data/VLA/MOGO/recogdrive_dataset/0731-0802/dataset",
+)
 VLM_PATH = "/pcpt/pcpt/project/jiangjunyuan/code/VLA/Qwen3-VL-2B-Instruct"
 DATA_SPLIT = "trainval"
 HYDRA_CONFIG_PATH = "../navsim/planning/script/config/common/train_test_split"
@@ -305,6 +311,7 @@ def build_visualization_agent(model: str, args, device: torch.device):
         if model != "il":
             raise ValueError("Qwen-Drive visualization supports --model il; there is no RL checkpoint here")
         checkpoint = args.checkpoint or DEFAULT_QWEN_DRIVE_CHECKPOINT
+        print(f"使用检查点: {checkpoint}")
         config = QwenDrivePlannerConfig(
             vlm_path=args.qwen_drive_vlm_path,
             planner_path=args.planner_path or None,
@@ -324,6 +331,7 @@ def build_visualization_agent(model: str, args, device: torch.device):
     from navsim.agents.recogdrive.recogdrive_agent import ReCogDriveAgent
 
     checkpoint = args.checkpoint or CHECKPOINTS[model]
+    print(f"使用检查点: {checkpoint}")
     agent = ReCogDriveAgent(
         TrajectorySampling(time_horizon=4, interval_length=0.5),
         checkpoint_path=checkpoint,
@@ -428,14 +436,21 @@ def _add_agent_family_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--checkpoint", default="", help="覆盖默认模型 checkpoint")
     group.add_argument("--qwen-drive-vlm-path", default=DEFAULT_VLM_PATH)
     group.add_argument("--planner-path", default=DEFAULT_PLANNER_PATH)
-    group.add_argument("--qwen-view-list", nargs="+", default=["cam_f0", "cam_l0", "cam_r0"])
-    group.add_argument("--qwen-num-camera-frames", type=int, default=4)
+    group.add_argument(
+        "--qwen-view-list",
+        nargs="+",
+        default=os.environ.get(
+            "QWEN_DRIVE_VIEW_LIST",
+            "cam_f0 cam_l0 cam_r0 cam_l1 cam_r1 cam_b0",
+        ).split(),
+    )
+    group.add_argument("--qwen-num-camera-frames", type=int, default=int(os.environ.get("QWEN_DRIVE_NUM_CAMERA_FRAMES", "4")))
     group.add_argument("--num-inference-steps", type=int, default=10)
     group.add_argument("--num-samples", type=int, default=1)
     group.add_argument("--noise-seed", type=int, default=42)
     group.add_argument("--train-dtype", default="bfloat16")
     group.add_argument("--openscene-data-root", default="")
-    group.add_argument("--split", default="", help="navsim_logs/sensor_blobs 子目录；Qwen-Drive 默认 trainval")
+    group.add_argument("--split", default="", help="navsim_logs/sensor_blobs 子目录；Qwen-Drive 默认 val")
 
 
 def _add_model_arch_args(parser: argparse.ArgumentParser) -> None:
@@ -545,7 +560,11 @@ def main():
     output_dir = Path(args.output_dir)
     frames_root = Path(args.frames_dir)
     openscene_root = resolve_openscene_data_root(args)
-    args.split = args.split or ("trainval" if args.agent_family == "qwen_drive" else DATA_SPLIT)
+    args.split = args.split or (
+        os.environ.get("QWEN_DRIVE_DATA_SPLIT", "val")
+        if args.agent_family == "qwen_drive"
+        else DATA_SPLIT
+    )
     args.mogo_map_utm_zone = args.mogo_map_utm_zone or (50 if args.agent_family == "qwen_drive" else 51)
     mogo_map_sqlite_path = (
         Path(args.mogo_map_sqlite_path)

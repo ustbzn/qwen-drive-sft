@@ -105,7 +105,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
         if dist.get_rank() == 0:
             logger.info(f"Rank {dist.get_rank()} processing scenario {idx+1} / {len(tokens_to_evaluate)} in thread_id={thread_id}, node_id={node_id}")
 
-        score_row: Dict[str, Any] = {"token": token, "valid": True}
+        score_row: Dict[str, Any] = {"token": token, "valid": True, "rank": dist.get_rank()}
         try:
             metric_cache_path = metric_cache_loader.metric_cache_paths[token]
             with lzma.open(metric_cache_path, "rb") as f:
@@ -126,7 +126,6 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
                 scorer=scorer,
             )
             score_row.update(asdict(pdm_result))
-            score_row['rank'] = dist.get_rank()
         except Exception as e:
             logger.warning(f"----------- Agent failed for token {token}:")
             traceback.print_exc()
@@ -242,16 +241,22 @@ def main(cfg: DictConfig) -> None:
 
     if dist.get_rank() == 0:
         final_results = []
-        for gathered_tensor in gathered_results:
-            gathered_tensor = gathered_tensor[:local_size]  
+        for rank_index, gathered_tensor in enumerate(gathered_results):
+            rank_size = size_list[rank_index].item()
+            gathered_tensor = gathered_tensor[:rank_size]
             serialized_data = gathered_tensor.cpu().numpy().tobytes()
-            final_results.extend(pickle.loads(serialized_data))  # 
+            final_results.extend(pickle.loads(serialized_data))
     
         pdm_score_df = pd.DataFrame(final_results)
 
         num_sucessful_scenarios = pdm_score_df["valid"].sum()
         num_failed_scenarios = len(pdm_score_df) - num_sucessful_scenarios
-        average_row = pdm_score_df.drop(columns=["token", "valid",'rank']).mean(skipna=True)
+        metric_columns = [
+            column for column in pdm_score_df.columns
+            if column not in {"token", "valid", "rank"}
+            and pd.api.types.is_numeric_dtype(pdm_score_df[column])
+        ]
+        average_row = pdm_score_df[metric_columns].mean(skipna=True)
         average_row["token"] = "average"
         average_row["valid"] = pdm_score_df["valid"].all()
         average_row["rank"] = "0"

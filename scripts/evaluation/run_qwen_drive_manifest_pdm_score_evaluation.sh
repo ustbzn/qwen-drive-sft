@@ -4,16 +4,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/qwen-drive/bin/python}"
 MOGO_MANIFEST="${MOGO_MANIFEST:-${REPO_ROOT}/navsim/planning/script/config/common/mogo_dataset/nav_station.yaml}"
-CHECKPOINT="${CHECKPOINT:-${REPO_ROOT}/qwen_drive_runs/nav_station/qwen_drive_il/2026.09.21.02.50.50/lightning_logs/version_0/checkpoints/epoch=4-step=4925.ckpt}"
+CHECKPOINT="${CHECKPOINT:-${REPO_ROOT}/qwen_drive_runs/nav_station_mixed/qwen_drive_il_6cam/2026.10.19.09.29.48/lightning_logs/version_0/checkpoints/epoch=1-step=1784.ckpt}"
 VLM_PATH="${VLM_PATH:-/D2/NXT/vlm/miaobinqi/models/Qwen-Drive-1.0-4B}"
 PLANNER_PATH="${PLANNER_PATH:-${VLM_PATH}/planner-sft}"
-GPUS="${GPUS:-8}"
+GPUS="${GPUS:-1}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen_drive_il_pdm_eval}"
 DATA_SPLIT="${DATA_SPLIT:-val}"
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-10}"
 NUM_SAMPLES="${NUM_SAMPLES:-1}"
 NOISE_SEED="${NOISE_SEED:-42}"
 export VLM_PATH PLANNER_PATH DATA_SPLIT NUM_INFERENCE_STEPS NUM_SAMPLES NOISE_SEED
+export QWEN_VIEW_LIST="${QWEN_VIEW_LIST:-[cam_f0,cam_l0,cam_r0,cam_l1,cam_r1,cam_b0]}"
 
 if [[ ! -f "${CHECKPOINT}" ]]; then
   echo "Qwen-Drive checkpoint not found: ${CHECKPOINT}" >&2
