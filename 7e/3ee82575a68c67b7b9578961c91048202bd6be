@@ -1,0 +1,59 @@
+scripts/visualization/plt_csv_all.sh
+  s_97bc84a9d7ef4d::t_a40a7083b3d557 2-15,17-55
+scripts/evaluation/run_qwen_drive_agent_pdm_score_evaluation.sh
+  s_97bc84a9d7ef4d::t_82a1beebe5819a 10,13,41
+  s_97bc84a9d7ef4d::t_4095b0c5c79da4 15
+  h_a3af9024280b11 17
+scripts/vis_scenario_gif.py
+  s_97bc84a9d7ef4d::t_e0c1e1612875ad 597,599-601
+  s_97bc84a9d7ef4d::t_ef4b094fe1151c 598
+  s_97bc84a9d7ef4d::t_2282890f03060f 602
+  h_a3af9024280b11 493,519,565,578-580,583
+scripts/vis_scenario_video.py
+  s_97bc84a9d7ef4d::t_1fdcc13afa5e8a 67-76,314,334,439-447
+  s_97bc84a9d7ef4d::t_ba2cd8dacf5c06 453,563-567
+  h_a3af9024280b11 25-26,29-30
+.gitignore
+  s_71cd7c6ca7e9fd::t_554e82dc72ab8a 63
+navsim/agents/qwen_drive_planner/modeling/modeling_qwen_drive.py
+  s_97bc84a9d7ef4d::t_06cf984f36b4a1 209-212
+QWEN_DRIVE_HANDOFF.md
+  s_71cd7c6ca7e9fd::t_f619627b922db9 1-64,66-227,229-285,288-347,349,351-435,437-442
+  h_a3af9024280b11 65,228,286-287,348,350,436
+scripts/evaluation/run_qwen_drive_manifest_pdm_score_evaluation.sh
+  s_97bc84a9d7ef4d::t_4095b0c5c79da4 7,10,17
+navsim/planning/script/run_pdm_score_qwen.py
+  s_97bc84a9d7ef4d::t_06cf984f36b4a1 108,254-259
+  s_97bc84a9d7ef4d::t_82a1beebe5819a 244-246,248
+scripts/training/run_qwen_drive_il.sh
+  h_a3af9024280b11 10,57,67,88,166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7e3ee82575a68c67b7b9578961c91048202bd6be",
+  "prompts": {},
+  "humans": {
+    "h_a3af9024280b11": {
+      "author": "jiangjunyuan <jiangjunyuan@zhidaoauto.com>"
+    }
+  },
+  "sessions": {
+    "s_71cd7c6ca7e9fd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1671c-1070-7801-b397-3963caa9552a",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "jiangjunyuan <jiangjunyuan@zhidaoauto.com>"
+    },
+    "s_97bc84a9d7ef4d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16231-5540-7ba3-a3be-204580deb692",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "jiangjunyuan <jiangjunyuan@zhidaoauto.com>"
+    }
+  }
+}
